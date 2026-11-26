@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace M0LTE.OfdmFm;
@@ -63,6 +64,9 @@ public sealed class PayloadReceiver
     private const double VarianceFloor = 1e-30;
     private const double Guard = 2.0;
 
+    // The ladder's steps are searched a vector at a time: its tables and sums are laid out with this many steps to a carrier (the 81 padded with zeros).
+    private static readonly int LadderStride = (LadderSteps + Vector<double>.Count - 1) / Vector<double>.Count * Vector<double>.Count;
+
     private readonly Interleaver _interleaver = new();
     private readonly PayloadCodeCache _codes = new();
 
@@ -104,7 +108,7 @@ public sealed class PayloadReceiver
     private readonly bool[] _isHot = new bool[Carriers];
     private readonly double[] _yRe = new double[Carriers];
     private readonly double[] _yIm = new double[Carriers];
-    private readonly double[] _ladderMiss = new double[LadderSteps];
+    private readonly double[] _ladderMiss = new double[LadderStride];
     private readonly double[] _taus = new double[MaxSymbols];
     private readonly double[] _miss = new double[MaxSymbols];
     private readonly byte[] _loading = new byte[Carriers];
@@ -778,38 +782,43 @@ public sealed class PayloadReceiver
 
             Rotate(tau);
 
-            // The ladder: the delay that leaves the steady carriers nearest their points.
+            // The ladder: the delay that leaves the steady carriers nearest their points. Each step's sum over the carriers is taken in carrier order, one step to a
+            // lane, with the scalar loop's arithmetic.
             Array.Clear(_ladderMiss);
             for (int j = 0; j < listed; j++)
             {
                 int c = _steady[j];
                 double wr = (_yRe[c] * _hinvRe[c]) - (_yIm[c] * _hinvIm[c]);
                 double wi = (_yRe[c] * _hinvIm[c]) + (_yIm[c] * _hinvRe[c]);
-                double sigma2 = _sigma2[c];
-                int t = c * LadderSteps;
+                var vwr = new Vector<double>(wr);
+                var vwi = new Vector<double>(wi);
+                var vsigma2 = new Vector<double>(_sigma2[c]);
+                int t = c * LadderStride;
                 if (isKnown)
                 {
-                    double rr = _knownRe[row + c];
-                    double ri = _knownIm[row + c];
-                    for (int i = 0; i < LadderSteps; i++)
+                    var vrr = new Vector<double>(_knownRe[row + c]);
+                    var vri = new Vector<double>(_knownIm[row + c]);
+                    for (int i = 0; i < LadderStride; i += Vector<double>.Count)
                     {
-                        double zr = (wr * TurnRe[t + i]) - (wi * TurnIm[t + i]);
-                        double zi = (wr * TurnIm[t + i]) + (wi * TurnRe[t + i]);
-                        double dr = zr - rr;
-                        double di = zi - ri;
-                        _ladderMiss[i] += ((dr * dr) + (di * di)) / sigma2;
+                        var tr = new Vector<double>(TurnRe, t + i);
+                        var ti = new Vector<double>(TurnIm, t + i);
+                        Vector<double> dr = ((vwr * tr) - (vwi * ti)) - vrr;
+                        Vector<double> di = ((vwr * ti) + (vwi * tr)) - vri;
+                        (new Vector<double>(_ladderMiss, i) + ((((dr * dr) + (di * di))) / vsigma2)).CopyTo(_ladderMiss, i);
                     }
                 }
                 else
                 {
-                    for (int i = 0; i < LadderSteps; i++)
+                    for (int i = 0; i < LadderStride; i += Vector<double>.Count)
                     {
-                        double zr = (wr * TurnRe[t + i]) - (wi * TurnIm[t + i]);
-                        double zi = (wr * TurnIm[t + i]) + (wi * TurnRe[t + i]);
-                        Nearest(zr, zi, scale, niM1, nqM1, mq != 0, out double rr, out double ri);
-                        double dr = zr - rr;
-                        double di = zi - ri;
-                        _ladderMiss[i] += ((dr * dr) + (di * di)) / sigma2;
+                        var tr = new Vector<double>(TurnRe, t + i);
+                        var ti = new Vector<double>(TurnIm, t + i);
+                        Vector<double> zr = (vwr * tr) - (vwi * ti);
+                        Vector<double> zi = (vwr * ti) + (vwi * tr);
+                        NearestVector(zr, zi, scale, niM1, nqM1, mq != 0, out Vector<double> rr, out Vector<double> ri);
+                        Vector<double> dr = zr - rr;
+                        Vector<double> di = zi - ri;
+                        (new Vector<double>(_ladderMiss, i) + ((((dr * dr) + (di * di))) / vsigma2)).CopyTo(_ladderMiss, i);
                     }
                 }
             }
@@ -823,7 +832,7 @@ public sealed class PayloadReceiver
                 }
             }
 
-            Rotate(Ladder[pick]);
+            RotateByStep(pick);
             tau += Ladder[pick];
 
             // The fine measurement: a carrier votes only while its decided point could not have been pushed across a boundary by an error of the size still in doubt.
@@ -961,6 +970,39 @@ public sealed class PayloadReceiver
         }
     }
 
+    // Rotate(Ladder[step]) from the ladder's table, which holds the same cosines and sines (computed from the same products) as Rotate would.
+    private void RotateByStep(int step)
+    {
+        for (int c = 0; c < Carriers; c++)
+        {
+            double cs = TurnRe[(c * LadderStride) + step];
+            double sn = TurnIm[(c * LadderStride) + step];
+            double r = (_yRe[c] * cs) - (_yIm[c] * sn);
+            _yIm[c] = (_yRe[c] * sn) + (_yIm[c] * cs);
+            _yRe[c] = r;
+        }
+    }
+
+    // Nearest() for a vector of carriers at once: the same operations, one carrier to a lane (the clamps are selects, so a NaN passes through as it does there).
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void NearestVector(Vector<double> zr, Vector<double> zi, double scale, double niM1, double nqM1, bool quadrature, out Vector<double> rr, out Vector<double> ri)
+    {
+        var vscale = new Vector<double>(scale);
+        rr = Level(zr / vscale, niM1) * vscale;
+        ri = quadrature ? Level(zi / vscale, nqM1) * vscale : Vector<double>.Zero;
+    }
+
+    // ((2 * min(max(round(((v + (n + 1)) - 1) / 2), 0), n)) - n), for the levels 0 to n.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static Vector<double> Level(Vector<double> v, double nM1)
+    {
+        var top = new Vector<double>(nM1);
+        Vector<double> l = Vector.Round(((v + new Vector<double>(nM1 + 1)) - Vector<double>.One) / new Vector<double>(2.0));
+        l = Vector.ConditionalSelect(Vector.LessThan(l, Vector<double>.Zero), Vector<double>.Zero, l);
+        l = Vector.ConditionalSelect(Vector.GreaterThan(l, top), top, l);
+        return (new Vector<double>(2.0) * l) - top;
+    }
+
     // Measures the path against the burst as the sender's peak limit left it: the decoded payload re-encoded, the opening, the limit, then
     // the channel and the noise on every carrier.
     private void Measure(FormatSpec spec, PayloadCode code, ReadOnlySpan<byte> info, int known, int n, int nb, int symbols, int perSymbol, int coded)
@@ -1065,16 +1107,16 @@ public sealed class PayloadReceiver
         return ladder;
     }
 
-    // The ladder's turns for every carrier, carrier by carrier: [c * LadderSteps + i] is exp(j 2 pi f delay_i).
+    // The ladder's turns for every carrier, carrier by carrier: [c * LadderStride + i] is exp(j 2 pi f delay_i) (zero in the padding).
     private static double[] BuildTurn(bool imaginary)
     {
-        var t = new double[Carriers * LadderSteps];
+        var t = new double[Carriers * LadderStride];
         for (int c = 0; c < Carriers; c++)
         {
             for (int i = 0; i < LadderSteps; i++)
             {
                 double th = TwoPiF[c] * Ladder[i];
-                t[(c * LadderSteps) + i] = imaginary ? Math.Sin(th) : Math.Cos(th);
+                t[(c * LadderStride) + i] = imaginary ? Math.Sin(th) : Math.Cos(th);
             }
         }
 

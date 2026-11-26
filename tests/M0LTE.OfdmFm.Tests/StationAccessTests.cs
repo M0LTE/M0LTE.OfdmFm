@@ -232,7 +232,7 @@ public class StationAccessTests
         Station station = Make();
         var driver = new StreamDriver(station);
         var bits = new byte[BurstHeaderCodec.HeaderBits];
-        var ident = new BurstHeader(0, BurstKind.Identification, 5, 0, 12, 40, 0);
+        var ident = new BurstHeader(0, (BurstKind)3, 5, 0, 12, 40, 0);
         driver.PushTo(Start, Blocks(block));
         long index = Start - 3000;
         driver.At(Start + 100, () => station.TakeInHeader(index, FormatOpening.Full, ident, bits));

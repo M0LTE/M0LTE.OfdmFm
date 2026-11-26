@@ -119,16 +119,21 @@ public sealed class BurstRenderer
     internal ReadOnlySpan<double> GridImaginary => _gridIm.AsSpan(0, _gridSymbols * Carriers);
 
     /// <summary>
-    /// Renders a data burst. The header names the format, the length in payload symbols, sender, destination and burst
+    /// Renders a burst with a payload: a data burst, or an identification burst (burst type 2: the same path, scrambled and checked in the same way, only the header's type differs). The header names the format, the length in payload symbols, sender, destination and burst
     /// number; <paramref name="payload"/> is the packed payload (see <see cref="PayloadCodec.Pack(PayloadPrelude?, ReadOnlySpan{ReadOnlyMemory{byte}}, Span{byte})"/>), at most
     /// <see cref="PayloadCodec.Capacity(int, int)"/> bytes. The drive is the format's.
     /// </summary>
     /// <returns>The samples written: <see cref="SamplesFor"/>.</returns>
     public int RenderData(in BurstHeader header, ReadOnlySpan<byte> payload, Span<float> samples)
     {
-        if (header.Kind != BurstKind.Data || header.Version != 0 || header.PayloadSymbols <= 0)
+        if (header.Kind is not (BurstKind.Data or BurstKind.Identification) || header.Version != 0 || header.PayloadSymbols <= 0)
         {
-            throw new ArgumentException("A data burst needs a version 0 data header with payload symbols.", nameof(header));
+            throw new ArgumentException("A burst with a payload needs a version 0 data or identification header with payload symbols.", nameof(header));
+        }
+
+        if (header.Kind == BurstKind.Identification && header.Destination != 0)
+        {
+            throw new ArgumentException("An identification burst is for everyone: destination 0.", nameof(header));
         }
 
         int symbols = header.PayloadSymbols;

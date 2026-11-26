@@ -76,6 +76,12 @@ internal sealed class SimNode
     /// <summary>Every <see cref="Station.LinkState"/> event.</summary>
     public List<LinkStateEvent> LinkStates { get; } = [];
 
+    /// <summary>Each time the station's identification fell due, with the clock it was raised at.</summary>
+    public List<(long Clock, IdentificationDueEvent Event)> IdentificationsDue { get; } = [];
+
+    /// <summary>Each identification heard from another station, with the clock it was raised at.</summary>
+    public List<(long Clock, IdentifiedEvent Event)> Identified { get; } = [];
+
     /// <summary>The bursts this station put on air: the samples-start clock, the length, and the request id.</summary>
     public List<SimTransmission> Transmissions { get; } = [];
 
@@ -620,6 +626,16 @@ internal sealed class SimChannel
         {
             n.ModemSent.Add(e);
             Say($"modem sent {e.Kind} to {(e.Station is { } to ? to.ToString() : "-")} fmt {e.Format}");
+        };
+        s.IdentificationDue += e =>
+        {
+            n.IdentificationsDue.Add((s.SampleCount, e));
+            Say(string.Create(CultureInfo.InvariantCulture, $"identification due {e.Seconds:R}"));
+        };
+        s.Identified += e =>
+        {
+            n.Identified.Add((s.SampleCount, e));
+            Say(string.Create(CultureInfo.InvariantCulture, $"identified {e.StationNumber} {e.Callsign} cap {e.Capability} name {e.Name}"));
         };
         s.BurstNotDecoded += e =>
         {

@@ -293,6 +293,137 @@ public static class PayloadCodec
         return true;
     }
 
+    /// <summary>The most bytes a callsign in an identification payload has: room for a prefix, a base call, a suffix and an SSID (<c>VK2/M0LTE/QRP-15</c>).</summary>
+    public const int MaxCallsignBytes = 16;
+
+    /// <summary>
+    /// True when <paramref name="callsign"/> can go in an identification burst: 1 to <see cref="MaxCallsignBytes"/> characters, each an upper-case letter A to Z, a digit, a slash or a hyphen.
+    /// </summary>
+    public static bool IsValidCallsign(ReadOnlySpan<char> callsign)
+    {
+        if (callsign.Length is 0 or > MaxCallsignBytes)
+        {
+            return false;
+        }
+
+        foreach (char c in callsign)
+        {
+            if (!IsCallsignChar(c))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsCallsignChar(int c) => c is (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '/' or '-';
+
+    /// <summary>
+    /// Writes an identification burst's payload before padding: one length byte N, the callsign's N bytes, the capability word (the more significant byte first), then each item as a tag, a length and its value.
+    /// Returns the length, or -1 when it does not fit in <paramref name="destination"/>. Throws when the callsign is not valid (<see cref="IsValidCallsign"/>), the capability word is outside 0 to 65535,
+    /// or an item has tag 0 (which ends the items on receipt: it is the padding) or a value over 255 bytes.
+    /// </summary>
+    public static int PackIdentification(ReadOnlySpan<byte> callsign, int capability, ReadOnlySpan<ExtensionItem> items, Span<byte> destination)
+    {
+        if (callsign.Length is 0 or > MaxCallsignBytes)
+        {
+            throw new ArgumentException($"A callsign is 1 to {MaxCallsignBytes} bytes.", nameof(callsign));
+        }
+
+        foreach (byte c in callsign)
+        {
+            if (!IsCallsignChar(c))
+            {
+                throw new ArgumentException("A callsign is upper-case letters, digits, '/' and '-'.", nameof(callsign));
+            }
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(capability);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(capability, 65535);
+        int need = 1 + callsign.Length + 2;
+        foreach (ExtensionItem item in items)
+        {
+            if (item.Tag == 0)
+            {
+                throw new ArgumentException("Tag 0 is reserved.", nameof(items));
+            }
+
+            if (item.Value.Length > 255)
+            {
+                throw new ArgumentException("An item's value is at most 255 bytes.", nameof(items));
+            }
+
+            need += 2 + item.Value.Length;
+        }
+
+        if (destination.Length < need)
+        {
+            return -1;
+        }
+
+        destination[0] = (byte)callsign.Length;
+        callsign.CopyTo(destination[1..]);
+        int p = 1 + callsign.Length;
+        destination[p] = (byte)(capability >> 8);
+        destination[p + 1] = (byte)capability;
+        p += 2;
+        foreach (ExtensionItem item in items)
+        {
+            destination[p] = item.Tag;
+            destination[p + 1] = (byte)item.Value.Length;
+            item.Value.Span.CopyTo(destination[(p + 2)..]);
+            p += 2 + item.Value.Length;
+        }
+
+        return p;
+    }
+
+    /// <summary>
+    /// Reads an identification burst's payload (the bytes as received, padding included). False, and nothing else said, when the payload is too short for its callsign and capability word, or the callsign is not valid
+    /// (<see cref="IsValidCallsign"/>). Otherwise the callsign (a slice of <paramref name="payload"/>), the capability word and a reader for the items that follow it: they run to the end of the payload, and a tag of 0 ends them
+    /// (zero is never a tag: it is the padding), as does an item whose length runs past the end, and what follows such a point is ignored. Never throws and never allocates.
+    /// </summary>
+    public static bool TryUnpackIdentification(ReadOnlySpan<byte> payload, out ReadOnlySpan<byte> callsign, out int capability, out ExtensionReader items)
+    {
+        callsign = default;
+        capability = 0;
+        items = new ExtensionReader(default);
+        if (payload.Length < 1)
+        {
+            return false;
+        }
+
+        int n = payload[0];
+        if (n is 0 or > MaxCallsignBytes || payload.Length < 1 + n + 2)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<byte> name = payload.Slice(1, n);
+        foreach (byte c in name)
+        {
+            if (!IsCallsignChar(c))
+            {
+                return false;
+            }
+        }
+
+        int p = 1 + n;
+        int word = (payload[p] << 8) | payload[p + 1];
+        p += 2;
+        int end = p;
+        while (end + 2 <= payload.Length && payload[end] != 0 && end + 2 + payload[end + 1] <= payload.Length)
+        {
+            end += 2 + payload[end + 1];
+        }
+
+        callsign = name;
+        capability = word;
+        items = new ExtensionReader(payload[p..end]);
+        return true;
+    }
+
     /// <summary>
     /// The information bits for a payload: its bytes, zero padding up to the burst's size, scrambling by the burst's
     /// sender, destination and burst number, and the 32-bit check over the scrambled bits. <paramref name="bits"/>

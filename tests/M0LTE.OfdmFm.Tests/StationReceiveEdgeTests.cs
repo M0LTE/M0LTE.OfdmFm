@@ -237,7 +237,7 @@ public class StationReceiveEdgeTests
         var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
         byte[] bits = new byte[BurstHeaderCodec.HeaderBits];
         station.TakeInHeader(1000, FormatOpening.Full, new BurstHeader(1, BurstKind.Data, 0, 0, 0, 0, 0), bits);
-        station.TakeInHeader(2000, FormatOpening.UpTo3000Hz, new BurstHeader(0, BurstKind.Identification, 3, 0, 192, 12, 0), bits);
+        station.TakeInHeader(2000, FormatOpening.UpTo3000Hz, new BurstHeader(0, (BurstKind)6, 3, 0, 192, 12, 0), bits);
         station.TakeInHeader(3000, FormatOpening.Full, new BurstHeader(0, (BurstKind)5, 3, 0, 12, 12, 0), bits);
         station.TakeInHeader(4000, FormatOpening.Full, BurstHeader.Data(0, 1, 12, 12, 0), bits);
         station.TakeInHeader(5000, FormatOpening.UpTo1500Hz, BurstHeader.Data(3, 1, 12, 12, 0), bits);

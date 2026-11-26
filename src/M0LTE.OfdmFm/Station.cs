@@ -20,7 +20,8 @@ internal enum TransmitState
 /// The live station: one per radio channel. So far (steps 1 to 6 of docs/station-design.md) it keeps a sample clock with timers on it, runs the transmit handshake with the audio layer,
 /// receives (audio pushed in comes out as <see cref="Received"/> datagrams, <see cref="PathReport"/> and <see cref="LinkState"/> events and calls on the adaptation rules), knows when the channel is busy and when it may transmit,
 /// and sends what the host gives it (<see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Bind"/>, <see cref="Snapshot"/>; events <see cref="Transmitted"/>, <see cref="Dropped"/>, <see cref="Congestion"/>).
-/// It tells the stations it hears what the path supports, by the protocol's rules (lone reports, step 6), and tells the host when a burst it sent was heard and not decoded (<see cref="BurstNotDecoded"/>). It does not yet identify (step 7).
+/// It tells the stations it hears what the path supports, by the protocol's rules (lone reports, step 6), and tells the host when a burst it sent was heard and not decoded (<see cref="BurstNotDecoded"/>).
+/// And it identifies itself (step 7): while it has been transmitting it sends an identification burst every ten minutes of the sample clock and raises <see cref="IdentificationDue"/> for the audio layer's Morse ident, and it learns the callsigns of the stations it hears do the same (<see cref="Identified"/>).
 /// <para>
 /// <b>The clock.</b> The only clock is the count of receive samples at 48 kHz, advanced by <see cref="Push"/> and <see cref="Skip"/> and by nothing else.
 /// Nothing here reads a wall clock, sleeps or waits. The adaptation rules are given each burst's end on this clock, never the time a verdict arrived.
@@ -73,7 +74,8 @@ internal enum TransmitState
 /// A report heard satisfies the answer wait and, if it says failed, raises <see cref="BurstNotDecoded"/> with the datagrams of the latest burst sent to that station that ended before the report began.
 /// </para>
 /// <para>
-/// <b>Not yet here.</b> Identification (step 7): <see cref="IdentificationDue"/> is declared and not yet raised.
+/// <b>Identification.</b> The callsign (a required setting: 1 to 16 characters, upper-case letters, digits, '/' and '-') goes on the air, and the clock that decides when runs on the sample clock only while the station transmits:
+/// the first transmission after the last identification starts it, ten minutes later an identification is due, and then it rests until the station next transmits. An idle station never keys to identify. See <c>docs/station-design.md</c>, "Step 7 as built".
 /// </para>
 /// </summary>
 public sealed partial class Station
@@ -110,6 +112,11 @@ public sealed partial class Station
     {
         ArgumentNullException.ThrowIfNull(callsign);
         ArgumentException.ThrowIfNullOrWhiteSpace(callsign);
+        if (!PayloadCodec.IsValidCallsign(callsign))
+        {
+            throw new ArgumentException($"A callsign is 1 to {PayloadCodec.MaxCallsignBytes} characters, upper-case letters, digits, '/' and '-': it goes on the air in the identification burst.", nameof(callsign));
+        }
+
         ArgumentOutOfRangeException.ThrowIfLessThan(stationNumber, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(stationNumber, 63);
         ArgumentNullException.ThrowIfNull(random);
@@ -189,11 +196,17 @@ public sealed partial class Station
     /// </summary>
     public event Action<BurstNotDecodedEvent>? BurstNotDecoded;
 
-    // Declared so that the host interface is complete; step 7 raises it and this pragma goes.
-#pragma warning disable CS0067
-    /// <summary>Declared, not yet raised: the identification interval has run out (step 7).</summary>
+    /// <summary>
+    /// Raised when the station's identification is due: ten minutes of the sample clock after the first transmission since its last identification (see <c>docs/station-design.md</c>, "Step 7 as built"), so that the audio layer can key its Morse ident.
+    /// The identification burst is queued at the same moment and raises <see cref="ModemSent"/> when it goes on air. Once for each identification, on the audio thread, from the timer at the due sample (the clock reads exactly that sample).
+    /// </summary>
     public event Action<IdentificationDueEvent>? IdentificationDue;
-#pragma warning restore CS0067
+
+    /// <summary>
+    /// Raised when an identification burst from another station has been decoded and read, in the order the bursts started: its number, its callsign, its capability word and the name the station is known by now (see <see cref="IdentifiedEvent"/>).
+    /// Not raised for a burst that did not decode or whose payload is not an identification. A datagram is never raised for it: <see cref="Received"/> is for datagrams.
+    /// </summary>
+    public event Action<IdentifiedEvent>? Identified;
 
     /// <summary>
     /// Takes received audio of any length and advances the clock by that many samples. Timers due within the block run, in order, each at its own sample:

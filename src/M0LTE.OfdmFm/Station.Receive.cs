@@ -171,7 +171,7 @@ public sealed partial class Station
         /// <summary>A version this code does not know: nothing else of the header means anything.</summary>
         UnknownVersion,
 
-        /// <summary>A version 0 burst type this step does not receive (an identification burst, or one of the spare types).</summary>
+        /// <summary>A version 0 burst type this code does not receive (one of the spare types).</summary>
         UnsupportedKind,
 
         /// <summary>A header that cannot describe a burst: sender 0, or a data burst the receiver cannot read.</summary>
@@ -647,7 +647,7 @@ public sealed partial class Station
             return;
         }
 
-        if (header.Kind is not (BurstKind.Data or BurstKind.Report))
+        if (header.Kind is not (BurstKind.Data or BurstKind.Report or BurstKind.Identification))
         {
             // An unknown type under a known version still carries its length: the opening and the payload symbols it names.
             Note(c, header, NoteReason.UnsupportedKind);
@@ -663,12 +663,12 @@ public sealed partial class Station
         }
 
         int length;
-        if (header.Kind == BurstKind.Data)
+        if (header.Kind is BurstKind.Data or BurstKind.Identification)
         {
             length = PayloadReceiver.SamplesNeeded(header);
-            if (length < 0 || StandardFormats.Describe(header.Format).Opening != c.Opening)
+            if (length < 0 || StandardFormats.Describe(header.Format).Opening != c.Opening || (header.Kind == BurstKind.Identification && header.Destination != 0))
             {
-                // A data burst opens the way its format says; a read under another opening is not a burst.
+                // A burst with a payload opens the way its format says (a read under another opening is not a burst), and an identification burst is for everyone.
                 Note(c, header, NoteReason.Invalid);
                 HoldForUnreadable(c);
                 return;
@@ -703,7 +703,7 @@ public sealed partial class Station
         record.Opening = c.Opening;
         record.Job = null;
         _headerBits.AsSpan().CopyTo(record.Bits);
-        record.State = header.Kind == BurstKind.Data ? BurstState.Known : BurstState.Report;
+        record.State = header.Kind == BurstKind.Report ? BurstState.Report : BurstState.Known;
         int at = _bursts.Count;
         while (at > 0 && _bursts[at - 1].Start > record.Start)
         {
@@ -999,6 +999,9 @@ public sealed partial class Station
             _burstsApplied++;
             switch (state)
             {
+                case BurstState.Done when r.Header.Kind == BurstKind.Identification:
+                    ApplyIdentification(r);
+                    break;
                 case BurstState.Done:
                     ApplyData(r);
                     break;
@@ -1135,6 +1138,9 @@ public sealed partial class Station
     // ---- what the station knows of each neighbour, for the host ----
 
     private readonly StationName?[] _bound = new StationName?[64];
+
+    /// <summary>True for a number whose name the host gave with <see cref="Bind"/>: a name learned from an identification burst never replaces it.</summary>
+    private readonly bool[] _hostBound = new bool[64];
 
     private StationName NameFor(int number) => _bound[number] ?? _placeholders[number];
 

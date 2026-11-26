@@ -1,6 +1,6 @@
 # Adaptation over the air: the protocol
 
-Status: a design record, agreed 2026-11-24, brought into line with the prototype later that day, and again on 2026-11-26 after the first runs over weak and changing paths. For packet-net/pdn-soundmodem#830 (part of packet-net/pdn-soundmodem#829): Tom read it, commented (a version number and feature flags, the FM capture effect, a check against the flows of AX.25 2.3) and agreed the nine choices listed under "Decided". A prototype was then built to it, run in simulation and run on two real radios (packet-net/pdn-soundmodem#833), and the rules changed in a number of places: "Changed since it was agreed" lists every one. It was run on the bench from about -78 to -124 dBm, and over a path that drops, is cut and comes back (packet-net/pdn-soundmodem#834); not yet with more than two stations (packet-net/pdn-soundmodem#835). The burst's remaining details (the opening, the two codes, the interleaver) were written down on 2026-11-26, and the document moved to this repository with the code the same day. The code is here under `src/M0LTE.OfdmFm/`: the transmit side, the receive arithmetic and the adaptation rules, pinned to the prototype by the test vectors. The live station receives from a continuous audio stream and judges the channel busy or clear (docs/station-design.md, steps 1 to 4) and sends what a host gives it and the lone reports of this document (steps 1 to 6; identification is not built), and no mode in pdn-soundmodem uses the modem yet. Issues are tracked in packet-net/pdn-soundmodem (packet-net/pdn-soundmodem#837 to packet-net/pdn-soundmodem#840 cover the rest).
+Status: a design record, agreed 2026-11-24, brought into line with the prototype later that day, and again on 2026-11-26 after the first runs over weak and changing paths. For packet-net/pdn-soundmodem#830 (part of packet-net/pdn-soundmodem#829): Tom read it, commented (a version number and feature flags, the FM capture effect, a check against the flows of AX.25 2.3) and agreed the nine choices listed under "Decided". A prototype was then built to it, run in simulation and run on two real radios (packet-net/pdn-soundmodem#833), and the rules changed in a number of places: "Changed since it was agreed" lists every one. It was run on the bench from about -78 to -124 dBm, and over a path that drops, is cut and comes back (packet-net/pdn-soundmodem#834); not yet with more than two stations (packet-net/pdn-soundmodem#835). The burst's remaining details (the opening, the two codes, the interleaver) were written down on 2026-11-26, and the document moved to this repository with the code the same day. The code is here under `src/M0LTE.OfdmFm/`: the transmit side, the receive arithmetic and the adaptation rules, pinned to the prototype by the test vectors. The live station receives from a continuous audio stream and judges the channel busy or clear (docs/station-design.md, steps 1 to 4) and sends what a host gives it, the lone reports of this document and its own identification (steps 1 to 7), and no mode in pdn-soundmodem uses the modem yet. Issues are tracked in packet-net/pdn-soundmodem (packet-net/pdn-soundmodem#837 to packet-net/pdn-soundmodem#840 cover the rest).
 
 This says how two stations with the adaptive OFDM-FM modem find and keep the best rate for the link between them, with nothing passing between them but the radio. The sections down to "Who measures, who decides" give the design in a few minutes; the rest is what to build from.
 
@@ -181,7 +181,7 @@ Station numbers are set at both ends for the bench. How a station comes by its n
 | Data to one station | every field | the prelude, then one or more whole datagrams |
 | Data to everyone | the same, with destination 0 | datagrams. No prelude, no report. |
 | Report | every field, with the recommended format and the failed bit in the format and burst-number fields, and length 0 | none |
-| Identification | as data, with destination 0 | the station's callsign and capability word, in the first-contact format |
+| Identification | as data to everyone: burst type 2, destination 0, the length in payload symbols, a burst number for the scrambler | the station's callsign, its capability word and any items (see "The identification payload"), in the first-contact format, padded, scrambled and checked as a data burst to everyone is |
 
 - **The destination is in the header** (6 bits, with 0 meaning everyone). In the payload it would not survive more than two stations: when a payload fails, nobody could tell whom it was for, so either every station that heard it reports at once in the same slot, or nobody does. In the header, exactly one station knows the failure is its to report.
 - A burst carries whole datagrams, several if they fit. The modem never splits a datagram across bursts. AX.25 sizes its own frames (N1) and has its own segmenter (section 2.4), and the host is told how much one burst can carry to each neighbour now (packet-net/pdn-soundmodem#822) so that it can size its frames to suit.
@@ -221,7 +221,7 @@ Test vectors for all of these, made with the prototype, pin the code and are in 
 
 ### The payload, the scrambler and the check
 
-A format and a length give a payload of a fixed number of bits. From the front:
+A format and a length give a payload of a fixed number of bits. This is the payload of a data burst; an identification burst's holds other things (see "The identification payload", below), and is padded, scrambled and checked in the same way. From the front:
 
 1. **The prelude**, in a burst to one station: two bytes. First byte, from the top bit: "report wanted", "a capability word follows", "a recommendation is given", "failed", "an extension block follows", and three spare bits. The spare bits are sent as 0 and ignored on receipt. Second byte: the recommended format (0 when none is given).
 2. **The capability word**, when flagged: two bytes, the more significant first.
@@ -252,6 +252,27 @@ Why it is this scrambler:
 - **Additive, not self-synchronising.** The self-synchronising kind exists for links with no frame timing, and it multiplies errors. A burst has frame timing.
 - **Seeded afresh for every burst.** A payload that happens to render badly, with high peaks into the limit, would with a fixed sequence render badly every time it was sent: before this, one fixed waveform lost 39 of 240 on the bench where its neighbours lost 1%. With the seed taken from the header, a repeat of the same data in a later burst is a different waveform. The fields used are ones the receiver has read before it needs the sequence, so the seed costs no bits. This is why the burst number now matters to the receiver.
 - **One sequence for each burst, not the best of several.** Choosing the best of 16 sequences for each burst was measured and not adopted: it takes 0.4 to 2.4 dB off distortion that is already 20 to 47 dB under the signal, which is not worth the header bits it would take to say which sequence was used.
+
+### The identification payload
+
+An identification burst is laid out as a data burst to everyone: the header's destination is 0, its length counts payload symbols, and the burst number seeds the scrambler (a station takes it from its own count, so that each identification is a different waveform). The payload is padded, scrambled and checked exactly as above, and the burst goes at the first-contact format. Only what the payload holds differs. From the front:
+
+1. **The callsign**: one length byte N, 1 to 16, then N bytes of ASCII. The characters are the upper-case letters A to Z, the digits, "/" and "-": enough for a prefix, a base call and a suffix or SSID (`M0LTE-1`, `F/M0LTE/P`, `VK2/M0LTE/QRP-15`). Lower case, spaces and every other byte are refused, so a callsign is a required setting that is checked when it is given.
+2. **The capability word**: two bytes, the more significant first, the same word as in a prelude.
+3. **Items**, to the end of the payload: each a tag byte, a length byte L and L bytes of value (0 to 255), in the same form as the extension block's. A station skips any item whose tag it does not know. Tag 0 is never sent, so a tag byte of 0 ends the items: it is the padding. An item whose length runs past the end of the payload ends them too, and what follows is ignored. No tag is assigned yet.
+4. **Padding** and **the check**, as for any payload.
+
+Nine characters or fewer is 12 payload symbols, 0.92 s from the first training symbol to the last; the longest callsign takes 20 symbols, 1.28 s.
+
+A worked example, to check an implementation against: the callsign `M0LTE-1`, the capability word 0x0123, and one item with the unassigned tag 0x7F and the three-byte value AA BB CC. The payload before padding is `07 4D 30 4C 54 45 2D 31 01 23 7F 03 AA BB CC`. Without the item, and with the word 0, it is `07 4D 30 4C 54 45 2D 31 00 00`.
+
+What a receiver does with it:
+
+- It decodes it as it decodes any burst to everyone, and measures it like one, so nothing is owed for it: no report, whatever the verdict.
+- If the payload is not a callsign and a capability word (too short, or a callsign that breaks the rules above), that is all it does.
+- Otherwise it keeps the capability word against that station, and takes the callsign as the station's name, unless the host program has already named that station number (the host's name stands) or has given that callsign to another number.
+
+When a station sends one, in plain words: it counts ten minutes of its own sample clock from the first time it transmits after its last identification (or since it started), and when they have run out, an identification is due. Transmitting means anything but an identification burst, a lone report included. So an idle station never sends one, a station that transmits once sends one ten minutes after it, and a station that transmits all day sends one every ten minutes of transmitting, each counted from the first transmission after the one before. The identification does not start the count again. It is queued with the lone reports and goes in the first slot once the channel is clear; if the channel stays busy it waits, and nothing expires it. A station that keys a Morse ident beside it does so at the same moment, as the host interface says.
 
 ## Under a link layer such as AX.25: what the modem must not do
 
@@ -286,7 +307,7 @@ A connects to B, having never heard it. The format numbers and rates are the one
 
 ## What is left to the layer above
 
-- **Who stations are.** The modem deals in 6-bit numbers. Binding a number to a station's name after first contact is not designed yet (packet-net/pdn-soundmodem#835). Identifying the station as the licence requires is the modem's own job and does not depend on the layer above: the callsign is a required setting, and while it is transmitting the modem sends an identification burst on its own clock, and a Morse ident beside it that anyone can read ([the host interface](https://github.com/packet-net/pdn-soundmodem/blob/main/docs/dev/ofdm-fm/host-interface.md) has the decision).
+- **Who stations are.** The modem deals in 6-bit numbers. Binding a number to a station's name after first contact is not designed yet (packet-net/pdn-soundmodem#835). Identifying the station as the licence requires is the modem's own job and does not depend on the layer above: the callsign is a required setting, and while it is transmitting the modem sends an identification burst on its own clock (see "The identification payload"), and a Morse ident beside it that anyone can read ([the host interface](https://github.com/packet-net/pdn-soundmodem/blob/main/docs/dev/ofdm-fm/host-interface.md) has the decision).
 - **Getting a datagram there in the end.** Acknowledging, repeating and ordering belong to the layer above, as set out under AX.25 above. The modem tells the host when each frame has gone out, and what it knows about the path. packet-net/pdn-soundmodem#836 decides whether the modem should ever do more.
 - **Routing, connections, flow.** Unchanged, but better informed: the host interface (packet-net/pdn-soundmodem#822) says what each neighbour can carry now, and packet-net/pdn-soundmodem#841 considers the AX.25 engine using it directly.
 
@@ -334,6 +355,7 @@ Nothing here reverses any of the nine choices above. Each line is a rule that th
 | Three openings, not two. | The lowest carriers need a longer opening. | Building it |
 | The identification burst is not optional: the modem sends it by itself on a clock while it is transmitting, with a Morse ident beside it, and the callsign is a required setting. The agreed version left identification to the layer above. | A compliance fallback that does not depend on the host. | Tom, 26 November 2026 |
 | The payload prelude gains a flag for a general extension block, a length and then tagged items that a station skips if it does not know them. | So that later fields cost nothing to add: no capability flag, no change to the datagrams. | Tom, 26 November 2026 |
+| The identification burst carries the callsign behind a length byte, the capability word and tagged items, and a station sends it by itself: ten minutes of its sample clock after the first transmission since its last identification, never while idle, queued ahead of the host's traffic. | The modem identifies by itself, whatever the host has or has not sent. | Tom, 26 November 2026 |
 | The document was made exact in these places against the implemented rules. | Porting the rules line by line showed where the wording was looser than the behaviour. | The port |
 | The interleaver and the training symbols are defined in this document's own terms (a shuffle driven by the scrambler's generator; a fixed table), where the prototype drew both from a software library's random generator. The training values did not change; the interleaver's permutation did. | A wire format has to be reproducible from its description. | The port |
 

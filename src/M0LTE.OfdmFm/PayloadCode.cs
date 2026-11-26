@@ -9,17 +9,11 @@ namespace M0LTE.OfdmFm;
 /// </summary>
 /// <remarks>
 /// A payload plan owns its block plans: the blocks differ in at most three distinct shapes, each built once
-/// and shared within the payload. <see cref="Get"/> keeps the most recently used <see cref="CacheCapacity"/>
-/// payload plans; a plan is cheap to rebuild, so an older one is simply dropped.
+/// and shared within the payload. A <see cref="PayloadCodeCache"/> keeps the most recently used payload plans for
+/// one owner; a plan is cheap to rebuild, so an older one is simply dropped.
 /// </remarks>
 internal sealed class PayloadCode
 {
-    /// <summary>Most payload plans <see cref="Get"/> keeps.</summary>
-    public const int CacheCapacity = 32;
-
-    private static readonly object Gate = new();
-    private static readonly List<PayloadCode> Recent = new(CacheCapacity + 1);
-
     private readonly LinkLdpcCodeBlock[] _blocks;
     private readonly int[] _infoOffset;
     private readonly int[] _codedOffset;
@@ -85,18 +79,6 @@ internal sealed class PayloadCode
     /// <summary>Floats of scratch <see cref="Decode"/> needs.</summary>
     public int DecodeScratchLength { get; }
 
-    /// <summary>Payload plans currently cached.</summary>
-    internal static int CachedCount
-    {
-        get
-        {
-            lock (Gate)
-            {
-                return Recent.Count;
-            }
-        }
-    }
-
     /// <summary>Approximate bytes this plan holds: its distinct block plans and its tables (not the shared structures).</summary>
     internal long PlanBytes
     {
@@ -121,43 +103,8 @@ internal sealed class PayloadCode
         }
     }
 
-    /// <summary>The plan for a payload shape: from the most recently used set if it is there, otherwise built (and the least recently used dropped).</summary>
-    public static PayloadCode Get(int infoBits, int codedBits)
-    {
-        lock (Gate)
-        {
-            for (int i = 0; i < Recent.Count; i++)
-            {
-                PayloadCode p = Recent[i];
-                if (p.InfoBits == infoBits && p.CodedBits == codedBits)
-                {
-                    Recent.RemoveAt(i);
-                    Recent.Insert(0, p);
-                    return p;
-                }
-            }
-
-            var built = new PayloadCode(infoBits, codedBits);
-            Recent.Insert(0, built);
-            if (Recent.Count > CacheCapacity)
-            {
-                Recent.RemoveAt(Recent.Count - 1);
-            }
-
-            return built;
-        }
-    }
-
-    /// <summary>Encodes <paramref name="info"/> (<see cref="InfoBits"/> bits) into <paramref name="coded"/> (<see cref="CodedBits"/> bits).</summary>
-    public void Encode(ReadOnlySpan<byte> info, Span<byte> coded)
-    {
-        Check(info, coded);
-        for (int i = 0; i < _blocks.Length; i++)
-        {
-            LinkLdpcCodeBlock b = _blocks[i];
-            b.Encode(info.Slice(_infoOffset[i], b.InfoBits), coded.Slice(_codedOffset[i], b.CodedBits));
-        }
-    }
+    /// <summary>Encodes <paramref name="info"/> (<see cref="InfoBits"/> bits) into <paramref name="coded"/> (<see cref="CodedBits"/> bits), allocating its own scratch.</summary>
+    public void Encode(ReadOnlySpan<byte> info, Span<byte> coded) => Encode(info, coded, new byte[ScratchLength]);
 
     /// <summary>As <see cref="Encode(ReadOnlySpan{byte}, Span{byte})"/> with caller-supplied scratch of at least <see cref="ScratchLength"/> bytes.</summary>
     public void Encode(ReadOnlySpan<byte> info, Span<byte> coded, Span<byte> scratch)

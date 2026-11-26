@@ -60,6 +60,8 @@ public sealed class BurstRenderer
     private readonly byte[] _loading = new byte[Carriers];
     private readonly byte[] _headerBits = new byte[BurstHeaderCodec.HeaderBits];
     private readonly byte[] _headerCoded = new byte[666];
+    private readonly Interleaver _interleaver = new();
+    private readonly PayloadCodeCache _codes = new();
     private byte[] _scratch = new byte[1024];
     private int _gridSymbols;
 
@@ -153,7 +155,7 @@ public sealed class BurstRenderer
         int codedBits = symbols * perSymbol;
         Span<byte> info = _info.AsSpan(0, infoBits);
         PayloadCodec.Encode(payload, infoBits, header.Sender, header.Destination, header.BurstNumber, info);
-        PayloadCode code = PayloadCode.Get(infoBits, codedBits);
+        PayloadCode code = _codes.Get(infoBits, codedBits);
         if (_scratch.Length < code.ScratchLength)
         {
             _scratch = new byte[code.ScratchLength];
@@ -162,7 +164,7 @@ public sealed class BurstRenderer
         Span<byte> coded = _coded.AsSpan(0, codedBits);
         code.Encode(info, coded, _scratch);
         Span<byte> tx = _tx.AsSpan(0, codedBits);
-        Interleaver.Interleave<byte>(coded, tx);
+        _interleaver.Interleave<byte>(coded, tx);
 
         _loading.AsSpan().Clear();
         _loading.AsSpan(0, spec.Carriers).Fill((byte)spec.ConstellationBits);

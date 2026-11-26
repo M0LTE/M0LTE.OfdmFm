@@ -44,7 +44,7 @@ public class LinkLdpcVectorTests
         }
         else
         {
-            PayloadCode.Get(infoBits, codedBits).Encode(info, coded);
+            new PayloadCode(infoBits, codedBits).Encode(info, coded);
         }
 
         if (c.TryGetProperty("coded", out JsonElement whole))
@@ -71,7 +71,7 @@ public class LinkLdpcVectorTests
         byte[] info = CodeVectorFile.Bits(c.GetProperty("info").GetString()!, infoBits);
         IReadOnlyList<LinkLdpcCodeBlock> blocks = c.GetProperty("direct").GetBoolean()
             ? [new LinkLdpcCodeBlock(infoBits, codedBits)]
-            : PayloadCode.Get(infoBits, codedBits).Blocks;
+            : new PayloadCode(infoBits, codedBits).Blocks;
         int offset = 0;
         foreach (LinkLdpcCodeBlock b in blocks)
         {

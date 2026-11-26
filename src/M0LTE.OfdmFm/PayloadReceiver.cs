@@ -63,6 +63,9 @@ public sealed class PayloadReceiver
     private const double VarianceFloor = 1e-30;
     private const double Guard = 2.0;
 
+    private readonly Interleaver _interleaver = new();
+    private readonly PayloadCodeCache _codes = new();
+
     private static readonly double[] Freq = BuildFreq();
     private static readonly double[] TwoPiF = BuildTwoPiF();
     private static readonly double[] Ladder = BuildLadder(-10e-6, LadderSteps);
@@ -399,8 +402,8 @@ public sealed class PayloadReceiver
         // Decode, block by block.
         int infoBits = StandardFormats.InfoBits(header.Format, symbols);
         Span<float> flat = _flat.AsSpan(0, coded);
-        Interleaver.Deinterleave<float>(llr, flat);
-        PayloadCode code = PayloadCode.Get(infoBits, coded);
+        _interleaver.Deinterleave<float>(llr, flat);
+        PayloadCode code = _codes.Get(infoBits, coded);
         EnsureScratch(code);
         Span<byte> info = _info.AsSpan(0, infoBits);
         Span<byte> guess = _guess.AsSpan(0, coded);
@@ -408,7 +411,7 @@ public sealed class PayloadReceiver
 
         // The best guess at every coded bit, as the carriers a later stage rebuilds the burst from.
         Span<byte> tx = _tx.AsSpan(0, coded);
-        Interleaver.Interleave<byte>(guess, tx);
+        _interleaver.Interleave<byte>(guess, tx);
         for (int s = 0; s < symbols; s++)
         {
             Constellation.MapSymbol(tx.Slice(s * perSymbol, perSymbol), _loading, _decidedRe.AsSpan(s * Carriers, Carriers), _decidedIm.AsSpan(s * Carriers, Carriers));
@@ -926,7 +929,7 @@ public sealed class PayloadReceiver
         Span<byte> reCoded = _guess.AsSpan(0, coded);
         code.Encode(info, reCoded, _byteScratch);
         Span<byte> tx = _tx.AsSpan(0, coded);
-        Interleaver.Interleave<byte>(reCoded, tx);
+        _interleaver.Interleave<byte>(reCoded, tx);
         _knownRe.AsSpan(0, known * Carriers).CopyTo(_refRe);
         _knownIm.AsSpan(0, known * Carriers).CopyTo(_refIm);
         for (int s = 0; s < symbols; s++)

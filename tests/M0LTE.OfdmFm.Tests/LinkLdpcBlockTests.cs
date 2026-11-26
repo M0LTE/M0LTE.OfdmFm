@@ -81,7 +81,7 @@ public class LinkLdpcBlockTests
     [Fact]
     public void The_Convenience_Overload_Gives_The_Same_Bits_As_Caller_Supplied_Scratch()
     {
-        var code = PayloadCode.Get(9000, 12000);
+        var code = new PayloadCodeCache().Get(9000, 12000);
         byte[] info = RandomBits(9000, 6);
         var a = new byte[12000];
         var b = new byte[12000];
@@ -102,15 +102,16 @@ public class LinkLdpcBlockTests
     [Fact]
     public void The_Payload_Plan_Cache_Is_Bounded_And_Returns_The_Same_Instance_For_A_Repeat()
     {
+        var cache = new PayloadCodeCache();
         for (int i = 0; i < 100; i++)
         {
-            PayloadCode.Get(1000 + i, 3000);
-            PayloadCode.CachedCount.Should().BeLessThanOrEqualTo(PayloadCode.CacheCapacity);
+            cache.Get(1000 + i, 3000);
+            cache.Count.Should().BeLessThanOrEqualTo(PayloadCodeCache.Capacity);
         }
 
-        PayloadCode.CachedCount.Should().BeLessThanOrEqualTo(32);
-        PayloadCode last = PayloadCode.Get(5000, 7000);
-        PayloadCode.Get(5000, 7000).Should().BeSameAs(last);
+        cache.Count.Should().BeLessThanOrEqualTo(32);
+        PayloadCode last = cache.Get(5000, 7000);
+        cache.Get(5000, 7000).Should().BeSameAs(last);
     }
 
     [Fact]
@@ -121,33 +122,26 @@ public class LinkLdpcBlockTests
     }
 
     [Fact]
-    public void Building_And_Encoding_The_Largest_Plan_Is_Timed()
+    public void The_Largest_Block_Encodes_Alike_Peeled_And_Dense_And_The_Largest_Burst_Plan_Builds_And_Encodes()
     {
-        // The largest block (lifting 352, every check row kept), built fresh, peeled and dense; then the largest
-        // burst the format list allows (780416 information bits in 839160 coded, 93 blocks) encoded.
-        var clock = System.Diagnostics.Stopwatch.StartNew();
+        // The largest block (lifting 352, every check row kept), peeled and dense; then the largest burst the
+        // format list allows (780416 information bits in 839160 coded, 93 blocks).
         var block = new LinkLdpcCodeBlock(8448, 60000, structured: true);
-        long peeled = clock.ElapsedMilliseconds;
-        clock.Restart();
         var dense = new LinkLdpcCodeBlock(8448, 60000, structured: false);
-        long denseMs = clock.ElapsedMilliseconds;
-        clock.Restart();
+        dense.EncoderKind.Should().Be("dense");
+        byte[] blockInfo = RandomBits(8448, 8);
+        var peeledCoded = new byte[60000];
+        var denseCoded = new byte[60000];
+        block.Encode(blockInfo, peeledCoded);
+        dense.Encode(blockInfo, denseCoded);
+        denseCoded.Should().Equal(peeledCoded);
+
         var code = new PayloadCode(780416, 839160);
-        long payload = clock.ElapsedMilliseconds;
+        code.Blocks.Should().HaveCount(93);
         byte[] info = RandomBits(780416, 7);
         var coded = new byte[839160];
-        var scratch = new byte[code.ScratchLength];
-        code.Encode(info, coded, scratch);
-        clock.Restart();
-        code.Encode(info, coded, scratch);
-        long encode = clock.ElapsedMilliseconds;
-        var typical = new PayloadCode(110000, 138528);
-        Console.WriteLine($"Expected bytes: payload plan largest {code.PlanBytes}, typical {typical.PlanBytes}, shared structure (lifting 352, 98 rows) {block.StructureBytes}");
-        Console.WriteLine($"Expected timing: block plan ({block.CheckRows} rows, lifting {block.LiftingSize}) peeled {peeled} ms, dense {denseMs} ms; "
-            + $"largest payload plan ({code.Blocks.Count} blocks) {payload} ms; encode {encode} ms");
-        dense.EncoderKind.Should().Be("dense");
-        peeled.Should().BeLessThan(20000);
-        denseMs.Should().BeLessThan(20000);
-        encode.Should().BeLessThan(20000);
+        code.Encode(info, coded, new byte[code.ScratchLength]);
+        coded.Should().Contain((byte)1);
+        coded.Should().OnlyContain(b => b <= 1);
     }
 }

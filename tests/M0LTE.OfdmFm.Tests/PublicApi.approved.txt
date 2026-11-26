@@ -111,11 +111,13 @@ namespace M0LTE.OfdmFm
         public static int OpeningSamples(M0LTE.OfdmFm.FormatOpening opening) { }
         public static int TrainingSymbolCount(M0LTE.OfdmFm.FormatOpening opening) { }
     }
-    public static class Interleaver
+    public sealed class Interleaver
     {
-        public static void Deinterleave<T>(System.ReadOnlySpan<T> tx, System.Span<T> coded) { }
-        public static void Interleave<T>(System.ReadOnlySpan<T> coded, System.Span<T> tx) { }
-        public static System.ReadOnlySpan<int> Permutation(int count) { }
+        public Interleaver() { }
+        public void Deinterleave<T>(System.ReadOnlySpan<T> tx, System.Span<T> coded) { }
+        public void Interleave<T>(System.ReadOnlySpan<T> coded, System.Span<T> tx) { }
+        public System.ReadOnlySpan<int> Permutation(int count) { }
+        public static int[] BuildPermutation(int count) { }
     }
     public sealed class LinkAdaptation
     {

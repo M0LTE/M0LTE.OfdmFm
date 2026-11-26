@@ -117,6 +117,60 @@ namespace M0LTE.OfdmFm
         public static void Interleave<T>(System.ReadOnlySpan<T> coded, System.Span<T> tx) { }
         public static System.ReadOnlySpan<int> Permutation(int count) { }
     }
+    public sealed class LinkAdaptation
+    {
+        public const int Caution = 2;
+        public const double CoarseDb = 3D;
+        public const double DropDb = 2D;
+        public const double ForgetSeconds = 600D;
+        public const double FreshSeconds = 30D;
+        public const double MarginDown = 0.01D;
+        public const double MarginMax = 12D;
+        public const double MarginStart = 3D;
+        public const double MarginUp = 0.5D;
+        public const int Settling = 3;
+        public const double Weight = 0.5D;
+        public LinkAdaptation(int number) { }
+        public int Number { get; }
+        public M0LTE.OfdmFm.LinkChoice Choose(int dest, double now) { }
+        public M0LTE.OfdmFm.LinkReport? HeardData(int sender, int dest, int heardFormat, bool decoded, System.ReadOnlySpan<double> quality, double now, double? footingDb = default, bool sudden = false, M0LTE.OfdmFm.LinkReport? theirReport = default, int? capability = default) { }
+        public void HeardReport(int sender, int? recommended, bool failed, double now) { }
+        public void NoAnswer(int dest) { }
+        public int? ReportFor(int dest) { }
+        public void Sent(int dest) { }
+        public bool TryGetNeighbour(int who, out M0LTE.OfdmFm.LinkNeighbour? neighbour) { }
+        public static double Footing(int number, bool opening = false) { }
+    }
+    public readonly struct LinkChoice : System.IEquatable<M0LTE.OfdmFm.LinkChoice>
+    {
+        public LinkChoice(int Format, bool ReportWanted) { }
+        public int Format { get; init; }
+        public bool ReportWanted { get; init; }
+    }
+    public sealed class LinkNeighbour
+    {
+        public int? Cap { get; }
+        public int? Capability { get; }
+        public System.ReadOnlySpan<double> EstimateDb { get; }
+        public int Good { get; }
+        public double? LastHeard { get; }
+        public double Margin { get; }
+        public double? MeasuredAt { get; }
+        public int Measures { get; }
+        public int? Pending { get; }
+        public int? Recommended { get; }
+        public int? ReportFormat { get; }
+        public double? ReportTime { get; }
+        public int Silences { get; }
+        public int? Told { get; }
+        public int Unanswered { get; }
+    }
+    public readonly struct LinkReport : System.IEquatable<M0LTE.OfdmFm.LinkReport>
+    {
+        public LinkReport(int? Format, bool Failed) { }
+        public bool Failed { get; init; }
+        public int? Format { get; init; }
+    }
     public static class PayloadCodec
     {
         public const int CheckBits = 32;
@@ -167,7 +221,9 @@ namespace M0LTE.OfdmFm
         public const int Rungs = 32;
         public static M0LTE.OfdmFm.FormatSpec Describe(int number) { }
         public static int InfoBits(int number, int payloadSymbols) { }
+        public static double MarginDb(int number, System.ReadOnlySpan<double> quality, double heardDriveDb = 0) { }
         public static double Rate(int number) { }
+        public static int Recommend(System.ReadOnlySpan<double> quality, double marginDb, double heardDriveDb = 0, int? noFasterThan = default) { }
         public static int Slower(int number, int rungs) { }
     }
     public sealed class TrackedReceiver

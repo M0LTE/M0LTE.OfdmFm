@@ -120,8 +120,8 @@ public sealed class BurstRenderer
 
     /// <summary>
     /// Renders a data burst. The header names the format, the length in payload symbols, sender, destination and burst
-    /// number; <paramref name="payload"/> is the packed payload (see <see cref="PayloadCodec.Pack"/>), at most
-    /// <see cref="PayloadCodec.Capacity"/> bytes. The drive is the format's.
+    /// number; <paramref name="payload"/> is the packed payload (see <see cref="PayloadCodec.Pack(PayloadPrelude?, ReadOnlySpan{ReadOnlyMemory{byte}}, Span{byte})"/>), at most
+    /// <see cref="PayloadCodec.Capacity(int, int)"/> bytes. The drive is the format's.
     /// </summary>
     /// <returns>The samples written: <see cref="SamplesFor"/>.</returns>
     public int RenderData(in BurstHeader header, ReadOnlySpan<byte> payload, Span<float> samples)

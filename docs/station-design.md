@@ -1,6 +1,6 @@
 # The live station: the design
 
-Status: a design, approved by Tom on 2026-11-26 (see Decided); nothing built yet. Every name marked "proposed" is a suggestion, not an existing API. It designs what this library lacks: something that takes received audio as it arrives, finds and decodes bursts, decides when the channel is free, decides what to send and when, and talks to a host program. The protocol is [adaptation-protocol.md](adaptation-protocol.md). The operations and events follow the [host interface](https://github.com/packet-net/pdn-soundmodem/blob/main/docs/dev/ofdm-fm/host-interface.md) in packet-net/pdn-soundmodem.
+Status: a design, approved by Tom on 2026-11-26 (see Decided); step 1 of K is built (the clock, timers and transmit handshake in `Station`), the rest is not. Every name marked "proposed" is a suggestion, not an existing API. It designs what this library lacks: something that takes received audio as it arrives, finds and decodes bursts, decides when the channel is free, decides what to send and when, and talks to a host program. The protocol is [adaptation-protocol.md](adaptation-protocol.md). The operations and events follow the [host interface](https://github.com/packet-net/pdn-soundmodem/blob/main/docs/dev/ofdm-fm/host-interface.md) in packet-net/pdn-soundmodem.
 
 ## A. One clock: the receive stream's sample count
 

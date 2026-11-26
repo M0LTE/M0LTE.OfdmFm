@@ -29,7 +29,7 @@ public sealed class TrackedReceiver
     internal const int LeastSymbolPasses = 3;
 
     /// <summary>The most rounds of the fine track.</summary>
-    internal const int MaxFinePasses = 3;
+    internal const int MaxFinePasses = 2;
 
     private const int Carriers = BurstRenderer.Carriers;
     private const int SymbolSamples = BurstRenderer.SymbolSamples;

@@ -308,7 +308,7 @@ public sealed partial class Station
     }
 
     /// <summary>
-    /// Runs one job if one is waiting and returns true; false if none was. A header read is taken before a burst's receive, since a read is short and the pause of the threshold estimate waits on it; receives go oldest first.
+    /// Runs one job if one is waiting and returns true; false if none was. A header read is taken before a burst's receive, since a read is short and the pause of the threshold estimate waits on it; receives go oldest first. It cannot interrupt a receive already running, so a host should run at least two workers: with one, a header read waits behind a receive that can take seconds.
     /// Safe to call from any number of threads at the same time, the audio thread's included between its own calls. The thread uses a pair of receivers of its own (made the first time, and kept), so a call can take a good part of the
     /// burst's own length on a slow processor. It raises no event and calls nothing outside the library; its result is applied by the audio thread (see <see cref="DeliverResults"/>).
     /// </summary>

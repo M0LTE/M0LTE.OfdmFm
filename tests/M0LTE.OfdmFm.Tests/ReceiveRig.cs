@@ -259,6 +259,13 @@ internal sealed class ReceiveRig : IDisposable
                 return;
             }
 
+            // A header read waits for a worker that is not holding a receive: with every worker parked, let them go.
+            if (_park && Volatile.Read(ref _parked) >= _workers)
+            {
+                ReleaseParked(_order);
+                continue;
+            }
+
             if (!_changed.Wait(Safety))
             {
                 throw new TimeoutException("A header read did not finish.");

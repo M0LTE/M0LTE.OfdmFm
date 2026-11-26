@@ -103,6 +103,13 @@ internal sealed class SimNode
     internal bool Transmitting;
     internal int Carriers;
     internal Filter? ReceiveFilter;
+    internal Random? CaptureRandom;
+
+    /// <summary>Set to keep everything this station's receiver is given in <see cref="Input"/> (for a test that wants to look at the audio itself).</summary>
+    public bool RecordInput { get; set; }
+
+    /// <summary>The audio the receiver was given, from the clock at which <see cref="RecordInput"/> was set.</summary>
+    public List<float> Input { get; } = [];
 }
 
 /// <summary>A datagram a station received.</summary>
@@ -130,6 +137,56 @@ internal sealed class Incoming
 {
     public long Start;
     public float[] Data = [];
+
+    /// <summary>The signal's level at each sample as the receiver sees it (the trailing root mean square over <see cref="CaptureModel.LevelWindowSamples"/>), made only when the channel has a capture model.</summary>
+    public float[]? Level;
+}
+
+/// <summary>
+/// What an FM receiver does when two or more signals overlap (step 8). NOTHING HERE HAS BEEN MEASURED ON A RADIO: every number is an assumption, there so that the station's logic can be run against something that behaves like FM
+/// and not like an adder (packet-net/pdn-soundmodem#835 is where it will be measured). The model is per receiver and per instant, from the received levels (each signal's root mean square over the last <see cref="LevelWindowSamples"/>,
+/// after the path's gain). Silence is not a signal: a burst's lead-in does not capture anything.
+/// <list type="bullet">
+/// <item>The strongest signal is compared with the power sum of the others. When it is stronger by at least <see cref="MarginDb"/>, the receiver's audio is that signal's audio, and the others are reduced to noise
+/// whose level, relative to their own level at the receiver, is <c>-(SuppressionBaseDb + SuppressionSlope * (difference - MarginDb))</c> dB: at the margin the others are 10 dB down (the defaults), and each further dB of difference takes
+/// another dB off them. The noise is white and Gaussian, from a stream seeded per receiver.</item>
+/// <item>When the difference is less than the margin, the audio is unusable: Gaussian noise at the level of all the signals together.</item>
+/// </list>
+/// The receiver's own noise (<see cref="SimLink.NoiseRms"/>) is added after, as before. With no model the channel is the adder of steps 5 to 7.
+/// </summary>
+/// <param name="MarginDb">The capture margin: how much stronger the strongest must be for the receiver to be captured by it. Assumed 3 dB.</param>
+/// <param name="SuppressionBaseDb">How far the weaker signals are reduced at exactly the margin. Assumed 10 dB.</param>
+/// <param name="SuppressionSlope">Further dB of reduction for each dB of difference above the margin. Assumed 1.</param>
+internal sealed record CaptureModel(double MarginDb = 3.0, double SuppressionBaseDb = 10.0, double SuppressionSlope = 1.0)
+{
+    /// <summary>The window of the level estimate, samples (20 ms: under half an OFDM symbol, long enough that a signal's own amplitude swings do not flip the decision).</summary>
+    public const int LevelWindowSamples = 960;
+
+    /// <summary>A signal below this level (linear, after the path) is silence and takes no part.</summary>
+    public const double ActiveFloor = 1e-5;
+
+    /// <summary>The linear factor the weaker signals are multiplied by, for a strongest-to-others difference of <paramref name="differenceDb"/> at or above the margin.</summary>
+    public double Residual(double differenceDb) => Math.Pow(10, -(SuppressionBaseDb + (SuppressionSlope * (differenceDb - MarginDb))) / 20);
+
+    /// <summary>The levels of a signal: the trailing root mean square of <paramref name="data"/> over the window.</summary>
+    public static float[] Levels(float[] data)
+    {
+        var level = new float[data.Length];
+        double sum = 0;
+        for (int i = 0; i < data.Length; i++)
+        {
+            sum += (double)data[i] * data[i];
+            if (i >= LevelWindowSamples)
+            {
+                sum -= (double)data[i - LevelWindowSamples] * data[i - LevelWindowSamples];
+            }
+
+            int n = Math.Min(i + 1, LevelWindowSamples);
+            level[i] = (float)Math.Sqrt(Math.Max(0, sum) / n);
+        }
+
+        return level;
+    }
 }
 
 /// <summary>What one direction of a pair does to the audio. A new link carries nothing: set <see cref="Gain"/>.</summary>
@@ -263,6 +320,21 @@ internal sealed class SimChannel
     /// <summary>The clock every station is at, samples.</summary>
     public long Clock { get; private set; }
 
+    /// <summary>What a receiver does when signals overlap. Null (the default): they add, as in steps 5 to 7. Set before <see cref="Run"/>.</summary>
+    public CaptureModel? Capture { get; set; }
+
+    /// <summary>Raised when a station's burst goes on air (after the station was told), with the clock at the start. A test uses it to put something on the channel relative to a burst.</summary>
+    public event Action<SimNode, SimTransmission>? TransmissionStarted;
+
+    /// <summary>Runs <paramref name="action"/> when the clock reaches <paramref name="time"/>, in order with the channel's own actions (a transmission start, a carrier indication).</summary>
+    public void ScheduleAt(long time, Action action) => Schedule(time, action);
+
+    /// <summary>
+    /// Puts <paramref name="samples"/> on the air from <paramref name="from"/>'s antenna at <paramref name="startAt"/> without the station's knowledge (the station is not told and does not mute): another station keying, or
+    /// whatever else is on the channel. It is heard where <paramref name="from"/>'s links reach and raises the receivers' carrier indications there. Its rolling noise and mixing are those of any transmission.
+    /// </summary>
+    public void Interfere(SimNode from, float[] samples, long startAt) => Schedule(startAt, () => Radiate(from, samples, Clock, 0));
+
     /// <summary>The stations, in the order added.</summary>
     public IReadOnlyList<SimNode> Nodes => _nodes;
 
@@ -373,18 +445,28 @@ internal sealed class SimChannel
         block.Clear();
         long from = Clock;
         long to = Clock + count;
+        if (Capture is { } capture && n.Heard.Count >= 2)
+        {
+            n.CaptureRandom ??= new Random(unchecked((_seed * 104729) + (n.Index * 7907) + 11));
+            MixWithCapture(n, block, from, to, capture);
+        }
+        else
+        {
+            for (int i = n.Heard.Count - 1; i >= 0; i--)
+            {
+                Incoming h = n.Heard[i];
+                long a = Math.Max(h.Start, from);
+                long b = Math.Min(h.Start + h.Data.Length, to);
+                for (long k = a; k < b; k++)
+                {
+                    block[(int)(k - from)] += h.Data[(int)(k - h.Start)];
+                }
+            }
+        }
+
         for (int i = n.Heard.Count - 1; i >= 0; i--)
         {
-            Incoming h = n.Heard[i];
-            long end = h.Start + h.Data.Length;
-            long a = Math.Max(h.Start, from);
-            long b = Math.Min(end, to);
-            for (long k = a; k < b; k++)
-            {
-                block[(int)(k - from)] += h.Data[(int)(k - h.Start)];
-            }
-
-            if (end <= to)
+            if (n.Heard[i].Start + n.Heard[i].Data.Length <= to)
             {
                 n.Heard.RemoveAt(i);
             }
@@ -413,8 +495,76 @@ internal sealed class SimChannel
             }
         }
 
+        if (n.RecordInput)
+        {
+            n.Input.AddRange(block.ToArray());
+        }
+
         n.Station.Push(block);
     }
+
+    /// <summary>
+    /// The audio a receiver hears over <paramref name="from"/> to <paramref name="to"/> when signals may overlap (see <see cref="CaptureModel"/>). A sample where one signal or none is above the floor is the sum, as before;
+    /// where two or more are, the strongest is compared with the power sum of the rest.
+    /// </summary>
+    internal static void MixWithCapture(SimNode n, Span<float> block, long from, long to, CaptureModel capture)
+    {
+        List<Incoming> heard = n.Heard;
+        Random rng = n.CaptureRandom!;
+        for (long k = from; k < to; k++)
+        {
+            int active = 0;
+            int strongest = -1;
+            double strongestLevel = 0;
+            double power = 0;
+            double sum = 0;
+            for (int i = 0; i < heard.Count; i++)
+            {
+                Incoming h = heard[i];
+                long idx = k - h.Start;
+                if (idx < 0 || idx >= h.Data.Length)
+                {
+                    continue;
+                }
+
+                sum += h.Data[(int)idx];
+                double level = h.Level![(int)idx];
+                if (level < CaptureModel.ActiveFloor)
+                {
+                    continue;
+                }
+
+                active++;
+                power += level * level;
+                if (level > strongestLevel)
+                {
+                    strongestLevel = level;
+                    strongest = i;
+                }
+            }
+
+            if (active < 2)
+            {
+                block[(int)(k - from)] = (float)sum;
+                continue;
+            }
+
+            double others = power - (strongestLevel * strongestLevel);
+            double difference = 20 * Math.Log10(strongestLevel / Math.Sqrt(others));
+            double noise = Gauss(rng);
+            if (difference >= capture.MarginDb)
+            {
+                Incoming s = heard[strongest];
+                block[(int)(k - from)] = (float)(s.Data[(int)(k - s.Start)] + (noise * Math.Sqrt(others) * capture.Residual(difference)));
+            }
+            else
+            {
+                block[(int)(k - from)] = (float)(noise * Math.Sqrt(power));
+            }
+        }
+    }
+
+    private static double Gauss(Random rng) => Math.Sqrt(-2 * Math.Log(1 - rng.NextDouble())) * Math.Cos(2 * Math.PI * rng.NextDouble());
 
     /// <summary>
     /// At the clock: runs what is due (timers, results), answers the stations' requests and withdrawals, and runs the sim's own actions due now, until nothing more happens at this sample.
@@ -519,7 +669,24 @@ internal sealed class SimChannel
         tx.AsSpan(0, swallowed).Clear();
         long start = Clock;
         int length = tx.Length;
-        n.Transmissions.Add(new SimTransmission(plan.Id, start, length));
+        var record = new SimTransmission(plan.Id, start, length);
+        n.Transmissions.Add(record);
+        Radiate(n, tx, start, swallowed);
+        TransmissionStarted?.Invoke(n, record);
+
+        Schedule(start + length, () =>
+        {
+            n.Station.TransmitEnded(plan.Id, Clock);
+            n.Transmitting = false;
+            n.DeafUntil = Math.Max(n.DeafUntil, Clock + n.DeafSamples);
+            n.Plans.Remove(plan.Id);
+        });
+    }
+
+    /// <summary>Sends <paramref name="tx"/> (already filtered and cut for key-up) to every receiver the antenna reaches.</summary>
+    private void Radiate(SimNode n, float[] tx, long start, int swallowed)
+    {
+        int length = tx.Length;
         foreach (SimNode rx in _nodes)
         {
             if (rx == n || !_links.TryGetValue((n.Index, rx.Index), out SimLink? link) || link.Gain == 0)
@@ -529,7 +696,7 @@ internal sealed class SimChannel
 
             float[] heard = Resample(tx, link.Ppm, link.Gain);
             long at = start + link.DelaySamples;
-            rx.Heard.Add(new Incoming { Start = at, Data = heard });
+            rx.Heard.Add(new Incoming { Start = at, Data = heard, Level = Capture is null ? null : CaptureModel.Levels(heard) });
             if (rx.CarrierDelaySamples is { } delay && link.CarrierHeard)
             {
                 SimNode r = rx;
@@ -537,14 +704,6 @@ internal sealed class SimChannel
                 Schedule(at + length + delay, () => Carrier(r, -1));
             }
         }
-
-        Schedule(start + length, () =>
-        {
-            n.Station.TransmitEnded(plan.Id, Clock);
-            n.Transmitting = false;
-            n.DeafUntil = Math.Max(n.DeafUntil, Clock + n.DeafSamples);
-            n.Plans.Remove(plan.Id);
-        });
     }
 
     private void Carrier(SimNode rx, int change)

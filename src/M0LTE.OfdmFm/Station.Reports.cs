@@ -131,8 +131,17 @@ public sealed partial class Station
     /// A burst addressed to this station has been judged. <paramref name="owed"/> is what the rules returned (a report "failed" or "drop"); <paramref name="asked"/> is true when the burst decoded and its prelude said "report wanted".
     /// A newer report owed replaces an unsent older one for the same station; a requested report is owed only if nothing else is.
     /// </summary>
-    private void NoteVerdict(int sender, long burstEnd, LinkReport? owed, bool asked)
+    private void NoteVerdict(int sender, long burstEnd, LinkReport? owed, bool asked, bool decoded)
     {
+        if (decoded && owed is null && _owedSlots[sender] is { Active: true, Kind: OwedKind.Failed })
+        {
+            // The failed bit says "your last burst reached me and I could not decode it". A later burst from the same station has now decoded, so the last one did not fail: the report that goes is the recommendation alone, as a drop is.
+            // Sent as failed, the sender's hint would name the burst that arrived and not the one that did not.
+            _owedSlots[sender].Kind = OwedKind.Drop;
+            _owedFailed--;
+            _owedDrop++;
+        }
+
         if (owed is { } report)
         {
             if (report.Format is null)
@@ -158,7 +167,26 @@ public sealed partial class Station
             return;
         }
 
-        EnsureReportRequest();
+        RequestReportCheck();
+    }
+
+    private bool _applyingResults;
+    private bool _reportCheckDeferred;
+
+    /// <summary>
+    /// A verdict has owed something. While results are being applied the request with the channel-access rules waits until all of them are: a channel that is clear grants it at once, the report would be built before the verdict of a later burst
+    /// from the same station, and could not take that burst into account (a failed report about an older burst, sent when a newer one had decoded).
+    /// </summary>
+    private void RequestReportCheck()
+    {
+        if (_applyingResults)
+        {
+            _reportCheckDeferred = true;
+        }
+        else
+        {
+            EnsureReportRequest();
+        }
     }
 
     private void Put(int who, OwedKind kind, int? format, long burstEnd, long due)

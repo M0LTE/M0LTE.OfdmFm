@@ -2,13 +2,13 @@ using M0LTE.OfdmFm;
 
 namespace M0LTE.OfdmFm.Tests;
 
-/// <summary>Several inline stations, numbered 1 up and named "S1", "S2" and so on, on one <see cref="SimChannel"/>, each bound to every other, all pairs connected.</summary>
+/// <summary>Several inline stations, numbered 1 up and named "S1", "S2" and so on, on one <see cref="SimChannel"/>, each bound to every other (or as <c>binds</c> says: station i binds station j when it returns true), all pairs connected.</summary>
 internal sealed class SimRig
 {
     /// <summary>The first-contact format's rate, bit/s.</summary>
     public static readonly double FirstContactRate = StandardFormats.Rate(StandardFormats.FirstContact) * 1000.0;
 
-    public SimRig(int stations, int block = 4800, int seed = 1, double noise = 0.004, double gain = 1.0, bool connect = true)
+    public SimRig(int stations, int block = 4800, int seed = 1, double noise = 0.004, double gain = 1.0, bool connect = true, Func<int, int, bool>? binds = null)
     {
         Channel = new SimChannel(block, seed);
         for (int i = 1; i <= stations; i++)
@@ -23,7 +23,7 @@ internal sealed class SimRig
         {
             for (int j = 1; j <= stations; j++)
             {
-                if (i != j)
+                if (i != j && (binds?.Invoke(i, j) ?? true))
                 {
                     Stations[i - 1].Bind(Name(j), j);
                 }

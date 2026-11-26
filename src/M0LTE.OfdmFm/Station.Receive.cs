@@ -980,6 +980,47 @@ public sealed partial class Station
         }
 
         long floor = _detector.CandidateFloor;
+        _applyingResults = true;
+        try
+        {
+            ApplyBursts(floor);
+        }
+        finally
+        {
+            _applyingResults = false;
+        }
+
+        if (_reportCheckDeferred)
+        {
+            _reportCheckDeferred = false;
+            EnsureReportRequest();
+        }
+
+        // With nothing earlier to come, a neighbour can be seen to have gone quiet for good.
+        long safe = floor;
+        if (_bursts.Count > 0)
+        {
+            safe = Math.Min(safe, _bursts[0].Start);
+        }
+
+        foreach (Candidate c in _candidates)
+        {
+            safe = Math.Min(safe, c.Index);
+        }
+
+        lock (_gate)
+        {
+            if (_headerPhase != HeaderPhase.Idle)
+            {
+                safe = Math.Min(safe, _headerCandidate.Index);
+            }
+        }
+
+        CheckGone(ClockSeconds(Math.Min(safe, SampleCount)));
+    }
+
+    private void ApplyBursts(long floor)
+    {
         while (_bursts.Count > 0)
         {
             BurstRecord r = _bursts[0];
@@ -1018,28 +1059,6 @@ public sealed partial class Station
 
             _freeRecords.Push(r);
         }
-
-        // With nothing earlier to come, a neighbour can be seen to have gone quiet for good.
-        long safe = floor;
-        if (_bursts.Count > 0)
-        {
-            safe = Math.Min(safe, _bursts[0].Start);
-        }
-
-        foreach (Candidate c in _candidates)
-        {
-            safe = Math.Min(safe, c.Index);
-        }
-
-        lock (_gate)
-        {
-            if (_headerPhase != HeaderPhase.Idle)
-            {
-                safe = Math.Min(safe, _headerCandidate.Index);
-            }
-        }
-
-        CheckGone(ClockSeconds(Math.Min(safe, SampleCount)));
     }
 
     private void ApplyData(BurstRecord r)
@@ -1089,7 +1108,7 @@ public sealed partial class Station
 
         if (mine)
         {
-            NoteVerdict(sender, r.End, owed, decoded && unpacked && prelude.Wanted);
+            NoteVerdict(sender, r.End, owed, decoded && unpacked && prelude.Wanted, decoded);
         }
 
         RaiseLinkState(sender, now);

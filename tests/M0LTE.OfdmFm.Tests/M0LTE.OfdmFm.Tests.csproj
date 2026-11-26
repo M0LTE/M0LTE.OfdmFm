@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Vectors the prototype generated for the link codecs, the payload code and the receivers. -->
+    <None Include="Vectors/*.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Vectors/*.bin.gz" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/M0LTE.OfdmFm/M0LTE.OfdmFm.csproj" />
+  </ItemGroup>
+
+</Project>

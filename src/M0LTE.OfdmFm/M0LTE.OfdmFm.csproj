@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>M0LTE.OfdmFm</PackageId>
+    <Title>M0LTE.OfdmFm</Title>
+    <Description>An adaptive OFDM modem for the audio path of an FM radio, for .NET. Every burst carries a header naming its own format, so a receiver needs no setting to decode it. 256 standard formats run from 0.25 to about 70 kbit/s on a 25 kHz FM channel, and stations tell each other over the air what rate the path supports. Burst renderer, burst finder, header reader, payload receiver with clock tracking, header and payload codecs. The transmit side and the receive arithmetic are complete and pinned to a prototype by test vectors; there is no live streaming receiver yet. Extracted from the pdn-soundmodem packet-radio modem.</Description>
+    <PackageTags>ofdm;fm;modem;ldpc;adaptive;amateur-radio;ham-radio;packet-radio</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The tables are read by name at run time (Assembly.GetManifestResourceStream). -->
+    <EmbeddedResource Include="Tables/link-ldpc-protograph.txt" LogicalName="link-ldpc-protograph.txt" />
+    <EmbeddedResource Include="Tables/link-ldpc-shifts.txt" LogicalName="link-ldpc-shifts.txt" />
+    <EmbeddedResource Include="Tables/header-ldpc-bg2-set4.txt" LogicalName="header-ldpc-bg2-set4.txt" />
+    <EmbeddedResource Include="Tables/link-training.txt" LogicalName="link-training.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="M0LTE.OfdmFm.Tests" />
+  </ItemGroup>
+
+</Project>

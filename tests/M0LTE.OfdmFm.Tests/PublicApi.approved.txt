@@ -1,0 +1,186 @@
+namespace M0LTE.OfdmFm
+{
+    public readonly struct BurstCandidate : System.IEquatable<M0LTE.OfdmFm.BurstCandidate>
+    {
+        public BurstCandidate(int Index, double Peak) { }
+        public int Index { get; init; }
+        public double Peak { get; init; }
+    }
+    public static class BurstFinder
+    {
+        public const double DefaultFactor = 7D;
+        public const double DefaultLeast = 0.1D;
+        public static System.Collections.Generic.List<M0LTE.OfdmFm.BurstCandidate> Find(System.ReadOnlySpan<float> capture, M0LTE.OfdmFm.FormatOpening opening) { }
+        public static System.Collections.Generic.List<M0LTE.OfdmFm.BurstCandidate> Find(System.ReadOnlySpan<float> capture, M0LTE.OfdmFm.FormatOpening opening, out double threshold, double? fixedThreshold = default, double factor = 7, double least = 0.1) { }
+        public static int ReferenceLength(M0LTE.OfdmFm.FormatOpening opening) { }
+        public static int TrainingSymbolCount(M0LTE.OfdmFm.FormatOpening opening) { }
+    }
+    public readonly struct BurstHeader : System.IEquatable<M0LTE.OfdmFm.BurstHeader>
+    {
+        public BurstHeader(int Version, M0LTE.OfdmFm.BurstKind Kind, int Sender, int Destination, int Format, int PayloadSymbols, int BurstNumber) { }
+        public int BurstNumber { get; init; }
+        public int Destination { get; init; }
+        public bool Failed { get; }
+        public int Format { get; init; }
+        public bool IsKnownVersion { get; }
+        public M0LTE.OfdmFm.BurstKind Kind { get; init; }
+        public int PayloadSymbols { get; init; }
+        public int RecommendedFormat { get; }
+        public int Sender { get; init; }
+        public int Version { get; init; }
+        public static M0LTE.OfdmFm.BurstHeader Data(int sender, int destination, int format, int payloadSymbols, int burstNumber) { }
+        public static M0LTE.OfdmFm.BurstHeader Report(int sender, int destination, int recommendedFormat, bool failed) { }
+    }
+    public static class BurstHeaderCodec
+    {
+        public const int HeaderBits = 51;
+        public static bool TryRead(System.ReadOnlySpan<byte> bits, out M0LTE.OfdmFm.BurstHeader header) { }
+        public static void Write(in M0LTE.OfdmFm.BurstHeader header, System.Span<byte> bits) { }
+    }
+    public enum BurstKind
+    {
+        Data = 0,
+        Report = 1,
+        Identification = 2,
+    }
+    public sealed class BurstRenderer
+    {
+        public const int Carriers = 333;
+        public const int DefaultLeadSamples = 4224;
+        public const int SampleRate = 48000;
+        public const int SymbolSamples = 2112;
+        public BurstRenderer(int leadSamples = 4224) { }
+        public int LeadSamples { get; }
+        public int LimitedSamples { get; }
+        public int RenderData(in M0LTE.OfdmFm.BurstHeader header, System.ReadOnlySpan<byte> payload, System.Span<float> samples) { }
+        public int RenderReport(in M0LTE.OfdmFm.BurstHeader report, M0LTE.OfdmFm.FormatOpening opening, double driveDb, System.Span<float> samples) { }
+        public int ReportSamples(M0LTE.OfdmFm.FormatOpening opening) { }
+        public int SamplesFor(int format, int payloadSymbols) { }
+    }
+    public sealed class Constellation
+    {
+        public int Bits { get; }
+        public double HalfDistance { get; }
+        public void Map(System.ReadOnlySpan<byte> bits, System.Span<double> re, System.Span<double> im) { }
+        public void Point(int pattern, out double re, out double im) { }
+        public static M0LTE.OfdmFm.Constellation For(int bitsPerCarrier) { }
+        public static bool IsSupported(int bitsPerCarrier) { }
+        public static int MapSymbol(System.ReadOnlySpan<byte> bits, System.ReadOnlySpan<byte> loading, System.Span<double> re, System.Span<double> im) { }
+    }
+    public ref struct DatagramReader
+    {
+        public bool TryNext(out System.ReadOnlySpan<byte> datagram) { }
+    }
+    public static class Demapper
+    {
+        public static int BitsPerSymbol(System.ReadOnlySpan<byte> loading) { }
+        public static int DemapPayload(System.ReadOnlySpan<double> re, System.ReadOnlySpan<double> im, System.ReadOnlySpan<double> noiseVariance, System.ReadOnlySpan<byte> loading, int symbols, System.Span<float> llr) { }
+        public static int DemapSymbol(System.ReadOnlySpan<double> re, System.ReadOnlySpan<double> im, System.ReadOnlySpan<double> noiseVariance, System.ReadOnlySpan<byte> loading, System.Span<double> llr) { }
+        public static int DemapSymbol(System.ReadOnlySpan<double> re, System.ReadOnlySpan<double> im, System.ReadOnlySpan<double> noiseVariance, System.ReadOnlySpan<byte> loading, System.Span<float> llr) { }
+    }
+    public enum FormatOpening
+    {
+        Full = 0,
+        UpTo3000Hz = 1,
+        UpTo1500Hz = 2,
+    }
+    public readonly struct FormatSpec
+    {
+        public int Band { get; }
+        public int Carriers { get; }
+        public double CodeRate { get; }
+        public int ConstellationBits { get; }
+        public double DriveDb { get; }
+        public double InfoBitsPerCarrier { get; }
+        public double KbitPerSecond { get; }
+        public int Number { get; }
+        public M0LTE.OfdmFm.FormatOpening Opening { get; }
+        public int Rung { get; }
+        public double TopHz { get; }
+    }
+    public sealed class HeaderReader
+    {
+        public HeaderReader() { }
+        public System.ReadOnlySpan<byte> Bits { get; }
+        public bool Converged { get; }
+        public bool HasResult { get; }
+        public M0LTE.OfdmFm.FormatOpening Opening { get; }
+        public bool TryRead(System.ReadOnlySpan<float> capture, int start, M0LTE.OfdmFm.FormatOpening opening, out M0LTE.OfdmFm.BurstHeader header) { }
+        public static int HeaderSymbolCount(M0LTE.OfdmFm.FormatOpening opening) { }
+        public static int OpeningCarriers(M0LTE.OfdmFm.FormatOpening opening) { }
+        public static int OpeningSamples(M0LTE.OfdmFm.FormatOpening opening) { }
+        public static int TrainingSymbolCount(M0LTE.OfdmFm.FormatOpening opening) { }
+    }
+    public static class Interleaver
+    {
+        public static void Deinterleave<T>(System.ReadOnlySpan<T> tx, System.Span<T> coded) { }
+        public static void Interleave<T>(System.ReadOnlySpan<T> coded, System.Span<T> tx) { }
+        public static System.ReadOnlySpan<int> Permutation(int count) { }
+    }
+    public static class PayloadCodec
+    {
+        public const int CheckBits = 32;
+        public static int Capacity(int format, int payloadSymbols) { }
+        public static void Encode(System.ReadOnlySpan<byte> payload, int infoBits, int sender, int destination, int burstNumber, System.Span<byte> bits) { }
+        public static int Pack(M0LTE.OfdmFm.PayloadPrelude? prelude, System.ReadOnlySpan<System.ReadOnlyMemory<byte>> datagrams, System.Span<byte> destination) { }
+        public static int? SymbolsFor(int format, int loadBytes) { }
+        public static bool TryDecode(System.ReadOnlySpan<byte> bits, int sender, int destination, int burstNumber, System.Span<byte> payload, out int length) { }
+        public static bool TryUnpack(System.ReadOnlySpan<byte> payload, bool toEveryone, out M0LTE.OfdmFm.PayloadPrelude prelude, out M0LTE.OfdmFm.DatagramReader datagrams) { }
+    }
+    public readonly struct PayloadPrelude : System.IEquatable<M0LTE.OfdmFm.PayloadPrelude>
+    {
+        public PayloadPrelude(bool Wanted, int? Recommended, bool Failed, int? Capability) { }
+        public int? Capability { get; init; }
+        public bool Failed { get; init; }
+        public int? Recommended { get; init; }
+        public bool Wanted { get; init; }
+    }
+    public readonly struct PayloadReceiveResult
+    {
+        public bool Accepted { get; }
+        public bool AllBlocksSatisfied { get; }
+        public bool CheckPassed { get; }
+        public int GuardedCarriers { get; }
+        public int PayloadBytes { get; }
+    }
+    public sealed class PayloadReceiver
+    {
+        public PayloadReceiver() { }
+        public int GuardedCarriers { get; }
+        public bool HasResult { get; }
+        public int KnownSymbols { get; }
+        public System.ReadOnlySpan<double> Quality { get; }
+        public bool Sudden { get; }
+        public bool MeasureOpening(System.ReadOnlySpan<float> capture, int start, in M0LTE.OfdmFm.BurstHeader header, System.ReadOnlySpan<byte> headerBits, System.Span<double> quality) { }
+        public bool MeasureOpening(System.ReadOnlySpan<float> capture, int start, M0LTE.OfdmFm.FormatOpening opening, double driveDb, System.ReadOnlySpan<byte> headerBits, System.Span<double> quality) { }
+        public M0LTE.OfdmFm.PayloadReceiveResult Receive(System.ReadOnlySpan<float> capture, int start, in M0LTE.OfdmFm.BurstHeader header, System.ReadOnlySpan<byte> headerBits, System.Span<byte> payload) { }
+        public static int PayloadRoom(in M0LTE.OfdmFm.BurstHeader header) { }
+        public static int SamplesNeeded(in M0LTE.OfdmFm.BurstHeader header) { }
+    }
+    public static class StandardFormats
+    {
+        public const int Count = 256;
+        public const int FirstContact = 192;
+        public const int FullBandCarriers = 333;
+        public const int MaxSymbols = 252;
+        public const int MostRobust = 192;
+        public const int Rungs = 32;
+        public static M0LTE.OfdmFm.FormatSpec Describe(int number) { }
+        public static int InfoBits(int number, int payloadSymbols) { }
+        public static double Rate(int number) { }
+        public static int Slower(int number, int rungs) { }
+    }
+    public sealed class TrackedReceiver
+    {
+        public TrackedReceiver() { }
+        public bool FineTrackRan { get; }
+        public int GuardedCarriers { get; }
+        public bool HasResult { get; }
+        public int KnownSymbols { get; }
+        public int Passes { get; }
+        public System.ReadOnlySpan<double> Quality { get; }
+        public bool Sudden { get; }
+        public int SymbolPasses { get; }
+        public M0LTE.OfdmFm.PayloadReceiveResult Receive(System.ReadOnlySpan<float> capture, int start, in M0LTE.OfdmFm.BurstHeader header, System.ReadOnlySpan<byte> headerBits, System.Span<byte> payload) { }
+    }
+}

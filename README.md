@@ -8,7 +8,7 @@ A design draft for the live station, which does not exist yet, is in [docs/stati
 
 ## State
 
-The transmit side, the receive arithmetic and the adaptation rules (what a station remembers, recommends and chooses) are complete, and are pinned to a prototype by test vectors. There is no live streaming receiver yet: the receivers here take a finished capture of a burst, not a continuous audio stream. It has not been published to NuGet.
+The transmit side, the receive arithmetic and the adaptation rules (what a station remembers, recommends and chooses) are complete, and are pinned to a prototype by test vectors. There is no live streaming receiver yet: the receivers here take a finished capture of a burst, not a continuous audio stream. The live `Station` exists as a skeleton (step 1 of the design): a sample clock, timers on it and the transmit handshake with the audio layer, with the host interface's event types declared; it does not yet receive or send. It has not been published to NuGet.
 
 Extracted from [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem); see [PROVENANCE.md](PROVENANCE.md).
 
@@ -20,6 +20,8 @@ Extracted from [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem); s
 | `BurstHeader`, `BurstHeaderCodec`, `StandardFormats` | The header, its 51-bit form, and the format list. |
 | `PayloadCodec` | Packs datagrams into a payload and unpacks them. |
 | `LinkAdaptation`, `StandardFormats.Recommend` | What a station remembers about each station it hears, the format it recommends to each, and the format it chooses to send at; and which format a measured quality supports. A host drives it and passes the time in. |
+| `Station` | The live station, one per radio channel: so far its sample clock, `Push` and `Skip`, and the transmit request handshake with the audio layer. It does not yet receive or send. Not thread-safe. |
+| `StationName`, `HostTag`, `SendPriority`, `*Event` types | The host interface's argument and event types, declared for the station. |
 | `Interleaver`, `Constellation`, `Demapper` | The pieces of the chain, usable on their own. |
 
 ## Build and test

@@ -23,6 +23,12 @@ public sealed partial class Station
     /// <summary>More bursts than this waiting for a worker, and the oldest is dropped.</summary>
     internal const int MaxQueuedBursts = 4;
 
+    /// <summary>
+    /// Candidates kept waiting for a header read. A station whose workers do not run must not grow without bound: past this the oldest are dropped, unread. A strong 11.5 s burst gives about 300,
+    /// nearly all of them ignored unread once its header is in, so a station whose workers keep up never comes near this.
+    /// </summary>
+    internal const int MaxCandidatesWaiting = 256;
+
     /// <summary>Samples before a burst's first one that are copied with it: the receiver's lead-in.</summary>
     internal const int PrePadSamples = BurstRenderer.DefaultLeadSamples;
 
@@ -72,6 +78,7 @@ public sealed partial class Station
 
     private long _candidatesSeen;
     private long _candidatesIgnored;
+    private long _candidatesDropped;
     private long _headerReads;
     private long _headersLost;
     private long _burstsDropped;
@@ -209,6 +216,15 @@ public sealed partial class Station
 
     /// <summary>Candidates dropped without a header read because they lay inside a burst already known.</summary>
     internal long CandidatesIgnored => Volatile.Read(ref _candidatesIgnored);
+
+    /// <summary>How many candidates may wait for a header read: <see cref="MaxCandidatesWaiting"/>, lower for a test.</summary>
+    internal int CandidateLimit { get; set; } = MaxCandidatesWaiting;
+
+    /// <summary>Candidates dropped unread because more than <see cref="MaxCandidatesWaiting"/> were waiting.</summary>
+    internal long CandidatesDropped => Volatile.Read(ref _candidatesDropped);
+
+    /// <summary>Candidates waiting for a header read, and the one being read.</summary>
+    internal int CandidatesWaiting => _candidates.Count;
 
     /// <summary>Header reads begun.</summary>
     internal long HeaderReads => Volatile.Read(ref _headerReads);
@@ -433,6 +449,13 @@ public sealed partial class Station
             }
 
             _candidates[j + 1] = c;
+        }
+
+        if (_candidates.Count > CandidateLimit)
+        {
+            int excess = _candidates.Count - CandidateLimit;
+            _candidates.RemoveRange(0, excess);
+            _candidatesDropped += excess;
         }
 
         // A candidate can come out up to two frames after the start it names, so a burst is remembered for that long past its end.

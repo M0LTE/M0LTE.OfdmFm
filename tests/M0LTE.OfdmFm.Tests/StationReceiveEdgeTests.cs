@@ -204,6 +204,24 @@ public class StationReceiveEdgeTests
     }
 
     [Fact]
+    public void A_Station_Whose_Workers_Never_Run_Does_Not_Grow_Without_Bound()
+    {
+        // The longest burst throws a hundred candidates or more; with no worker to read any of them, the station keeps only the newest it is allowed (here 30, for the test).
+        TestBurst burst = TestBurst.Data(6, 1, 96, [TestBurst.Datagram(8, 100)], symbols: 252);
+        var station = new Station("M0LTE", 1, new Random(1)) { CandidateLimit = 30 };
+        float[] samples = OneBurst(burst, noise: 0.005);
+        for (int at = 0; at < samples.Length; at += 4800)
+        {
+            station.Push(samples.AsSpan(at, Math.Min(4800, samples.Length - at)));
+        }
+
+        station.CandidatesSeen.Should().BeGreaterThan(30);
+        station.CandidatesWaiting.Should().BeLessThanOrEqualTo(30);
+        station.CandidatesDropped.Should().Be(station.CandidatesSeen - station.CandidatesWaiting - 1, "the one in flight is neither waiting nor dropped");
+        station.HasWork.Should().BeTrue("one header read is out, and nobody takes it");
+    }
+
+    [Fact]
     public void The_Estimate_Is_Paused_Over_Each_Burst_Known_From_Its_First_Sample_To_Its_Last()
     {
         (float[] samples, List<Placed> bursts) = MixedStream.Build(8);

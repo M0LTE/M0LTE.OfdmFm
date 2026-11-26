@@ -467,7 +467,7 @@ public class StreamingBurstDetectorTests
 
     private static StrongThenWeak StrongThenWeakScenario()
     {
-        // 40 s of white noise, then a long burst 36 dB over it, then 2 s later a weak report that stands only a little above the noise.
+        // 40 s of white noise, then a long burst about 33 dB over it, then 2 s later a weak report that stands only a little above the noise.
         float[] strong = StrongBurst(out _, out _);
         float[] weak = WeakReport(FormatOpening.Full, out int weakLead);
         int strongAt = 40 * 48000;

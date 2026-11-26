@@ -115,6 +115,45 @@ public static class Demapper
         return written;
     }
 
+    /// <summary>
+    /// As <see cref="DemapPayload"/>, but only the carriers flagged in <paramref name="only"/> (one flag for each carrier, the same in every symbol) are
+    /// demapped: the others' soft values are left as they are in <paramref name="llr"/>, which must already be laid out for the whole payload.
+    /// </summary>
+    internal static void DemapCarriers(ReadOnlySpan<double> re, ReadOnlySpan<double> im, ReadOnlySpan<double> noiseVariance, ReadOnlySpan<byte> loading, int symbols, ReadOnlySpan<bool> only, Span<float> llr)
+    {
+        int carriers = loading.Length;
+        if (symbols < 0 || re.Length != symbols * carriers || im.Length != re.Length || noiseVariance.Length != carriers || only.Length != carriers)
+        {
+            throw new ArgumentException("re and im must hold symbols times carriers values, and noiseVariance and only one per carrier.");
+        }
+
+        Span<double> one = stackalloc double[10];
+        int k = 0;
+        for (int s = 0; s < symbols; s++)
+        {
+            int at = s * carriers;
+            for (int c = 0; c < carriers; c++)
+            {
+                int b = loading[c];
+                if (b == 0)
+                {
+                    continue;
+                }
+
+                if (only[c])
+                {
+                    Carrier(re[at + c], im[at + c], noiseVariance[c], b, one[..b]);
+                    for (int i = 0; i < b; i++)
+                    {
+                        llr[k + i] = (float)one[i];
+                    }
+                }
+
+                k += b;
+            }
+        }
+    }
+
     /// <summary>The bits a symbol on this loading carries.</summary>
     public static int BitsPerSymbol(ReadOnlySpan<byte> loading)
     {
@@ -189,21 +228,37 @@ public static class Demapper
                 }
             }
 
+            // Terms are summed in level order as ever. A term whose exponent is below -746 is exactly 0, and one below -37 (under 8.5e-17)
+            // added to a sum of at least 1 is rounded away, and from the level that holds the maximum on (the term of exactly 1) the sum is at
+            // least 1: those are skipped, everything else is added in the same order, so the sums are the same bit for bit. (NaN fails both tests.)
             double sum0 = 0;
             double sum1 = 0;
+            bool seen0 = false;
+            bool seen1 = false;
             for (int p = 0; p < n; p++)
             {
                 if (((p >> shift) & 1) == 0)
                 {
-                    sum0 += Math.Exp(d[p] - max0);
+                    double e0 = d[p] - max0;
+                    seen0 |= d[p] == max0;
+                    if (!(e0 < -746.0) && !(seen0 && e0 < -37.0))
+                    {
+                        sum0 += Math.Exp(e0);
+                    }
                 }
                 else
                 {
-                    sum1 += Math.Exp(d[p] - max1);
+                    double e1 = d[p] - max1;
+                    seen1 |= d[p] == max1;
+                    if (!(e1 < -746.0) && !(seen1 && e1 < -37.0))
+                    {
+                        sum1 += Math.Exp(e1);
+                    }
                 }
             }
 
-            llr[k] = (max0 + Math.Log(sum0)) - (max1 + Math.Log(sum1));
+            // The log of exactly 1 is exactly 0.
+            llr[k] = (max0 + (sum0 == 1.0 ? 0.0 : Math.Log(sum0))) - (max1 + (sum1 == 1.0 ? 0.0 : Math.Log(sum1)));
         }
     }
 

@@ -163,9 +163,11 @@ public sealed class TrackedReceiver
         for (int p = 0; p < MaxSymbolPasses; p++)
         {
             DelayResampler.Resample(capture, at, length, _times.AsSpan(0, n), _curve.AsSpan(0, n), Lead, _wave);
-            result = _receiver.Receive(_wave.AsSpan(0, length), Lead, header, headerBits, payload);
+
+            // Only the delays decide whether this is the last pass and move the curve; the payload is read once, from the last pass's capture.
+            _receiver.Prepare(_wave.AsSpan(0, length), Lead, header, headerBits, payload.Length);
             passes = p + 1;
-            ReadOnlySpan<double> tau = _receiver.Delays;
+            ReadOnlySpan<double> tau = _receiver.FollowedDelays;
             double largest = 0;
             for (int i = 0; i < n; i++)
             {
@@ -174,6 +176,7 @@ public sealed class TrackedReceiver
 
             if ((p >= LeastSymbolPasses - 1 && largest < Settle) || p == MaxSymbolPasses - 1)
             {
+                result = _receiver.Finish(header, payload);
                 for (int i = 0; i < n; i++)
                 {
                     _curve[i] += tau[i];
@@ -200,10 +203,17 @@ public sealed class TrackedReceiver
         {
             _times.AsSpan(0, n).CopyTo(_knots);
             _curve.AsSpan(0, n).CopyTo(_along);
+            bool waveAlong = false;
             for (int round = 0; round < MaxFinePasses; round++)
             {
                 BuildReference(header, headerBits, spec, n);
-                DelayResampler.Resample(capture, at, length, _knots.AsSpan(0, _knotCount), _along.AsSpan(0, _knotCount), Lead, _wave);
+
+                // After a round that went on, the capture is already resampled along the knots it left.
+                if (!waveAlong)
+                {
+                    DelayResampler.Resample(capture, at, length, _knots.AsSpan(0, _knotCount), _along.AsSpan(0, _knotCount), Lead, _wave);
+                }
+
                 int m = _tracker.Track(_wave.AsSpan(0, length), _reference.AsSpan(0, length), _fineTimes, _fineTau);
                 passes++;
                 if (m == 0)
@@ -232,6 +242,7 @@ public sealed class TrackedReceiver
                 _fineTimes.AsSpan(0, m).CopyTo(_knots);
                 _trial.AsSpan(0, m).CopyTo(_along);
                 _knotCount = m;
+                waveAlong = true;
                 if (ptp < Converged)
                 {
                     break;

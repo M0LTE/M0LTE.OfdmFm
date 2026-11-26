@@ -101,6 +101,7 @@ public sealed class PayloadReceiver
     private readonly double[] _w0 = new double[Carriers];
     private readonly int[] _steady = new int[Carriers];
     private readonly bool[] _isSteady = new bool[Carriers];
+    private readonly bool[] _isHot = new bool[Carriers];
     private readonly double[] _yRe = new double[Carriers];
     private readonly double[] _yIm = new double[Carriers];
     private readonly double[] _ladderMiss = new double[LadderSteps];
@@ -141,6 +142,7 @@ public sealed class PayloadReceiver
     private byte[] _byteScratch = new byte[1024];
 
     private bool _valid;
+    private bool _followed;
     private bool _measuredValid;
     private int _known;
     private int _payloadSymbols;
@@ -205,6 +207,9 @@ public sealed class PayloadReceiver
 
     /// <summary>The delay found for each symbol of the last burst, the opening's first, in seconds: the accumulated delay after that symbol's ladder search and refinements, the next symbol starts from it plus the running drift. A positive value means the symbol's carriers were turned forward by that much to meet the channel.</summary>
     internal ReadOnlySpan<double> Delays => _valid ? _taus.AsSpan(0, _known + _payloadSymbols) : default;
+
+    /// <summary>The delay found for each symbol, as <see cref="Delays"/>, once <see cref="Prepare"/> has run (before <see cref="Finish"/>, and after it).</summary>
+    internal ReadOnlySpan<double> FollowedDelays => _followed ? _taus.AsSpan(0, _known + _payloadSymbols) : default;
 
     /// <summary>Each symbol's mean squared miss from its constellation points (the opening's from the known symbols), in units of the noise expected, over the carriers whose noise rarely moves a point across a boundary: the prototype's <c>follow.last_miss</c>.</summary>
     internal ReadOnlySpan<double> Miss => _valid ? _miss.AsSpan(0, _known + _payloadSymbols) : default;
@@ -273,12 +278,28 @@ public sealed class PayloadReceiver
     /// <exception cref="ArgumentException">The header's bits are fewer than 51, or the payload span is smaller than <see cref="PayloadRoom"/>.</exception>
     public PayloadReceiveResult Receive(ReadOnlySpan<float> capture, int start, in BurstHeader header, ReadOnlySpan<byte> headerBits, Span<byte> payload)
     {
+        if (!Prepare(capture, start, header, headerBits, payload.Length))
+        {
+            return default;
+        }
+
+        return Finish(header, payload);
+    }
+
+    /// <summary>
+    /// The first half of <see cref="Receive"/>: the transform, the channel and the noise from the opening, and each symbol's delay found and taken out
+    /// (<see cref="FollowedDelays"/>, readable until the next call). Everything <see cref="Finish"/> needs stays on the receiver. False when the call was refused
+    /// as <see cref="Receive"/> refuses it.
+    /// </summary>
+    internal bool Prepare(ReadOnlySpan<float> capture, int start, in BurstHeader header, ReadOnlySpan<byte> headerBits, int payloadRoom)
+    {
         _valid = false;
+        _followed = false;
         _measuredValid = false;
         _guarded = 0;
         if (!Readable(header))
         {
-            return default;
+            return false;
         }
 
         if (headerBits.Length < BurstHeaderCodec.HeaderBits)
@@ -287,9 +308,9 @@ public sealed class PayloadReceiver
         }
 
         int room = PayloadCodec.Capacity(header.Format, header.PayloadSymbols);
-        if (payload.Length < room)
+        if (payloadRoom < room)
         {
-            throw new ArgumentException($"Need room for {room} payload bytes.", nameof(payload));
+            throw new ArgumentException($"Need room for {room} payload bytes.", "payload");
         }
 
         FormatSpec spec = StandardFormats.Describe(header.Format);
@@ -301,7 +322,7 @@ public sealed class PayloadReceiver
         int n = known + symbols;
         if (start < 0 || capture.Length - start < n * SymbolSamples)
         {
-            return default;
+            return false;
         }
 
         _known = known;
@@ -330,6 +351,18 @@ public sealed class PayloadReceiver
         }
 
         Follow(rawRe, rawIm, spec, known, n);
+        _followed = true;
+        return true;
+    }
+
+    /// <summary>The second half of <see cref="Receive"/>, for the burst <see cref="Prepare"/> last took in: the payload read, decoded and checked, and the path measured.</summary>
+    internal PayloadReceiveResult Finish(in BurstHeader header, Span<byte> payload)
+    {
+        FormatSpec spec = StandardFormats.Describe(header.Format);
+        int nb = HeaderReader.OpeningCarriers(spec.Opening);
+        int known = _known;
+        int symbols = _payloadSymbols;
+        int n = known + symbols;
 
         // Equalise the payload symbols and read them: soft values, then the tone guard, then soft values again.
         int perSymbol = spec.Carriers * spec.ConstellationBits;
@@ -387,6 +420,7 @@ public sealed class PayloadReceiver
         for (int c = 0; c < Carriers; c++)
         {
             bool isHot = _scatter[c] > Guard * _scatterMedian[c];
+            _isHot[c] = isHot;
             _var2[c] = isHot ? Math.Max(_var[c], _scatter[c]) : _var[c];
             if (isHot)
             {
@@ -397,7 +431,12 @@ public sealed class PayloadReceiver
         }
 
         _guarded = hot;
-        Demapper.DemapPayload(zRe, zIm, _noise, _loading, symbols, llr);
+
+        // Only the hot carriers' variances changed: the others' soft values are the first demap's, which this overwrites with nothing different.
+        if (hot > 0)
+        {
+            Demapper.DemapCarriers(zRe, zIm, _noise, _loading, symbols, _isHot, llr);
+        }
 
         // Decode, block by block.
         int infoBits = StandardFormats.InfoBits(header.Format, symbols);

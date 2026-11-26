@@ -4,6 +4,8 @@ An adaptive OFDM modem for the audio path of an FM radio, for .NET.
 
 Every burst names its own format in its header, so a receiver needs no setting to decode it. There are 256 standard formats, from 0.25 to about 70 kbit/s on a 25 kHz FM channel, and stations tell each other over the air what rate the path supports. The protocol is in [docs/adaptation-protocol.md](docs/adaptation-protocol.md).
 
+A design draft for the live station, which does not exist yet, is in [docs/station-design.md](docs/station-design.md).
+
 ## State
 
 The transmit side, the receive arithmetic and the adaptation rules (what a station remembers, recommends and chooses) are complete, and are pinned to a prototype by test vectors. There is no live streaming receiver yet: the receivers here take a finished capture of a burst, not a continuous audio stream. It has not been published to NuGet.

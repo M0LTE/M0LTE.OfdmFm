@@ -47,6 +47,9 @@ internal sealed class BlockTracker
     private static readonly int Chunks;
     private static readonly double[] Grid;
 
+    // 2 pi times each bin's distance from the middle of the band, in radians per second: how fast a bin's phase moves against a delay, once the band's centre is taken out.
+    private static readonly double[] SpreadOmega;
+
     private readonly int _maxBlocks;
     private readonly int[] _starts;
     private readonly double[] _energy;
@@ -70,6 +73,13 @@ internal sealed class BlockTracker
     private readonly double[] _tileIm = new double[Tile * Bins];
     private readonly double[] _tileBest = new double[Tile];
     private readonly int[] _tileGrid = new int[Tile];
+    private readonly double[] _tileMag = new double[Tile * GridSteps];
+    private readonly bool[] _tileDone = new bool[Tile * Chunks];
+    private readonly double[] _tileAbs = new double[Tile];
+    private readonly double[] _tileSlope = new double[Tile];
+    private readonly int[] _need = new int[Tile];
+    private readonly double[] _rotRe;
+    private readonly double[] _rotIm;
 
     static BlockTracker()
     {
@@ -96,6 +106,13 @@ internal sealed class BlockTracker
         for (int b = 0; b < Bins; b++)
         {
             Hz[b] = (FirstBin + b) * spacing;
+        }
+
+        SpreadOmega = new double[Bins];
+        double middle = (Hz[0] + Hz[Bins - 1]) / 2;
+        for (int b = 0; b < Bins; b++)
+        {
+            SpreadOmega[b] = 2 * Math.PI * Math.Abs(Hz[b] - middle);
         }
 
         // numpy.arange(-1500e-6, 1500e-6, 4e-6): start plus i times the difference of the first two values.
@@ -132,6 +149,8 @@ internal sealed class BlockTracker
         _yIm = new double[_maxBlocks * Bins];
         _tau = new double[_maxBlocks];
         _gain = new double[_maxBlocks];
+        _rotRe = new double[_maxBlocks * Bins];
+        _rotIm = new double[_maxBlocks * Bins];
         _px = new double[Bins];
         _hRe = new double[Bins];
         _hIm = new double[Bins];
@@ -139,6 +158,33 @@ internal sealed class BlockTracker
         _cIm = new double[Bins];
         _sumRe = new double[Bins];
         _sumIm = new double[Bins];
+    }
+
+    /// <summary>
+    /// When set (by the benchmark), <see cref="Track"/> adds the stopwatch ticks of each piece to this array: 0 reference energies and block selection, 1 windowed transforms,
+    /// 2 power and bootstrap channel, 3 grid search, then for each iteration 4 the channel over all blocks, 5 the delay fit, 6 the gain, and 7 the rest.
+    /// </summary>
+    internal long[]? PhaseTicks { get; set; }
+
+    private long _mark;
+
+    /// <summary>When set, the grid search tries every delay of every block instead of skipping those that cannot win; the same delays come out either way (the tests compare them).</summary>
+    internal bool ExhaustiveGridSearch { get; set; }
+
+    /// <summary>Chunks of delays summed so far by the grid search, over all calls, and the number an exhaustive search would have summed.</summary>
+    internal long ChunksSearched { get; private set; }
+
+    /// <summary>See <see cref="ChunksSearched"/>.</summary>
+    internal long ChunksPossible { get; private set; }
+
+    private void Mark(int phase)
+    {
+        if (PhaseTicks is { } ticks)
+        {
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            ticks[phase] += now - _mark;
+            _mark = now;
+        }
     }
 
     /// <summary>Most blocks a call can return.</summary>
@@ -162,6 +208,7 @@ internal sealed class BlockTracker
             throw new ArgumentException("The reference is longer than the longest burst.", nameof(reference));
         }
 
+        _mark = PhaseTicks is null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
         int lead = 0;
         while (lead < end && reference[lead] == 0)
         {
@@ -216,6 +263,7 @@ internal sealed class BlockTracker
             throw new ArgumentException("Need room for every block.", nameof(times));
         }
 
+        Mark(0);
         for (int blk = 0; blk < m; blk++)
         {
             int s = _starts[blk];
@@ -239,6 +287,7 @@ internal sealed class BlockTracker
             Array.Copy(_fftIm, FirstBin, _yIm, blk * Bins, Bins);
         }
 
+        Mark(1);
         Array.Clear(_px);
         for (int blk = 0; blk < m; blk++)
         {
@@ -279,7 +328,23 @@ internal sealed class BlockTracker
         }
 
         // Each block's delay by a grid search of the correlation of what is left after the channel with a delay's steering.
+        Mark(2);
         GridSearch(m);
+        Mark(3);
+
+        // The rotation of each bin of each block by its delay: cosine and sine of 2 pi f tau for the current delays. The gain step's rotation by the new delay
+        // is the next round's, with its sine's sign changed (cosine is even and sine odd, exactly), so each is worked out once.
+        for (int blk = 0; blk < m; blk++)
+        {
+            int o = blk * Bins;
+            double tau = _tau[blk];
+            for (int b = 0; b < Bins; b++)
+            {
+                double angle = 2 * Math.PI * Hz[b] * tau;
+                _rotRe[o + b] = Math.Cos(angle);
+                _rotIm[o + b] = Math.Sin(angle);
+            }
+        }
 
         for (int iteration = 0; iteration < Iterations; iteration++)
         {
@@ -289,13 +354,11 @@ internal sealed class BlockTracker
             for (int blk = 0; blk < m; blk++)
             {
                 int o = blk * Bins;
-                double tau = _tau[blk];
                 double gain = _gain[blk];
                 for (int b = 0; b < Bins; b++)
                 {
-                    double angle = 2 * Math.PI * Hz[b] * tau;
-                    double rr = Math.Cos(angle);
-                    double ri = Math.Sin(angle);
+                    double rr = _rotRe[o + b];
+                    double ri = _rotIm[o + b];
                     double pr = (_yRe[o + b] * rr) - (_yIm[o + b] * ri);
                     double pi = (_yRe[o + b] * ri) + (_yIm[o + b] * rr);
                     _sumRe[b] += ((pr * _xRe[o + b]) + (pi * _xIm[o + b])) / gain;
@@ -310,6 +373,8 @@ internal sealed class BlockTracker
                 _hIm[b] = _sumIm[b] / d;
             }
 
+            Mark(4);
+
             // Each block's residual phase fitted against frequency through the origin.
             for (int blk = 0; blk < m; blk++)
             {
@@ -319,9 +384,8 @@ internal sealed class BlockTracker
                 double den = 0;
                 for (int b = 0; b < Bins; b++)
                 {
-                    double angle = 2 * Math.PI * Hz[b] * tau;
-                    double rr = Math.Cos(angle);
-                    double ri = Math.Sin(angle);
+                    double rr = _rotRe[o + b];
+                    double ri = _rotIm[o + b];
                     double pr = (_yRe[o + b] * rr) - (_yIm[o + b] * ri);
                     double pi = (_yRe[o + b] * ri) + (_yIm[o + b] * rr);
                     double hxRe = (_hRe[b] * _xRe[o + b]) - (_hIm[b] * _xIm[o + b]);
@@ -337,6 +401,8 @@ internal sealed class BlockTracker
                 _tau[blk] = tau - (num / den / (2 * Math.PI));
             }
 
+            Mark(5);
+
             // Each block's gain against the channel and its new delay.
             for (int blk = 0; blk < m; blk++)
             {
@@ -349,6 +415,8 @@ internal sealed class BlockTracker
                     double angle = -2 * Math.PI * Hz[b] * tau;
                     double rr = Math.Cos(angle);
                     double ri = Math.Sin(angle);
+                    _rotRe[o + b] = rr;
+                    _rotIm[o + b] = -ri;
                     double hxRe = (_hRe[b] * _xRe[o + b]) - (_hIm[b] * _xIm[o + b]);
                     double hxIm = (_hRe[b] * _xIm[o + b]) + (_hIm[b] * _xRe[o + b]);
                     double refRe = (hxRe * rr) - (hxIm * ri);
@@ -359,6 +427,8 @@ internal sealed class BlockTracker
 
                 _gain[blk] = cross / Math.Max(power, 1e-30);
             }
+
+            Mark(6);
         }
 
         double sum = 0;
@@ -374,15 +444,25 @@ internal sealed class BlockTracker
             delays[blk] = _tau[blk] - mean;
         }
 
+        Mark(7);
         return m;
     }
 
     // Each block's delay by a grid search. The correlation at each delay is summed over the bins in bin order, one delay to a lane, so every sum is
     // exactly the scalar loop's; blocks are taken a tile at a time so the steering table is read once for the tile, and four blocks at a time so
     // their independent sums overlap.
+    //
+    // Delays that cannot win are not summed. The sum at a delay is the correlation S(tau) of the block with that delay's steering, and S moves by at most
+    // slope * |change in tau|, where slope is the sum over the bins of |c| times the bin's distance from the band's centre in radians per second (a phase
+    // that turns by x changes the sum by at most |x| per unit of |c|, and the centre's own turn changes nothing in |S|). So once some delays are summed, any
+    // other delay whose bound from its summed neighbours falls below the best power found is not the winner, and is skipped. The winner is the delay with the
+    // greatest power, the earliest of equals, exactly as in an exhaustive search; the bound is padded by a part in 10^9 of the sum of |c|, far above the
+    // rounding in the sums, and anything not a number is never skipped. The chunks go in levels: every top-stride chunk first, then every other chunk
+    // between them that is still in the running, and so on down to every chunk.
     private void GridSearch(int m)
     {
         int lanes = Lanes;
+        int top = ExhaustiveGridSearch ? 1 : Math.Max(1, 16 / lanes);
         for (int first = 0; first < m; first += Tile)
         {
             int count = Math.Min(Tile, m - first);
@@ -390,31 +470,57 @@ internal sealed class BlockTracker
             {
                 int o = (first + t) * Bins;
                 int q = t * Bins;
+                double sum = 0;
+                double slope = 0;
                 for (int b = 0; b < Bins; b++)
                 {
                     // C = Y * conj(H * X)
                     double hxRe = (_hRe[b] * _xRe[o + b]) - (_hIm[b] * _xIm[o + b]);
                     double hxIm = (_hRe[b] * _xIm[o + b]) + (_hIm[b] * _xRe[o + b]);
-                    _tileRe[q + b] = (_yRe[o + b] * hxRe) + (_yIm[o + b] * hxIm);
-                    _tileIm[q + b] = (_yIm[o + b] * hxRe) - (_yRe[o + b] * hxIm);
+                    double cRe = (_yRe[o + b] * hxRe) + (_yIm[o + b] * hxIm);
+                    double cIm = (_yIm[o + b] * hxRe) - (_yRe[o + b] * hxIm);
+                    _tileRe[q + b] = cRe;
+                    _tileIm[q + b] = cIm;
+                    double mag = Math.Sqrt((cRe * cRe) + (cIm * cIm));
+                    sum += mag;
+                    slope += mag * SpreadOmega[b];
                 }
 
+                _tileAbs[t] = sum;
+                _tileSlope[t] = slope;
                 _tileBest[t] = -1;
                 _tileGrid[t] = 0;
             }
 
-            for (int chunk = 0; chunk < Chunks; chunk++)
+            Array.Clear(_tileDone, 0, count * Chunks);
+            ChunksPossible += (long)count * Chunks;
+            for (int stride = top; stride >= 1; stride >>= 1)
             {
-                int table = chunk * Bins * lanes;
-                int t = 0;
-                for (; t + 4 <= count; t += 4)
+                bool prune = stride != top;
+                int step = prune ? 2 * stride : stride;
+                for (int chunk = prune ? stride : 0; chunk < Chunks; chunk += step)
                 {
-                    Search4(chunk, table, t);
-                }
+                    int need = 0;
+                    for (int t = 0; t < count; t++)
+                    {
+                        if (!prune || InTheRunning(t, chunk))
+                        {
+                            _need[need++] = t;
+                        }
+                    }
 
-                for (; t < count; t++)
-                {
-                    Search1(chunk, table, t);
+                    ChunksSearched += need;
+                    int table = chunk * Bins * lanes;
+                    int k = 0;
+                    for (; k + 4 <= need; k += 4)
+                    {
+                        Search4(chunk, table, _need[k], _need[k + 1], _need[k + 2], _need[k + 3]);
+                    }
+
+                    for (; k < need; k++)
+                    {
+                        Search1(chunk, table, _need[k]);
+                    }
                 }
             }
 
@@ -425,13 +531,82 @@ internal sealed class BlockTracker
         }
     }
 
-    private void Search4(int chunk, int table, int t)
+    // False only if no delay of the chunk can beat the best power found for the block, by the bound from the nearest summed chunks either side.
+    private bool InTheRunning(int t, int chunk)
     {
         int lanes = Lanes;
-        int q0 = t * Bins;
-        int q1 = q0 + Bins;
-        int q2 = q1 + Bins;
-        int q3 = q2 + Bins;
+        int done = t * Chunks;
+        int mag = t * GridSteps;
+        int left = chunk - 1;
+        while (left >= 0 && !_tileDone[done + left])
+        {
+            left--;
+        }
+
+        int right = chunk + 1;
+        while (right < Chunks && !_tileDone[done + right])
+        {
+            right++;
+        }
+
+        double slope = _tileSlope[t];
+        double worst = 0;
+        for (int l = 0; l < lanes; l++)
+        {
+            int g = (chunk * lanes) + l;
+            if (g >= GridSteps)
+            {
+                break;
+            }
+
+            double bound = double.PositiveInfinity;
+            if (left >= 0)
+            {
+                for (int k = 0; k < lanes; k++)
+                {
+                    int a = (left * lanes) + k;
+                    double v = _tileMag[mag + a] + (slope * (Grid[g] - Grid[a]));
+                    if (v < bound)
+                    {
+                        bound = v;
+                    }
+                }
+            }
+
+            if (right < Chunks)
+            {
+                for (int k = 0; k < lanes; k++)
+                {
+                    int a = (right * lanes) + k;
+                    if (a >= GridSteps)
+                    {
+                        break;
+                    }
+
+                    double v = _tileMag[mag + a] + (slope * (Grid[a] - Grid[g]));
+                    if (v < bound)
+                    {
+                        bound = v;
+                    }
+                }
+            }
+
+            if (!(bound <= worst))
+            {
+                worst = bound;
+            }
+        }
+
+        return !((worst + (1e-9 * _tileAbs[t])) * (1 + 1e-9) < Math.Sqrt(_tileBest[t]));
+    }
+
+    private void Search4(int chunk, int table, int t0, int t1, int t2, int t3)
+    {
+        int lanes = Lanes;
+        int q0 = t0 * Bins;
+        int q1 = t1 * Bins;
+        int q2 = t2 * Bins;
+        int q3 = t3 * Bins;
         Vector<double> re0 = Vector<double>.Zero, im0 = Vector<double>.Zero;
         Vector<double> re1 = Vector<double>.Zero, im1 = Vector<double>.Zero;
         Vector<double> re2 = Vector<double>.Zero, im2 = Vector<double>.Zero;
@@ -458,10 +633,10 @@ internal sealed class BlockTracker
             im3 += (cr * si) + (ci * sr);
         }
 
-        Pick(chunk, t, (re0 * re0) + (im0 * im0));
-        Pick(chunk, t + 1, (re1 * re1) + (im1 * im1));
-        Pick(chunk, t + 2, (re2 * re2) + (im2 * im2));
-        Pick(chunk, t + 3, (re3 * re3) + (im3 * im3));
+        Pick(chunk, t0, (re0 * re0) + (im0 * im0));
+        Pick(chunk, t1, (re1 * re1) + (im1 * im1));
+        Pick(chunk, t2, (re2 * re2) + (im2 * im2));
+        Pick(chunk, t3, (re3 * re3) + (im3 * im3));
     }
 
     private void Search1(int chunk, int table, int t)
@@ -482,15 +657,23 @@ internal sealed class BlockTracker
         Pick(chunk, t, (re * re) + (im * im));
     }
 
-    // The delays of a chunk in order, each kept only if strictly better than every one before it, as the scalar search keeps them.
+    // Keeps the delay of greatest power, the earliest of equals (the chunks do not come in delay order), and records the chunk as summed.
     private void Pick(int chunk, int t, Vector<double> power)
     {
+        _tileDone[(t * Chunks) + chunk] = true;
         for (int l = 0; l < Lanes; l++)
         {
             int g = (chunk * Lanes) + l;
-            if (g < GridSteps && power[l] > _tileBest[t])
+            if (g >= GridSteps)
             {
-                _tileBest[t] = power[l];
+                break;
+            }
+
+            double p = power[l];
+            _tileMag[(t * GridSteps) + g] = Math.Sqrt(p);
+            if (p > _tileBest[t] || (p == _tileBest[t] && g < _tileGrid[t]))
+            {
+                _tileBest[t] = p;
                 _tileGrid[t] = g;
             }
         }

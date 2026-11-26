@@ -79,4 +79,85 @@ public class BlockTrackerTests
         var delays = new double[tracker.MaxBlocks];
         tracker.Track(new float[500], new double[500], times, delays).Should().Be(0);
     }
+
+    [Fact]
+    public void Skipping_Delays_That_Cannot_Win_Gives_Exactly_The_Exhaustive_Search_Result()
+    {
+        var cases = new List<(string Name, float[] Capture, double[] Reference)>();
+        foreach (TrackedCase c in TrackedVectors.Cases.Value.Where(c => c.Tracker != null))
+        {
+            cases.Add((c.Name, c.Tracker!.Capture, c.Tracker.Reference));
+        }
+
+        // band-limited noise as a reference; the capture the reference read late by a ramp, at several noise levels, then pure noise, silence, and a capture with a not-a-number in it
+        var rng = new Random(11);
+        int n = 24000;
+        var raw = new float[n + 200];
+        for (int i = 0; i < raw.Length; i++)
+        {
+            raw[i] = (float)(rng.NextDouble() - 0.5);
+        }
+
+        var reference = new double[n];
+        for (int i = 0; i < n; i++)
+        {
+            reference[i] = i < 1000 ? 0 : raw[i + 100];
+        }
+
+        var shifted = new double[n];
+        DelayResampler.Resample(raw, 100, n, [0.0, n / (double)BurstRenderer.SampleRate], [0.0, 400e-6], 0, shifted);
+        foreach (double noise in new[] { 0.0, 0.01, 0.1, 0.5, 2.0, 20.0 })
+        {
+            var capture = new float[n];
+            for (int i = 0; i < n; i++)
+            {
+                capture[i] = i < 1000 ? 0 : (float)(shifted[i] + (noise * (rng.NextDouble() - 0.5)));
+            }
+
+            cases.Add(($"ramp and noise {noise}", capture, reference));
+        }
+
+        var unrelated = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            unrelated[i] = (float)(rng.NextDouble() - 0.5);
+        }
+
+        cases.Add(("unrelated noise", unrelated, reference));
+        cases.Add(("silence", new float[n], reference));
+        var broken = (float[])unrelated.Clone();
+        broken[12000] = float.NaN;
+        cases.Add(("a not-a-number", broken, reference));
+
+        foreach ((string name, float[] capture, double[] reference2) in cases)
+        {
+            var times = new double[(reference2.Length / BlockTracker.Hop) + 1];
+            var skipping = new BlockTracker(reference2.Length);
+            var exhaustive = new BlockTracker(reference2.Length) { ExhaustiveGridSearch = true };
+            var a = new double[times.Length];
+            var b = new double[times.Length];
+            int ma = skipping.Track(capture, reference2, times, a);
+            int mb = exhaustive.Track(capture, reference2, times, b);
+            ma.Should().Be(mb, name);
+            for (int i = 0; i < ma; i++)
+            {
+                BitConverter.DoubleToInt64Bits(a[i]).Should().Be(BitConverter.DoubleToInt64Bits(b[i]), $"{name} block {i}");
+            }
+
+            skipping.ChunksSearched.Should().BeLessThanOrEqualTo(skipping.ChunksPossible, name);
+        }
+    }
+
+    [Fact]
+    public void Cosine_Is_Even_And_Sine_Odd_To_The_Last_Bit()
+    {
+        // the tracker takes the next round's rotation from the gain step's, relying on this of the runtime's functions
+        var rng = new Random(3);
+        for (int i = 0; i < 200000; i++)
+        {
+            double x = (rng.NextDouble() - 0.5) * (i % 3 == 0 ? 2000 : 40);
+            BitConverter.DoubleToInt64Bits(Math.Cos(-x)).Should().Be(BitConverter.DoubleToInt64Bits(Math.Cos(x)));
+            BitConverter.DoubleToInt64Bits(-Math.Sin(-x)).Should().Be(BitConverter.DoubleToInt64Bits(Math.Sin(x)));
+        }
+    }
 }

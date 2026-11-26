@@ -169,7 +169,7 @@ In the order sent:
 | Destination | 6 | the station it is for, or 0 for everyone |
 | Format | 8 | the standard format of the payload (packet-net/pdn-soundmodem#831). In a report: the format recommended to the destination. |
 | Length | 6 | payload symbols, in fours (so 0 to 252). In a report: 0. |
-| Burst number | 4 | on data, a count that goes up by one with each data burst a station sends, round and round. The receiver needs it: it is part of the seed of the payload's scrambler (below). In a report: the top bit is "failed" and the other three are 0. |
+| Burst number | 4 | on data, a count that goes up by one with each data burst a station sends, round and round. The receiver needs it: it is part of the seed of the payload's scrambler (below). In a report: the top bit is "failed" and the other three are spare, sent as 0 and ignored on receipt. |
 | Check | 16 | over the 35 bits before it: a CRC with polynomial 0x1021, started at all ones, most significant bit first, nothing reflected and nothing inverted at the end |
 
 That is 51 bits, from 42 in the prototype before this. Measured in simulation, the nine added bits (version, a wider burst type, destination) cost half to three quarters of a decibel of header reach (on the full band, 172 headers read of 200 against 192 with each carrier 4 dB under the noise).
@@ -223,11 +223,21 @@ Test vectors for all of these, made with the prototype, pin the code and are in 
 
 A format and a length give a payload of a fixed number of bits. From the front:
 
-1. **The prelude**, in a burst to one station: two bytes. First byte, from the top bit: "report wanted", "a capability word follows", "a recommendation is given", "failed", and four spare bits sent as 0. Second byte: the recommended format (0 when none is given).
+1. **The prelude**, in a burst to one station: two bytes. First byte, from the top bit: "report wanted", "a capability word follows", "a recommendation is given", "failed", "an extension block follows", and three spare bits. The spare bits are sent as 0 and ignored on receipt. Second byte: the recommended format (0 when none is given).
 2. **The capability word**, when flagged: two bytes, the more significant first.
-3. **Datagrams**, each behind its length in two bytes, the more significant first. A length of 0, a length that runs past the room left, or too little room for another length, ends them.
-4. **Padding** of zero bits, up to the check.
-5. **The check**: the payload's last 32 bits.
+3. **The extension block**, when flagged: one length byte N (0 to 255), then N bytes of items. An item is a tag byte, a length byte L and L bytes of value, so a value is at most 253 bytes. The rules:
+   - A station skips any item whose tag it does not know. Tag 0 is reserved and never sent. Tags are assigned in this document as features are added, and none is yet.
+   - A block that ends part-way through an item, because the lengths do not add up, is ignored from that point.
+   - The datagrams begin N bytes after the length byte whatever the items say, so a malformed block cannot make a receiver misread them.
+   - A block that runs past the end of the payload leaves no datagrams.
+   - A burst that does not set the flag is exactly what it was before the block existed.
+   - Every station understands the block from version 0, so nothing added inside it needs a capability flag.
+   - A burst to everyone has no prelude and so no block.
+4. **Datagrams**, each behind its length in two bytes, the more significant first. A length of 0, a length that runs past the room left, or too little room for another length, ends them.
+5. **Padding** of zero bits, up to the check.
+6. **The check**: the payload's last 32 bits.
+
+A worked example, to check an implementation against: the flags 0x28 (a recommendation is given, an extension block follows), the recommended format 0x28, a block of 5 bytes holding one item with the unassigned tag 0x7F and the three-byte value AA BB CC, then the datagram "Hi!". The payload before padding is `28 28 05 7F 03 AA BB CC 00 03 48 69 21`. A receiver skips the item and reads "Hi!".
 
 **Everything before the check is scrambled.** Without that, padding, or data with long runs in it, puts the same point on every carrier, and that makes a symbol that is nearly all peak. The scrambler is additive: each bit is added (exclusive or) to the next bit of a sequence that both ends make the same way.
 
@@ -323,6 +333,7 @@ Nothing here reverses any of the nine choices above. Each line is a rule that th
 | "One rung slower" never lands on something faster. | The 1 kHz band's lowest rungs are slower than the most robust format. | Writing the rules down |
 | Three openings, not two. | The lowest carriers need a longer opening. | Building it |
 | The identification burst is not optional: the modem sends it by itself on a clock while it is transmitting, with a Morse ident beside it, and the callsign is a required setting. The agreed version left identification to the layer above. | A compliance fallback that does not depend on the host. | Tom, 26 November 2026 |
+| The payload prelude gains a flag for a general extension block, a length and then tagged items that a station skips if it does not know them. | So that later fields cost nothing to add: no capability flag, no change to the datagrams. | Tom, 26 November 2026 |
 | The document was made exact in these places against the implemented rules. | Porting the rules line by line showed where the wording was looser than the behaviour. | The port |
 | The interleaver and the training symbols are defined in this document's own terms (a shuffle driven by the scrambler's generator; a fixed table), where the prototype drew both from a software library's random generator. The training values did not change; the interleaver's permutation did. | A wire format has to be reproducible from its description. | The port |
 

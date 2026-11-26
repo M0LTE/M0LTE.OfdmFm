@@ -392,7 +392,7 @@ public sealed class PayloadReceiver
         ReadOnlySpan<double> zRe = _zRe.AsSpan(0, symbols * Carriers);
         ReadOnlySpan<double> zIm = _zIm.AsSpan(0, symbols * Carriers);
         Span<float> llr = _llr.AsSpan(0, coded);
-        Demapper.DemapPayload(zRe, zIm, _noise, _loading, symbols, llr);
+        Demapper.DemapPayloadMaxLog(zRe, zIm, _noise, _loading, symbols, _isHot, true, llr);
 
         // The tone guard: carriers whose scatter about the nearest decided points is far above its neighbours' get the variance they show.
         for (int i = 0; i < coded; i++)
@@ -439,7 +439,7 @@ public sealed class PayloadReceiver
         // Only the hot carriers' variances changed: the others' soft values are the first demap's, which this overwrites with nothing different.
         if (hot > 0)
         {
-            Demapper.DemapCarriers(zRe, zIm, _noise, _loading, symbols, _isHot, llr);
+            Demapper.DemapPayloadMaxLog(zRe, zIm, _noise, _loading, symbols, _isHot, false, llr);
         }
 
         // Decode, block by block.

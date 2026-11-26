@@ -154,6 +154,82 @@ public static class Demapper
         }
     }
 
+    /// <summary>
+    /// As <see cref="DemapPayload"/> and its internal partner <see cref="DemapCarriers"/> but by the max-log rule: each bit's soft value is the best exponent over the levels where it
+    /// is 0 minus the best over those where it is 1, with no sum of exponentials. Not the prototype's arithmetic.
+    /// </summary>
+    internal static void DemapPayloadMaxLog(ReadOnlySpan<double> re, ReadOnlySpan<double> im, ReadOnlySpan<double> noiseVariance, ReadOnlySpan<byte> loading, int symbols, ReadOnlySpan<bool> only, bool all, Span<float> llr)
+    {
+        int carriers = loading.Length;
+        Span<double> one = stackalloc double[10];
+        int k = 0;
+        for (int s = 0; s < symbols; s++)
+        {
+            int at = s * carriers;
+            for (int c = 0; c < carriers; c++)
+            {
+                int b = loading[c];
+                if (b == 0)
+                {
+                    continue;
+                }
+
+                if (all || only[c])
+                {
+                    int mi = (b + 1) / 2;
+                    int mq = b / 2;
+                    double scale = Scale[b];
+                    double axisVariance = noiseVariance[c] / 2 / (scale * scale);
+                    AxisMaxLog(re[at + c] / scale, mi, axisVariance, one[..mi]);
+                    if (mq != 0)
+                    {
+                        AxisMaxLog(im[at + c] / scale, mq, axisVariance, one.Slice(mi, mq));
+                    }
+
+                    for (int i = 0; i < b; i++)
+                    {
+                        llr[k + i] = (float)one[i];
+                    }
+                }
+
+                k += b;
+            }
+        }
+    }
+
+    private static void AxisMaxLog(double y, int m, double variance, Span<double> llr)
+    {
+        double[] levels = Levels[m];
+        int n = levels.Length;
+        double twoVariance = 2 * variance;
+        Span<double> d = stackalloc double[1 << MaxAxisBits];
+        for (int p = 0; p < n; p++)
+        {
+            double t = y - levels[p];
+            d[p] = -(t * t) / twoVariance;
+        }
+
+        for (int k = 0; k < m; k++)
+        {
+            int shift = m - 1 - k;
+            double max0 = double.NegativeInfinity;
+            double max1 = double.NegativeInfinity;
+            for (int p = 0; p < n; p++)
+            {
+                if (((p >> shift) & 1) == 0)
+                {
+                    max0 = Math.Max(max0, d[p]);
+                }
+                else
+                {
+                    max1 = Math.Max(max1, d[p]);
+                }
+            }
+
+            llr[k] = max0 - max1;
+        }
+    }
+
     /// <summary>The bits a symbol on this loading carries.</summary>
     public static int BitsPerSymbol(ReadOnlySpan<byte> loading)
     {

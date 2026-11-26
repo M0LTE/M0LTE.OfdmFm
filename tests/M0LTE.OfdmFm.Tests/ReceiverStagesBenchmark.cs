@@ -200,6 +200,38 @@ public class ReceiverStagesBenchmark
             + $"Atan2 {PerCall(() => { double a = 0; for (int i = 0; i < N; i++) { a += Math.Atan2(angle[i], angle[(i + 1) & (N - 1)]); } return a; }, N):F1}, Sqrt {PerCall(() => { double a = 0; for (int i = 0; i < N; i++) { a += Math.Sqrt(angle[i] * angle[i]); } return a; }, N):F1}, "
             + $"divide {PerCall(() => { double a = 0; for (int i = 0; i < N; i++) { a += angle[i] / angle[(i + 1) & (N - 1)]; } return a; }, N):F1}");
 
+        {
+            var fft = new ComplexFft(StreamingBurstDetector.TransformSize);
+            var fr = new double[StreamingBurstDetector.TransformSize];
+            var fi = new double[StreamingBurstDetector.TransformSize];
+            double big = Stat(() =>
+            {
+                for (int i = 0; i < fr.Length; i++)
+                {
+                    fr[i] = angle[i & (N - 1)];
+                    fi[i] = 0;
+                }
+
+                fft.Forward(fr, fi);
+            }, reps, out _);
+            var small = new double[1024];
+            var smallIm = new double[1024];
+            double little = Stat(() =>
+            {
+                for (int r = 0; r < 100; r++)
+                {
+                    for (int i = 0; i < small.Length; i++)
+                    {
+                        small[i] = angle[i];
+                        smallIm[i] = 0;
+                    }
+
+                    RealFft.Forward(small, smallIm);
+                }
+            }, reps, out _);
+            Say($"  complex transform of {fr.Length} points (the streaming detector's) {big:F2} ms, 1024 points (the block tracker's) {little * 10:F1} microseconds");
+        }
+
         // The grid search's inner loop: 168 bins, one chunk of delays, vector against plain, for the same number of delays.
         const int Bins = 168;
         int lanes = System.Numerics.Vector<double>.Count;

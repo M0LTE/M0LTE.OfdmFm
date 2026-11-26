@@ -462,7 +462,8 @@ internal sealed class BlockTracker
     private void GridSearch(int m)
     {
         int lanes = Lanes;
-        int top = ExhaustiveGridSearch ? 1 : Math.Max(1, 16 / lanes);
+        // The first level sums every chunk 32 delays apart: at wider gaps the bound rarely rules anything out.
+        int top = ExhaustiveGridSearch ? 1 : Math.Max(1, 32 / lanes);
         for (int first = 0; first < m; first += Tile)
         {
             int count = Math.Min(Tile, m - first);

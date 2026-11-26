@@ -35,4 +35,36 @@ public class ReadmeExampleTests
         datagrams.TryNext(out ReadOnlySpan<byte> back).Should().BeTrue();
         back.ToArray().Should().Equal(datagram);
     }
+
+    [Fact]
+    public void A_Host_Sends_A_Datagram_Through_A_Station()
+    {
+        byte[] datagram = Enumerable.Range(0, 40).Select(i => (byte)(i * 7)).ToArray();
+        var sent = new List<TransmittedEvent>();
+
+        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+        var peer = StationName.FromAscii("G9XYZ");
+        station.Bind(peer, 2);                                  // the interim way a name gets an on-air number
+
+        long id = 0;
+        ReadOnlyMemory<float> audio = default;
+        station.TransmitRequest += r => (id, audio) = (r.Id, r.Samples);
+        station.Transmitted += sent.Add;
+
+        SendResult accepted = station.Send(datagram, peer, new HostTag(1));
+        float[] input = new float[4800];                        // the radio's audio, 0.1 s at a time (silence here)
+        while (id == 0) station.Push(input);                    // the station listens for 5 s first, then asks to transmit
+        station.TransmitStarted(id, station.SampleCount);       // play audio.Span to the radio, and say when it began ...
+        for (long left = audio.Length; left > 0; left -= input.Length)
+        {
+            station.Push(input.AsSpan(0, (int)Math.Min(left, input.Length)));
+        }
+
+        station.TransmitEnded(id, station.SampleCount);         // ... and when it ended: Transmitted is raised here
+
+        accepted.Should().Be(SendResult.Accepted);
+        sent.Should().ContainSingle().Which.Tag.Should().Be(new HostTag(1));
+        sent[0].Station.Should().Be(peer);
+        sent[0].Format.Should().Be(StandardFormats.FirstContact);
+    }
 }

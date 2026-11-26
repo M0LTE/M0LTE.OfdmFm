@@ -164,6 +164,9 @@ internal sealed class ChannelAccess
 
         /// <summary>The audio layer's id for the latest hand-over (the owner keeps it).</summary>
         public long HandshakeId;
+
+        /// <summary>For a burst the host did not ask for (a lone report, an identification): what to tell the host when it starts. Null for the host's own datagrams.</summary>
+        public ModemSentEvent? Modem;
     }
 
     /// <summary>Where a request stands.</summary>
@@ -209,6 +212,12 @@ internal sealed class ChannelAccess
         };
     }
 
+    /// <summary>
+    /// Called when a request is about to be granted, before the grant is handed over, so that what it carries can be decided once the channel is free (the design's Choice 6). Sets <see cref="Request.Samples"/>.
+    /// If it returns false there is nothing to send after all: the request is finished and not handed over. Null: requests carry their samples from <see cref="Enqueue(ReadOnlyMemory{float}, TransmitClass, ModemSentEvent?)"/>.
+    /// </summary>
+    public Func<Request, bool>? Prepare { get; set; }
+
     /// <summary>The rule for the random wait. Tests set it; the station uses <see cref="AccessMode.Slotted"/>.</summary>
     public AccessMode Mode { get; set; } = AccessMode.Slotted;
 
@@ -241,12 +250,54 @@ internal sealed class ChannelAccess
     public long ClearSince => Math.Max(Math.Max(_holdUntil, _externalUntil), Math.Max(_ownUntil, StartUpListen));
 
     /// <summary>Queues a transmission and returns it. It may be granted before this returns.</summary>
-    public Request Enqueue(ReadOnlyMemory<float> samples, TransmitClass cls)
+    public Request Enqueue(ReadOnlyMemory<float> samples, TransmitClass cls, ModemSentEvent? modem = null)
     {
-        var request = new Request { Id = _nextId++, Class = cls, Samples = samples, Sequence = _nextSequence++, State = RequestState.Waiting };
+        var request = new Request { Id = _nextId++, Class = cls, Samples = samples, Sequence = _nextSequence++, State = RequestState.Waiting, Modem = modem };
         Insert(request);
         Update();
         return request;
+    }
+
+    /// <summary>
+    /// Queues a request the owner keeps and reuses (its samples come from <see cref="Prepare"/>), in <paramref name="cls"/>. The request must be new or <see cref="RequestState.Done"/>. It may be granted before this returns.
+    /// </summary>
+    public Request Enqueue(Request request, TransmitClass cls)
+    {
+        request.Id = _nextId++;
+        request.Class = cls;
+        request.Samples = default;
+        request.Sequence = _nextSequence++;
+        request.State = RequestState.Waiting;
+        request.Modem = null;
+        Insert(request);
+        Update();
+        return request;
+    }
+
+    /// <summary>Moves a waiting request to <paramref name="cls"/>, keeping its place in arrival order within the class. Does not run the rules: the caller follows it with <see cref="Update"/>, or is inside it.</summary>
+    public void Reclassify(Request request, TransmitClass cls)
+    {
+        if (request.State != RequestState.Waiting || request.Class == cls)
+        {
+            return;
+        }
+
+        _waiting.Remove(request);
+        request.Class = cls;
+        Insert(request);
+    }
+
+    /// <summary>Takes a waiting request out of the queue and finishes it, then runs the rules. Nothing happens for a request that is granted, on air or done.</summary>
+    public void Remove(Request request)
+    {
+        if (request.State != RequestState.Waiting)
+        {
+            return;
+        }
+
+        _waiting.Remove(request);
+        request.State = RequestState.Done;
+        Update();
     }
 
     /// <summary>A burst or hold the channel is busy for until <paramref name="until"/> (exclusive): clear from that sample. A past sample counts only for when the channel was last busy.</summary>
@@ -461,6 +512,13 @@ internal sealed class ChannelAccess
         _waiting.Remove(request);
         request.State = RequestState.Granted;
         _active = request;
+        if (Prepare is not null && !Prepare(request))
+        {
+            _active = null;
+            request.State = RequestState.Done;
+            return;
+        }
+
         _grant(request);
         _raise?.Invoke(new AccessEvent(request.Id, AccessStage.Granted, now));
     }

@@ -100,6 +100,7 @@ namespace M0LTE.OfdmFm
         Cancelled = 0,
         Expired = 1,
         LinkForgotten = 2,
+        NoLongerFits = 3,
     }
     public readonly struct DroppedEvent : System.IEquatable<M0LTE.OfdmFm.DroppedEvent>
     {
@@ -318,6 +319,13 @@ namespace M0LTE.OfdmFm
         Ordinary = 0,
         Expedited = 1,
     }
+    public enum SendResult
+    {
+        Accepted = 0,
+        NotBound = 1,
+        TooLarge = 2,
+        QueueFull = 3,
+    }
     public static class StandardFormats
     {
         public const int Count = 256;
@@ -355,12 +363,17 @@ namespace M0LTE.OfdmFm
         public event System.Action<M0LTE.OfdmFm.TransmittedEvent>? Transmitted;
         public event System.Action<M0LTE.OfdmFm.WithdrawRequestEvent>? WithdrawRequest;
         public event System.Action? WorkAvailable;
+        public void Bind(M0LTE.OfdmFm.StationName name, int number) { }
+        public int Cancel(M0LTE.OfdmFm.HostTag tag) { }
+        public int Cancel(M0LTE.OfdmFm.StationName station) { }
         public void DeliverResults() { }
         public void Push(System.ReadOnlySpan<float> samples) { }
         public bool RunOne() { }
         public int RunPending() { }
+        public M0LTE.OfdmFm.SendResult Send(System.ReadOnlyMemory<byte> datagram, M0LTE.OfdmFm.StationName destination, M0LTE.OfdmFm.HostTag tag, bool reportWanted = false, M0LTE.OfdmFm.SendPriority priority = 0) { }
         public void SetExternalBusy(bool busy) { }
         public void Skip(int count) { }
+        public System.Collections.Generic.IReadOnlyList<M0LTE.OfdmFm.LinkStateEvent> Snapshot() { }
         public void TransmitEnded(long id, long sampleIndex) { }
         public void TransmitStarted(long id, long sampleIndex) { }
         public static M0LTE.OfdmFm.StationName PlaceholderName(int number) { }
@@ -369,6 +382,9 @@ namespace M0LTE.OfdmFm
     {
         public StationName(System.ReadOnlySpan<byte> bytes) { }
         public System.ReadOnlySpan<byte> Bytes { get; }
+        public bool IsEmpty { get; }
+        public bool IsEveryone { get; }
+        public static M0LTE.OfdmFm.StationName Everyone { get; }
         public bool Equals(M0LTE.OfdmFm.StationName other) { }
         public override bool Equals(object? obj) { }
         public override int GetHashCode() { }

@@ -79,9 +79,12 @@ public sealed partial class Station
     /// Asks to transmit <paramref name="samples"/> as <paramref name="cls"/> when the rules allow, and returns the request's id. The station raises <see cref="TransmitRequest"/> when it grants it, and <see cref="AccessChanged"/> for each
     /// change (granted, withdrawn and queued again, started, ended). Audio thread, serialised with <see cref="Push"/>; the request may be granted before this returns.
     /// </summary>
+    /// <param name="samples">What to play.</param>
+    /// <param name="cls">The wait it needs.</param>
+    /// <param name="modem">For a burst the host did not ask for: the <see cref="ModemSent"/> event raised when it goes on air. Steps 6 and 7 use it.</param>
     /// <exception cref="ArgumentException">No samples.</exception>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    internal long Enqueue(ReadOnlyMemory<float> samples, TransmitClass cls)
+    internal long Enqueue(ReadOnlyMemory<float> samples, TransmitClass cls, ModemSentEvent? modem = null)
     {
         EnsureNotAdvancing();
         if (samples.IsEmpty)
@@ -92,7 +95,7 @@ public sealed partial class Station
         _advancing = true;
         try
         {
-            return _access.Enqueue(samples, cls).Id;
+            return _access.Enqueue(samples, cls, modem).Id;
         }
         finally
         {
@@ -134,6 +137,7 @@ public sealed partial class Station
             GrantRequest,
             request => WithdrawTransmit(request.HandshakeId),
             e => AccessChanged?.Invoke(e));
+        InitialiseSend();
     }
 
     private void GrantRequest(ChannelAccess.Request request)
@@ -152,6 +156,16 @@ public sealed partial class Station
         }
 
         bool late = handshake.WithdrawnBeforeStart;
+        if (ReferenceEquals(request, _data))
+        {
+            OnDataBurstStarted(sampleIndex);
+        }
+
+        if (request.Modem is { } modem)
+        {
+            ModemSent?.Invoke(modem);
+        }
+
         _ownWindows.Add((sampleIndex - MuteBeforeOwnTransmission, long.MaxValue));
         PauseEstimateOver(sampleIndex, sampleIndex + request.Samples.Length + MuteAfterOwnTransmission);
 
@@ -189,7 +203,16 @@ public sealed partial class Station
             }
         }
 
-        foreach (long key in _byHandshake.Where(kv => ReferenceEquals(kv.Value, request)).Select(kv => kv.Key).ToList())
+        _forget.Clear();
+        foreach (KeyValuePair<long, ChannelAccess.Request> kv in _byHandshake)
+        {
+            if (ReferenceEquals(kv.Value, request))
+            {
+                _forget.Add(kv.Key);
+            }
+        }
+
+        foreach (long key in _forget)
         {
             _byHandshake.Remove(key);
         }
@@ -198,6 +221,10 @@ public sealed partial class Station
         try
         {
             _access.Ended(request, sampleIndex);
+            if (ReferenceEquals(request, _data))
+            {
+                OnDataBurstEnded(sampleIndex);
+            }
         }
         finally
         {

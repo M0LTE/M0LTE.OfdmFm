@@ -17,9 +17,10 @@ internal enum TransmitState
 }
 
 /// <summary>
-/// The live station: one per radio channel. So far (steps 1 to 4 of docs/station-design.md) it keeps a sample clock with timers on it, runs the transmit handshake with the audio layer,
-/// receives (audio pushed in comes out as <see cref="Received"/> datagrams, <see cref="PathReport"/> and <see cref="LinkState"/> events and calls on the adaptation rules), and knows when the channel is busy and when it may transmit.
-/// It does not yet send anything of its own, or identify.
+/// The live station: one per radio channel. So far (steps 1 to 5 of docs/station-design.md) it keeps a sample clock with timers on it, runs the transmit handshake with the audio layer,
+/// receives (audio pushed in comes out as <see cref="Received"/> datagrams, <see cref="PathReport"/> and <see cref="LinkState"/> events and calls on the adaptation rules), knows when the channel is busy and when it may transmit,
+/// and sends what the host gives it (<see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Bind"/>, <see cref="Snapshot"/>; events <see cref="Transmitted"/>, <see cref="Dropped"/>, <see cref="Congestion"/>).
+/// It does not yet send lone reports or identify (steps 6 and 7).
 /// <para>
 /// <b>The clock.</b> The only clock is the count of receive samples at 48 kHz, advanced by <see cref="Push"/> and <see cref="Skip"/> and by nothing else.
 /// Nothing here reads a wall clock, sleeps or waits. The adaptation rules are given each burst's end on this clock, never the time a verdict arrived.
@@ -39,15 +40,24 @@ internal enum TransmitState
 /// A burst is found only after its opening has been heard and the next correlation frame has run, so a carrier is noticed late by burst detection alone: up to 0.9 s after another station keys, against 0.1 s with a carrier indication.
 /// </para>
 /// <para>
-/// <b>Channel access.</b> Transmissions are requested through an internal entry point (step 5 calls it) as a report, an expedited datagram or ordinary traffic. A report or expedited datagram is granted once the channel has been
+/// <b>Sending.</b> <see cref="Send"/> copies a datagram into the queue for its destination (one queue per station, bounded at 30 s of airtime at the format in use). While anything is queued the station keeps one request with the
+/// channel-access rules, in the class of its most urgent datagram. When the channel is free and the rules grant it, the station picks a destination (the one served longest ago, expedited traffic first), asks the adaptation rules for the format
+/// (<c>LinkAdaptation.Choose</c>), takes datagrams for it in order while they fit (up to 2.5 s of airtime, or one datagram if it needs longer), writes the prelude (the recommendation for the destination, "report wanted" when the rules or the host ask,
+/// and then the capability word), packs and renders the burst and hands the samples to the audio layer in <see cref="TransmitRequest"/>. A burst for everyone goes at the first-contact format with no prelude. The burst number counts up by one a burst, modulo 16.
+/// <see cref="TransmitStarted"/> tells the rules a burst was sent (<c>Sent</c>); <see cref="TransmitEnded"/> raises <see cref="Transmitted"/> for each datagram in it. If the burst asked for a report and no header of any burst from the station was read within the answer wait
+/// (3 s plus twice the burst's airtime) of its end, the rules are told of one silence (<c>NoAnswer</c>). A request withdrawn before it is keyed keeps its burst, built as it was, and is handed over again unchanged.
+/// </para>
+/// <para>
+/// <b>Channel access.</b> Transmissions are requested as a report, an expedited datagram or ordinary traffic. A report or expedited datagram is granted once the channel has been
 /// clear for 50 ms. Ordinary traffic is granted once it has been clear for 0.8 s plus a whole number of slots drawn from the seeded source afresh each time the channel was last busy, where a slot is the station's own time to notice
 /// a carrier. Nothing is granted while the channel is busy or in the first five seconds, and a request handed to the audio layer and not yet keyed is withdrawn, and queued again, if the channel turns busy. After a lone report for this
 /// station, ordinary traffic waits a second from the report's last sample. The values are fixed and named in <c>ChannelAccess</c>.
 /// </para>
 /// <para>
 /// <b>Threads.</b> A station has no threads of its own. Two groups of members exist.
-/// The <i>audio-thread</i> members are <see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/>, <see cref="SetExternalBusy"/>, the internal <c>Enqueue</c> and the properties
-/// <see cref="SampleCount"/> and <see cref="Seconds"/>; the caller must serialise every call to them on one station (one thread, or a lock), events are raised on the thread that made the call that
+/// The <i>audio-thread</i> members are <see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/>, <see cref="SetExternalBusy"/>, the host's operations
+/// <see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Cancel(StationName)"/>, <see cref="Bind"/> and <see cref="Snapshot"/>, the internal <c>Enqueue</c> and the properties
+/// <see cref="SampleCount"/> and <see cref="Seconds"/>; the caller must serialise every call to them on one station (one thread, or a lock: a host that sends from other threads takes the lock its audio thread takes around <see cref="Push"/>), events are raised on the thread that made the call that
 /// caused them, and an event handler must not call any of these members (they throw <see cref="InvalidOperationException"/>, as they do from a timer action).
 /// The <i>worker</i> members are <see cref="RunOne"/>, <see cref="RunPending"/> and <see cref="HasWork"/>; they may be called from any number of threads at the same time, and from the audio thread too when it is not inside a call of its own (a single-threaded host can run its own jobs between pushes),
 /// each call using its own pair of receivers (made on first use, one pair for each thread running a job at that moment, and kept). The <see cref="WorkAvailable"/> event is raised on the audio thread
@@ -56,10 +66,7 @@ internal enum TransmitState
 /// (its <see cref="HasWork"/> is false and <see cref="RunOne"/> returns false).
 /// </para>
 /// <para>
-/// <b>Not yet here.</b> The host operations arrive in later steps and are left out of the public surface until then, so that the API snapshot says what works:
-/// <c>Send(ReadOnlyMemory&lt;byte&gt; datagram, StationName name, HostTag tag, bool reportWanted, SendPriority priority)</c>, <c>Cancel(HostTag)</c>, <c>Cancel(StationName)</c>,
-/// <c>Snapshot()</c> and <c>Bind(StationName, int)</c>. The events <see cref="Transmitted"/>, <see cref="Dropped"/>, <see cref="BurstNotDecoded"/>,
-/// <see cref="Congestion"/>, <see cref="ModemSent"/> and <see cref="IdentificationDue"/> are declared and not yet raised.
+/// <b>Not yet here.</b> Lone reports and identification (steps 6 and 7): <see cref="BurstNotDecoded"/> and <see cref="IdentificationDue"/> are declared and not yet raised, and <see cref="ModemSent"/> is wired and raised for nothing yet.
 /// </para>
 /// </summary>
 public sealed partial class Station
@@ -79,6 +86,8 @@ public sealed partial class Station
     private readonly Random _random;
     private readonly SampleTimers _timers = new();
     private readonly Dictionary<long, Request> _requests = [];
+    private readonly Stack<Request> _freeRequests = new();
+    private readonly List<long> _forget = [];
     private long _nextRequestId = 1;
     private long? _transmittingId;
     private bool _advancing;
@@ -146,24 +155,33 @@ public sealed partial class Station
     /// <summary>Raised on the audio thread when a job becomes available to <see cref="RunOne"/>. The handler must only signal a worker (a semaphore, say); it must not run work or call the station.</summary>
     public event Action? WorkAvailable;
 
-    // Declared now so that the host interface is complete; later steps raise them and this pragma goes.
-#pragma warning disable CS0067
-    /// <summary>Declared, not yet raised: a datagram's burst has left the audio device.</summary>
+    /// <summary>
+    /// Raised once for each datagram, when the burst carrying it has ended on the air (the audio layer's <see cref="TransmitEnded"/>): its tag, the station, the burst number, the format, the format's rate, the time the burst was on air
+    /// (from the audio layer's reported start to its reported end, lead-in included) and the sample clock at the end. Raised on the audio thread, in the call to <see cref="TransmitEnded"/>. Not raised for a datagram that was dropped.
+    /// </summary>
     public event Action<TransmittedEvent>? Transmitted;
 
-    /// <summary>Declared, not yet raised: a datagram will not go out.</summary>
+    /// <summary>
+    /// Raised for a datagram that will not go out: cancelled by the host (<see cref="Cancel(HostTag)"/>, <see cref="Cancel(StationName)"/>), or no longer fitting one burst after the link's format fell. On the thread that made the call that caused it.
+    /// A datagram never vanishes silently: each accepted one gets exactly one <see cref="Transmitted"/> or one <see cref="Dropped"/>.
+    /// </summary>
     public event Action<DroppedEvent>? Dropped;
 
-    /// <summary>Declared, not yet raised: a burst of this station's was heard and not decoded.</summary>
-    public event Action<BurstNotDecodedEvent>? BurstNotDecoded;
-
-    /// <summary>Declared, not yet raised: push-back for a slow link.</summary>
+    /// <summary>
+    /// Raised when the queue to a station becomes full (<see cref="CongestionEvent.Writable"/> false: <see cref="Send"/> is refused with <see cref="SendResult.QueueFull"/>) and when it has drained enough to take datagrams again (true).
+    /// On the thread that made the call that caused it.
+    /// </summary>
     public event Action<CongestionEvent>? Congestion;
 
-    /// <summary>Declared, not yet raised: a burst the host did not ask for went on air.</summary>
+    /// <summary>Raised when a burst the host did not ask for goes on air (reports and identification, steps 6 and 7; nothing yet in step 5). On the audio thread, in the call to <see cref="TransmitStarted"/>.</summary>
     public event Action<ModemSentEvent>? ModemSent;
 
-    /// <summary>Declared, not yet raised: the identification interval has run out.</summary>
+    // Declared so that the host interface is complete; later steps raise them and this pragma goes.
+#pragma warning disable CS0067
+    /// <summary>Declared, not yet raised: a burst of this station's was heard and not decoded (step 6).</summary>
+    public event Action<BurstNotDecodedEvent>? BurstNotDecoded;
+
+    /// <summary>Declared, not yet raised: the identification interval has run out (step 7).</summary>
     public event Action<IdentificationDueEvent>? IdentificationDue;
 #pragma warning restore CS0067
 
@@ -224,10 +242,20 @@ public sealed partial class Station
         _transmittingId = id;
         OnTransmitStarted(id, request, sampleIndex);
 
-        // The audio layer answers in the order of the requests, so anything older that is over and done with can be forgotten.
-        foreach (long old in _requests.Keys.Where(k => k < id && _requests[k].State is TransmitState.Ended or TransmitState.Withdrawn).ToList())
+        // The audio layer answers in the order of the requests, so anything older that is over and done with can be forgotten (and its record reused: a station that sends all day allocates nothing for these).
+        _forget.Clear();
+        foreach (KeyValuePair<long, Request> old in _requests)
         {
-            _requests.Remove(old);
+            if (old.Key < id && old.Value.State is TransmitState.Ended or TransmitState.Withdrawn)
+            {
+                _forget.Add(old.Key);
+            }
+        }
+
+        foreach (long key in _forget)
+        {
+            _freeRequests.Push(_requests[key]);
+            _requests.Remove(key);
         }
     }
 
@@ -287,7 +315,13 @@ public sealed partial class Station
     internal long RequestTransmit(ReadOnlyMemory<float> samples, long earliestSample)
     {
         long id = _nextRequestId++;
-        _requests[id] = new Request { State = TransmitState.Requested, EarliestSample = earliestSample };
+        Request request = _freeRequests.Count > 0 ? _freeRequests.Pop() : new Request();
+        request.State = TransmitState.Requested;
+        request.EarliestSample = earliestSample;
+        request.StartedAt = null;
+        request.EndedAt = null;
+        request.WithdrawnBeforeStart = false;
+        _requests[id] = request;
         TransmitRequest?.Invoke(new TransmitRequestEvent(id, samples, earliestSample));
         return id;
     }

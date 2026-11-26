@@ -203,6 +203,7 @@ public static class Demapper
     {
         double[] levels = Levels[m];
         int n = levels.Length;
+        int half = n >> 1;
         Span<double> d = stackalloc double[1 << MaxAxisBits];
         double twoVariance = 2 * variance;
         for (int p = 0; p < n; p++)
@@ -213,47 +214,43 @@ public static class Demapper
 
         for (int k = 0; k < m; k++)
         {
+            // The levels where the bit is 0 and where it is 1, each in level-pattern order: pattern q of the other bits with the bit put in at this position.
             int shift = m - 1 - k;
+            int bit = 1 << shift;
+            int low = bit - 1;
             double max0 = double.NegativeInfinity;
             double max1 = double.NegativeInfinity;
-            for (int p = 0; p < n; p++)
+            for (int q = 0; q < half; q++)
             {
-                if (((p >> shift) & 1) == 0)
-                {
-                    max0 = Math.Max(max0, d[p]);
-                }
-                else
-                {
-                    max1 = Math.Max(max1, d[p]);
-                }
+                int p0 = ((q & ~low) << 1) | (q & low);
+                max0 = Math.Max(max0, d[p0]);
+                max1 = Math.Max(max1, d[p0 | bit]);
             }
 
-            // Terms are summed in level order as ever. A term whose exponent is below -746 is exactly 0, and one below -37 (under 8.5e-17)
-            // added to a sum of at least 1 is rounded away, and from the level that holds the maximum on (the term of exactly 1) the sum is at
+            // Terms are summed in pattern order as ever. A term whose exponent is below -746 is exactly 0, and one below -37 (under 8.5e-17)
+            // added to a sum of at least 1 is rounded away, and from the pattern that holds the maximum on (the term of exactly 1) the sum is at
             // least 1: those are skipped, everything else is added in the same order, so the sums are the same bit for bit. (NaN fails both tests.)
             double sum0 = 0;
             double sum1 = 0;
             bool seen0 = false;
             bool seen1 = false;
-            for (int p = 0; p < n; p++)
+            for (int q = 0; q < half; q++)
             {
-                if (((p >> shift) & 1) == 0)
+                int p0 = ((q & ~low) << 1) | (q & low);
+                double d0 = d[p0];
+                double d1 = d[p0 | bit];
+                double e0 = d0 - max0;
+                double e1 = d1 - max1;
+                seen0 |= d0 == max0;
+                seen1 |= d1 == max1;
+                if (!(e0 < -746.0) && !(seen0 && e0 < -37.0))
                 {
-                    double e0 = d[p] - max0;
-                    seen0 |= d[p] == max0;
-                    if (!(e0 < -746.0) && !(seen0 && e0 < -37.0))
-                    {
-                        sum0 += Math.Exp(e0);
-                    }
+                    sum0 += Math.Exp(e0);
                 }
-                else
+
+                if (!(e1 < -746.0) && !(seen1 && e1 < -37.0))
                 {
-                    double e1 = d[p] - max1;
-                    seen1 |= d[p] == max1;
-                    if (!(e1 < -746.0) && !(seen1 && e1 < -37.0))
-                    {
-                        sum1 += Math.Exp(e1);
-                    }
+                    sum1 += Math.Exp(e1);
                 }
             }
 

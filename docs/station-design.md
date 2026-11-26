@@ -1,6 +1,6 @@
-# The live station: a design draft
+# The live station: the design
 
-Status: a draft for review, nothing built. Every name marked "proposed" is a suggestion, not an existing API. It designs what this library lacks: something that takes received audio as it arrives, finds and decodes bursts, decides when the channel is free, decides what to send and when, and talks to a host program. The protocol is [adaptation-protocol.md](adaptation-protocol.md). The operations and events follow the [host interface](https://github.com/packet-net/pdn-soundmodem/blob/main/docs/dev/ofdm-fm/host-interface.md) in packet-net/pdn-soundmodem.
+Status: a design, approved by Tom on 2026-11-26 (see Decided); nothing built yet. Every name marked "proposed" is a suggestion, not an existing API. It designs what this library lacks: something that takes received audio as it arrives, finds and decodes bursts, decides when the channel is free, decides what to send and when, and talks to a host program. The protocol is [adaptation-protocol.md](adaptation-protocol.md). The operations and events follow the [host interface](https://github.com/packet-net/pdn-soundmodem/blob/main/docs/dev/ofdm-fm/host-interface.md) in packet-net/pdn-soundmodem.
 
 ## A. One clock: the receive stream's sample count
 
@@ -69,15 +69,15 @@ The prototype's rules, classified:
 | --- | --- | --- |
 | Clear 0.8 to 1.2 s before data, fresh draw | as stated | Convenience; kept as T101 and T102 |
 | After a lone report, the reporter goes on with data; the other leaves the channel clear about 1 s | 1 s | Protocol; kept |
-| Wait for the far end after a data burst | 2 s + 0.16 s per symbol | Prototype, sized to a slow decode; replaced (decision 2) |
+| Wait for the far end after a data burst | 2 s + 0.16 s per symbol | Prototype, sized to a slow decode; replaced (see Choices) |
 | Hold-off after a wait that ended in silence | up to 4 s | Convenience; dropped, the random delay covers it |
 | A report asked for waits for data to ride on | 1.5 s | Prototype; kept fixed (the protocol says "once the slot has passed") |
 | Duty limit | 27 s in 60 s | Prototype safeguard; the audio layer's |
-| Burst filled to 2.5 s, never over 9.5 s | | Made-up host and bench rule; decision 6 |
+| Burst filled to 2.5 s, never over 9.5 s | | Made-up host and bench rule; see Choices |
 | Listen 3 s first; no transmit while decoding | 3 s | Prototype; replaced by the start-up in C and by busy detection |
 | Datagram size 240, 16-byte probe at first contact | | Made-up host; not needed |
 
-After a burst with "report wanted", the sender counts a silence if nothing is heard from that station within 3 s of the burst's end (decision 2).
+After a burst with "report wanted", the sender counts a silence if nothing is heard from that station within 3 s of the burst's end (see Choices).
 
 ## G. Driving the adaptation rules
 
@@ -90,7 +90,7 @@ After a burst with "report wanted", the sender counts a silence if nothing is he
 
 The callsign is required. On the sample clock, while the station has been transmitting, it sends the identification burst every ten minutes (the interval of the existing Morse ident), counted from the first transmission after the last ident. An idle station never keys to identify. It does not look for the host identifying.
 
-Two gaps: `BurstRenderer.RenderData` accepts only data headers, and the protocol gives the ident payload no byte layout (decision 3).
+Two gaps: `BurstRenderer.RenderData` accepts only data headers, and the protocol gives the ident payload no byte layout (see Decided).
 
 The Morse ident is the audio layer's job in the program that hosts the modem. The station raises `IdentificationDue` on the same clock and exposes nothing else for it.
 
@@ -118,13 +118,19 @@ How a station comes by its number is not designed (packet-net/pdn-soundmodem#835
 7. **Identification**, with renderer and payload layout.
 8. **Hostile channel:** three stations, capture effect, interference part-way through a burst, a path cut and restored.
 
-## Open decisions for Tom
+## Decided (Tom, 26 November 2026)
 
-1. **First-slot and random delay values.** The protocol sets none. Options: the prototype's 0.8 to 1.2 s as T101 and T102, or shorter. Recommend the prototype's, then bench.
-2. **How long the sender waits before counting a silence.** The prototype's depended on its slow decode. Options: fixed, or growing with the burst. Recommend a fixed 3 s, reset once the C# decode time is measured.
-3. **Identification payload layout, and a renderer path for it.** Recommend a callsign length byte, the callsign, then the capability word, written into the protocol document in the same pull request.
-4. **Who runs decode work.** Options: the caller (proposed), or a thread the station owns. Recommend the caller: no threads in the library, deterministic tests.
-5. **Busy when a header will not read.** Options: opening plus one second then re-judge, or the longest burst. Recommend the first.
-6. **A ceiling on one burst's length.** The prototype used 2.5 s; the maximum is 11.5 s, and the host interface promises a 342-byte datagram fits at the most robust format, which needs more than 2.5 s. Options: fill to the format's maximum, or a ceiling of some airtime or one datagram, whichever is larger. Recommend the second, airtime fixed from the bench.
-7. **Undoing `Choose` after a withdrawn request.** The prototype restored the "told" state. Options: a non-committing preview in `LinkAdaptation`, or call `Choose` only once the channel is free and render at once. Recommend the second until rendering proves too slow.
-8. **Duty limit.** Options: the audio layer's, or the station's. Recommend the audio layer, which knows the transmitter.
+1. The shape is approved and is to be built in the order above: the station's only clock is the count of audio samples received, the library has no threads of its own, and the host interface is defined here, in the library, so that any program can use the modem.
+2. The identification burst's payload is the callsign as plain text behind a length byte, then the 16-bit capability word. It goes into the protocol document with step 7.
+
+## Choices this design makes
+
+Settled without being put to Tom, because each is a starting value or an internal matter. Each is a fixed value in the code, not a setting, and the bench may move it.
+
+1. **First slot and random delay:** the prototype's draw, 0.8 s plus up to 0.4 s. The protocol sets no figure.
+2. **Counting a silence:** a fixed 3 s after the burst's end, to be reset once the decode time of this implementation is measured.
+3. **Decode work is run by the caller.** No threads in the library, and tests are deterministic.
+4. **A candidate whose header will not read** holds the channel busy for the opening plus one second, then is judged again.
+5. **One burst's length:** a ceiling of airtime (the prototype's 2.5 s to start) or one datagram, whichever is the longer, so that a datagram that needs a long burst still goes whole.
+6. **`Choose` is called only once the channel is free**, and the burst is rendered at once, so there is nothing to undo when a request is withdrawn.
+7. **Transmitter duty limits belong to the audio layer**, which knows the transmitter.

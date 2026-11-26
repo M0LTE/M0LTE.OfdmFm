@@ -1,2 +1,62 @@
 # M0LTE.OfdmFm
-An adaptive OFDM modem for the audio path of an FM radio, for .NET: self-describing bursts, rate adaptation over the air, 0.25 to 62 kbit/s.
+
+An adaptive OFDM modem for the audio path of an FM radio, for .NET.
+
+Every burst names its own format in its header, so a receiver needs no setting to decode it. There are 256 standard formats, from 0.25 to about 70 kbit/s on a 25 kHz FM channel, and stations tell each other over the air what rate the path supports. The protocol is in [docs/adaptation-protocol.md](docs/adaptation-protocol.md).
+
+## State
+
+The transmit side and the receive arithmetic are complete, and are pinned to a prototype by test vectors. There is no live streaming receiver yet: the receivers here take a finished capture of a burst, not a continuous audio stream. It has not been published to NuGet.
+
+Extracted from [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem); see [PROVENANCE.md](PROVENANCE.md).
+
+| Type | What it is |
+| --- | --- |
+| `BurstRenderer` | Header and payload to 48 kHz audio samples. |
+| `BurstFinder`, `HeaderReader` | Finds burst starts in a capture, then reads a burst's header. |
+| `PayloadReceiver`, `TrackedReceiver` | Receive a burst's payload; the tracked one also follows a far station's sample clock through the burst. |
+| `BurstHeader`, `BurstHeaderCodec`, `StandardFormats` | The header, its 51-bit form, and the format list. |
+| `PayloadCodec` | Packs datagrams into a payload and unpacks them. |
+| `Interleaver`, `Constellation`, `Demapper` | The pieces of the chain, usable on their own. |
+
+## Build and test
+
+Needs the .NET 10 SDK.
+
+```sh
+dotnet test
+```
+
+The long tier of the tracked-receiver tests is off by default; set `SM_MASK_GATE=1` to run it.
+
+## Example
+
+```csharp
+using M0LTE.OfdmFm;
+
+// Transmit: pack a datagram, pick the shortest burst of a format that carries it, render it.
+int format = StandardFormats.MostRobust;
+byte[] payload = new byte[256];
+int length = PayloadCodec.Pack(null, new[] { new ReadOnlyMemory<byte>(datagram) }, payload);
+int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
+var header = BurstHeader.Data(sender: 1, destination: 0, format, symbols, burstNumber: 0);
+var renderer = new BurstRenderer();
+float[] audio = new float[renderer.SamplesFor(format, symbols)];
+renderer.RenderData(header, payload.AsSpan(0, length), audio);
+
+// Receive: find the burst, read its header, receive the payload.
+FormatOpening opening = StandardFormats.Describe(format).Opening;
+BurstCandidate found = BurstFinder.Find(audio, opening).Single();
+var headerReader = new HeaderReader();
+headerReader.TryRead(audio, found.Index, opening, out BurstHeader read);
+var receiver = new PayloadReceiver();
+byte[] received = new byte[PayloadReceiver.PayloadRoom(read)];
+PayloadReceiveResult result = receiver.Receive(audio, found.Index, read, headerReader.Bits, received);
+PayloadCodec.TryUnpack(received.AsSpan(0, result.PayloadBytes), toEveryone: true, out _, out DatagramReader datagrams);
+```
+
+The modem works at 48 kHz. This example runs as a test, `ReadmeExampleTests`.
+
+## Licence
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE) and [PROVENANCE.md](PROVENANCE.md).

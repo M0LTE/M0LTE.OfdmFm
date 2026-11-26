@@ -667,6 +667,12 @@ public sealed partial class Station
             length = HeaderReader.OpeningSamples(c.Opening);
         }
 
+        if (header.Sender != StationNumber)
+        {
+            // Anything heard from a station, whatever it was for: the answer wait of step 5 reads this (sample clock at the read).
+            _heardAt[header.Sender] = SampleCount;
+        }
+
         foreach (Extent e in _extents)
         {
             if (e.Header == header && Math.Abs(e.Start - c.Index) <= Sym)
@@ -1127,14 +1133,18 @@ public sealed partial class Station
     /// <summary>The largest datagram one burst to a neighbour at this format carries: the longest burst's payload less the largest prelude and the datagram's length.</summary>
     private static int DatagramRoomFor(int format) => Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - DatagramOverhead);
 
-    private void RaiseLinkState(int who, double now)
+    /// <summary>What the station knows of neighbour <paramref name="who"/> as a <see cref="LinkStateEvent"/>, with the format <c>Choose</c> gives now. False when the rules hold nothing about it.</summary>
+    private bool DescribeLink(int who, double now, out LinkStateEvent link, out int chosen)
     {
+        link = default;
+        chosen = 0;
         if (!_link.TryGetNeighbour(who, out LinkNeighbour? nb) || nb is null)
         {
-            return;
+            return false;
         }
 
         int format = _link.Choose(who, now).Format;
+        chosen = format;
         LinkKnowledge knowledge;
         double age;
         if (nb.ReportFormat is not null)
@@ -1153,16 +1163,26 @@ public sealed partial class Station
             age = 0;
         }
 
-        int room = DatagramRoomFor(format);
-        LinkShown shown = _shown[who];
-        if (shown.Shown && !shown.Gone && shown.Format == format && shown.Room == room && shown.Knowledge == knowledge)
+        bool known = knowledge != LinkKnowledge.FirstContact;
+        link = new LinkStateEvent(NameFor(who), known ? format : null, known ? StandardFormats.Rate(format) * 1000.0 : null, DatagramRoomFor(format), knowledge, Math.Max(0, age), false);
+        return true;
+    }
+
+    private void RaiseLinkState(int who, double now)
+    {
+        if (!DescribeLink(who, now, out LinkStateEvent link, out int format))
         {
             return;
         }
 
-        _shown[who] = new LinkShown(true, false, format, room, knowledge);
-        bool known = knowledge != LinkKnowledge.FirstContact;
-        LinkState?.Invoke(new LinkStateEvent(NameFor(who), known ? format : null, known ? StandardFormats.Rate(format) * 1000.0 : null, room, knowledge, Math.Max(0, age), false));
+        LinkShown shown = _shown[who];
+        if (shown.Shown && !shown.Gone && shown.Format == format && shown.Room == link.DatagramRoom && shown.Knowledge == link.Knowledge)
+        {
+            return;
+        }
+
+        _shown[who] = new LinkShown(true, false, format, link.DatagramRoom, link.Knowledge);
+        LinkState?.Invoke(link);
     }
 
     /// <summary>Raises "gone" for each neighbour the rules forget by <paramref name="seconds"/>: ten minutes without a word. The rules drop the record themselves the next time they are given the time for it.</summary>

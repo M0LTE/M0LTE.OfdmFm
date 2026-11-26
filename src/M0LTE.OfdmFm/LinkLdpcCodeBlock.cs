@@ -10,13 +10,10 @@ namespace M0LTE.OfdmFm;
 /// Building a plan allocates (about 4 bytes per coded bit) and is cheap; <see cref="PayloadCode"/> keeps a
 /// bounded set of them. The parity-check structure, which depends only on lifting size and rows kept, is
 /// shared between plans. Encoding allocates nothing when the caller supplies the scratch buffer
-/// (<see cref="ScratchLength"/>); the overload without one uses a per-thread buffer that grows once.
+/// (<see cref="ScratchLength"/>); the overload without one allocates its own.
 /// </remarks>
 internal sealed class LinkLdpcCodeBlock
 {
-    [ThreadStatic]
-    private static byte[]? _threadScratch;
-
     private readonly LinkLdpcStructure _structure;
     private readonly int[] _shortened;
     private readonly int[] _transmitOrder;
@@ -189,19 +186,9 @@ internal sealed class LinkLdpcCodeBlock
 
     /// <summary>
     /// Encodes <paramref name="info"/> (<see cref="InfoBits"/> bits, one per byte) into <paramref name="coded"/>
-    /// (<see cref="CodedBits"/> bits), using a per-thread scratch buffer.
+    /// (<see cref="CodedBits"/> bits), allocating its own scratch.
     /// </summary>
-    public void Encode(ReadOnlySpan<byte> info, Span<byte> coded)
-    {
-        int need = ScratchLength;
-        byte[] scratch = _threadScratch ??= new byte[need];
-        if (scratch.Length < need)
-        {
-            scratch = _threadScratch = new byte[need];
-        }
-
-        Encode(info, coded, scratch);
-    }
+    public void Encode(ReadOnlySpan<byte> info, Span<byte> coded) => Encode(info, coded, new byte[ScratchLength]);
 
     /// <summary>As <see cref="Encode(ReadOnlySpan{byte}, Span{byte})"/> with caller-supplied scratch of at least <see cref="ScratchLength"/> bytes.</summary>
     public void Encode(ReadOnlySpan<byte> info, Span<byte> coded, Span<byte> scratch)

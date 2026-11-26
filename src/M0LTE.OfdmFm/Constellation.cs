@@ -9,14 +9,13 @@ namespace M0LTE.OfdmFm;
 /// <remarks>
 /// Carrier values are held as two parallel <see cref="double"/> spans (real, imaginary), as the rest of the OFDM-FM code
 /// does for its twiddles and delays, not as <see cref="System.Numerics.Complex"/>. Bits are held one to a byte (0 or 1).
-/// The point tables are built once per size, on first use. The arithmetic is the prototype's, in the same order (levels
+/// The point tables are built once per size, when the type is first used. The arithmetic is the prototype's, in the same order (levels
 /// are exact integers, the scale is 1 / sqrt of a sum of two exact fractions), so the points agree with it to the bit.
 /// </remarks>
 public sealed class Constellation
 {
     private static readonly int[] Sizes = [1, 2, 4, 6, 8, 10];
-    private static readonly Constellation?[] Cache = new Constellation?[11];
-    private static readonly object Gate = new();
+    private static readonly Constellation?[] Cache = BuildAll();
 
     private readonly double[] _re;
     private readonly double[] _im;
@@ -49,7 +48,7 @@ public sealed class Constellation
     /// <summary>Whether <paramref name="bitsPerCarrier"/> is one of the sizes the standard formats use (1, 2, 4, 6, 8, 10).</summary>
     public static bool IsSupported(int bitsPerCarrier) => Array.IndexOf(Sizes, bitsPerCarrier) >= 0;
 
-    /// <summary>The constellation for a size, built on first use.</summary>
+    /// <summary>The constellation for a size; shared, immutable.</summary>
     public static Constellation For(int bitsPerCarrier)
     {
         if (!IsSupported(bitsPerCarrier))
@@ -57,10 +56,18 @@ public sealed class Constellation
             throw new ArgumentOutOfRangeException(nameof(bitsPerCarrier), bitsPerCarrier, "Carriers carry 1, 2, 4, 6, 8 or 10 bits.");
         }
 
-        lock (Gate)
+        return Cache[bitsPerCarrier]!;
+    }
+
+    private static Constellation?[] BuildAll()
+    {
+        var all = new Constellation?[11];
+        foreach (int bits in Sizes)
         {
-            return Cache[bitsPerCarrier] ??= new Constellation(bitsPerCarrier);
+            all[bits] = new Constellation(bits);
         }
+
+        return all;
     }
 
     /// <summary>The point for a bit pattern read as an integer, first bit most significant.</summary>

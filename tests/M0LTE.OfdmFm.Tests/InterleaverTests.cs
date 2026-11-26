@@ -6,10 +6,12 @@ namespace M0LTE.OfdmFm.Tests;
 
 public class InterleaverTests
 {
+    private readonly Interleaver interleaver = new();
+
     [Fact]
     public void Sixteen_Bits_Give_The_Documented_Permutation()
     {
-        Interleaver.Permutation(16).ToArray().Should().Equal(9, 3, 10, 4, 5, 6, 7, 15, 11, 2, 1, 12, 13, 14, 0, 8);
+        interleaver.Permutation(16).ToArray().Should().Equal(9, 3, 10, 4, 5, 6, 7, 15, 11, 2, 1, 12, 13, 14, 0, 8);
     }
 
     [Fact]
@@ -21,7 +23,7 @@ public class InterleaverTests
             int e = int.Parse(prop.Name);
             int[] expected = prop.Value.EnumerateArray().Select(x => x.GetInt32()).ToArray();
             expected.Length.Should().Be(e);
-            Interleaver.Permutation(e).ToArray().Should().Equal(expected, $"E = {e}");
+            interleaver.Permutation(e).ToArray().Should().Equal(expected, $"E = {e}");
         }
     }
 
@@ -31,7 +33,7 @@ public class InterleaverTests
     public void Large_Permutations_Match_The_Prototypes_Hash_And_Ends(int e)
     {
         var v = LinkVectorFile.Load("symbol_vectors.json").GetProperty("interleaver").GetProperty("big").GetProperty(e.ToString());
-        int[] p = Interleaver.Permutation(e).ToArray();
+        int[] p = interleaver.Permutation(e).ToArray();
         p.Length.Should().Be(e);
         var bytes = new byte[4 * e];
         for (int i = 0; i < e; i++)
@@ -52,15 +54,15 @@ public class InterleaverTests
         var coded = new byte[E];
         rng.NextBytes(coded);
         var tx = new byte[E];
-        Interleaver.Interleave<byte>(coded, tx);
-        var p = Interleaver.Permutation(E);
+        interleaver.Interleave<byte>(coded, tx);
+        var p = interleaver.Permutation(E);
         for (int k = 0; k < E; k++)
         {
             tx[p[k]].Should().Be(coded[k]);
         }
 
         var back = new byte[E];
-        Interleaver.Deinterleave<byte>(tx, back);
+        interleaver.Deinterleave<byte>(tx, back);
         back.Should().Equal(coded);
     }
 
@@ -76,22 +78,21 @@ public class InterleaverTests
 
         var tx = new float[E];
         var back = new float[E];
-        Interleaver.Interleave<float>(coded, tx);
-        Interleaver.Deinterleave<float>(tx, back);
+        interleaver.Interleave<float>(coded, tx);
+        interleaver.Deinterleave<float>(tx, back);
         back.Should().Equal(coded);
     }
 
     [Fact]
     public void The_Cache_Holds_At_Most_Four_Permutations()
     {
-        Interleaver.ClearCache();
         for (int e = 100; e < 110; e++)
         {
-            Interleaver.Permutation(e);
-            Interleaver.CachedCount.Should().BeLessThanOrEqualTo(Interleaver.CacheSize);
+            interleaver.Permutation(e);
+            interleaver.CachedCount.Should().BeLessThanOrEqualTo(Interleaver.CacheSize);
         }
 
-        Interleaver.CachedCount.Should().Be(Interleaver.CacheSize);
+        interleaver.CachedCount.Should().Be(Interleaver.CacheSize);
     }
 
     [Fact]
@@ -100,12 +101,12 @@ public class InterleaverTests
         const int E = 5000;
         var coded = new byte[E];
         var tx = new byte[E];
-        Interleaver.Interleave<byte>(coded, tx);
+        interleaver.Interleave<byte>(coded, tx);
         long before = GC.GetAllocatedBytesForCurrentThread();
         for (int i = 0; i < 20; i++)
         {
-            Interleaver.Interleave<byte>(coded, tx);
-            Interleaver.Deinterleave<byte>(tx, coded);
+            interleaver.Interleave<byte>(coded, tx);
+            interleaver.Deinterleave<byte>(tx, coded);
         }
 
         (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
@@ -116,7 +117,7 @@ public class InterleaverTests
     {
         foreach (int e in new[] { 0, -1 })
         {
-            Action act = () => Interleaver.Permutation(e);
+            Action act = () => interleaver.Permutation(e);
             act.Should().Throw<ArgumentOutOfRangeException>();
         }
     }

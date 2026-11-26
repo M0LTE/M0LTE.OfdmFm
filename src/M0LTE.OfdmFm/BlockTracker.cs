@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace M0LTE.OfdmFm;
 
 /// <summary>
@@ -29,12 +31,20 @@ internal sealed class BlockTracker
     private const double HighHz = 8050.0;
     private const int Iterations = 3;
 
+    // Blocks whose grid searches share one pass over the steering table.
+    private const int Tile = 32;
+
     private static readonly double[] Window = BuildWindow();
     private static readonly int FirstBin;
     private static readonly int Bins;
     private static readonly double[] Hz;
+
+    // The steering table, grouped by as many grid delays as a vector holds: [((chunk * Bins) + bin) * Lanes + lane] is the steering of delay chunk * Lanes + lane
+    // (zero beyond the grid), so that a vector of delays is searched at once and each delay's sum over the bins is still taken in bin order.
     private static readonly double[] SteerRe;
     private static readonly double[] SteerIm;
+    private static readonly int Lanes = Vector<double>.Count;
+    private static readonly int Chunks;
     private static readonly double[] Grid;
 
     private readonly int _maxBlocks;
@@ -56,6 +66,10 @@ internal sealed class BlockTracker
     private readonly double[] _cIm;
     private readonly double[] _sumRe;
     private readonly double[] _sumIm;
+    private readonly double[] _tileRe = new double[Tile * Bins];
+    private readonly double[] _tileIm = new double[Tile * Bins];
+    private readonly double[] _tileBest = new double[Tile];
+    private readonly int[] _tileGrid = new int[Tile];
 
     static BlockTracker()
     {
@@ -88,16 +102,18 @@ internal sealed class BlockTracker
         double start = -1500e-6;
         double delta = (start + 4e-6) - start;
         Grid = new double[GridSteps];
-        SteerRe = new double[GridSteps * Bins];
-        SteerIm = new double[GridSteps * Bins];
+        Chunks = (GridSteps + Lanes - 1) / Lanes;
+        SteerRe = new double[Chunks * Bins * Lanes];
+        SteerIm = new double[Chunks * Bins * Lanes];
         for (int g = 0; g < GridSteps; g++)
         {
             Grid[g] = start + (g * delta);
             for (int b = 0; b < Bins; b++)
             {
                 double angle = 2 * Math.PI * Hz[b] * Grid[g];
-                SteerRe[(g * Bins) + b] = Math.Cos(angle);
-                SteerIm[(g * Bins) + b] = Math.Sin(angle);
+                int at = ((((g / Lanes) * Bins) + b) * Lanes) + (g % Lanes);
+                SteerRe[at] = Math.Cos(angle);
+                SteerIm[at] = Math.Sin(angle);
             }
         }
     }
@@ -263,41 +279,7 @@ internal sealed class BlockTracker
         }
 
         // Each block's delay by a grid search of the correlation of what is left after the channel with a delay's steering.
-        for (int blk = 0; blk < m; blk++)
-        {
-            int o = blk * Bins;
-            for (int b = 0; b < Bins; b++)
-            {
-                // C = Y * conj(H * X)
-                double hxRe = (_hRe[b] * _xRe[o + b]) - (_hIm[b] * _xIm[o + b]);
-                double hxIm = (_hRe[b] * _xIm[o + b]) + (_hIm[b] * _xRe[o + b]);
-                _cRe[b] = (_yRe[o + b] * hxRe) + (_yIm[o + b] * hxIm);
-                _cIm[b] = (_yIm[o + b] * hxRe) - (_yRe[o + b] * hxIm);
-            }
-
-            double best = -1;
-            int bestG = 0;
-            for (int g = 0; g < GridSteps; g++)
-            {
-                int so = g * Bins;
-                double re = 0;
-                double im = 0;
-                for (int b = 0; b < Bins; b++)
-                {
-                    re += (_cRe[b] * SteerRe[so + b]) - (_cIm[b] * SteerIm[so + b]);
-                    im += (_cRe[b] * SteerIm[so + b]) + (_cIm[b] * SteerRe[so + b]);
-                }
-
-                double a = (re * re) + (im * im);
-                if (a > best)
-                {
-                    best = a;
-                    bestG = g;
-                }
-            }
-
-            _tau[blk] = Grid[bestG];
-        }
+        GridSearch(m);
 
         for (int iteration = 0; iteration < Iterations; iteration++)
         {
@@ -393,6 +375,125 @@ internal sealed class BlockTracker
         }
 
         return m;
+    }
+
+    // Each block's delay by a grid search. The correlation at each delay is summed over the bins in bin order, one delay to a lane, so every sum is
+    // exactly the scalar loop's; blocks are taken a tile at a time so the steering table is read once for the tile, and four blocks at a time so
+    // their independent sums overlap.
+    private void GridSearch(int m)
+    {
+        int lanes = Lanes;
+        for (int first = 0; first < m; first += Tile)
+        {
+            int count = Math.Min(Tile, m - first);
+            for (int t = 0; t < count; t++)
+            {
+                int o = (first + t) * Bins;
+                int q = t * Bins;
+                for (int b = 0; b < Bins; b++)
+                {
+                    // C = Y * conj(H * X)
+                    double hxRe = (_hRe[b] * _xRe[o + b]) - (_hIm[b] * _xIm[o + b]);
+                    double hxIm = (_hRe[b] * _xIm[o + b]) + (_hIm[b] * _xRe[o + b]);
+                    _tileRe[q + b] = (_yRe[o + b] * hxRe) + (_yIm[o + b] * hxIm);
+                    _tileIm[q + b] = (_yIm[o + b] * hxRe) - (_yRe[o + b] * hxIm);
+                }
+
+                _tileBest[t] = -1;
+                _tileGrid[t] = 0;
+            }
+
+            for (int chunk = 0; chunk < Chunks; chunk++)
+            {
+                int table = chunk * Bins * lanes;
+                int t = 0;
+                for (; t + 4 <= count; t += 4)
+                {
+                    Search4(chunk, table, t);
+                }
+
+                for (; t < count; t++)
+                {
+                    Search1(chunk, table, t);
+                }
+            }
+
+            for (int t = 0; t < count; t++)
+            {
+                _tau[first + t] = Grid[_tileGrid[t]];
+            }
+        }
+    }
+
+    private void Search4(int chunk, int table, int t)
+    {
+        int lanes = Lanes;
+        int q0 = t * Bins;
+        int q1 = q0 + Bins;
+        int q2 = q1 + Bins;
+        int q3 = q2 + Bins;
+        Vector<double> re0 = Vector<double>.Zero, im0 = Vector<double>.Zero;
+        Vector<double> re1 = Vector<double>.Zero, im1 = Vector<double>.Zero;
+        Vector<double> re2 = Vector<double>.Zero, im2 = Vector<double>.Zero;
+        Vector<double> re3 = Vector<double>.Zero, im3 = Vector<double>.Zero;
+        for (int b = 0; b < Bins; b++)
+        {
+            var sr = new Vector<double>(SteerRe, table + (b * lanes));
+            var si = new Vector<double>(SteerIm, table + (b * lanes));
+            var cr = new Vector<double>(_tileRe[q0 + b]);
+            var ci = new Vector<double>(_tileIm[q0 + b]);
+            re0 += (cr * sr) - (ci * si);
+            im0 += (cr * si) + (ci * sr);
+            cr = new Vector<double>(_tileRe[q1 + b]);
+            ci = new Vector<double>(_tileIm[q1 + b]);
+            re1 += (cr * sr) - (ci * si);
+            im1 += (cr * si) + (ci * sr);
+            cr = new Vector<double>(_tileRe[q2 + b]);
+            ci = new Vector<double>(_tileIm[q2 + b]);
+            re2 += (cr * sr) - (ci * si);
+            im2 += (cr * si) + (ci * sr);
+            cr = new Vector<double>(_tileRe[q3 + b]);
+            ci = new Vector<double>(_tileIm[q3 + b]);
+            re3 += (cr * sr) - (ci * si);
+            im3 += (cr * si) + (ci * sr);
+        }
+
+        Pick(chunk, t, (re0 * re0) + (im0 * im0));
+        Pick(chunk, t + 1, (re1 * re1) + (im1 * im1));
+        Pick(chunk, t + 2, (re2 * re2) + (im2 * im2));
+        Pick(chunk, t + 3, (re3 * re3) + (im3 * im3));
+    }
+
+    private void Search1(int chunk, int table, int t)
+    {
+        int lanes = Lanes;
+        int q = t * Bins;
+        Vector<double> re = Vector<double>.Zero, im = Vector<double>.Zero;
+        for (int b = 0; b < Bins; b++)
+        {
+            var sr = new Vector<double>(SteerRe, table + (b * lanes));
+            var si = new Vector<double>(SteerIm, table + (b * lanes));
+            var cr = new Vector<double>(_tileRe[q + b]);
+            var ci = new Vector<double>(_tileIm[q + b]);
+            re += (cr * sr) - (ci * si);
+            im += (cr * si) + (ci * sr);
+        }
+
+        Pick(chunk, t, (re * re) + (im * im));
+    }
+
+    // The delays of a chunk in order, each kept only if strictly better than every one before it, as the scalar search keeps them.
+    private void Pick(int chunk, int t, Vector<double> power)
+    {
+        for (int l = 0; l < Lanes; l++)
+        {
+            int g = (chunk * Lanes) + l;
+            if (g < GridSteps && power[l] > _tileBest[t])
+            {
+                _tileBest[t] = power[l];
+                _tileGrid[t] = g;
+            }
+        }
     }
 
     // numpy.hanning(1024).

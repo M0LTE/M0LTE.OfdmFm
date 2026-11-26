@@ -34,6 +34,8 @@ dotnet test
 
 The long tier of the tracked-receiver tests is off by default; set `SM_MASK_GATE=1` to run it.
 
+To time the tracked receiver on a dense burst and on the longest low-rate burst, run `SM_BENCH=1 dotnet run -c Release --project tests/M0LTE.OfdmFm.Tests -- -class M0LTE.OfdmFm.Tests.TrackedReceiverBenchmark`; it prints figures and asserts none. `SM_DUMP=<file>` (with `SM_DUMP_FULL=1` for the long synthetic bursts) writes everything the tracked receiver finds, bit for bit, so two builds can be compared.
+
 ## Example
 
 ```csharp

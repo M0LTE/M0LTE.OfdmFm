@@ -11,7 +11,7 @@ namespace M0LTE.OfdmFm.Tests;
 /// </summary>
 public class TrackedReceiverBenchmark
 {
-    private const int Pad = 4096;
+    internal const int Pad = 4096;
 
     [Fact]
     public void Time_The_Tracked_Receive()
@@ -150,7 +150,7 @@ public class TrackedReceiverBenchmark
     }
 
     // The burst through a sample clock that is ppm off and drifts, then white noise: the capture, padded with silence.
-    private static float[] Impair(TestBurst burst, double ppm, double driftPpmPerSecond, double snrDb)
+    internal static float[] Impair(TestBurst burst, double ppm, double driftPpmPerSecond, double snrDb)
     {
         float[] audio = burst.Audio;
         var padded = new float[audio.Length + (2 * Pad)];
@@ -185,7 +185,7 @@ public class TrackedReceiverBenchmark
         return output;
     }
 
-    private static void Say(string line)
+    internal static void Say(string line)
     {
         Console.WriteLine(line);
         if (Environment.GetEnvironmentVariable("SM_BENCH_OUT") is { Length: > 0 } path)

@@ -401,7 +401,7 @@ public class StationSendTests
     public void A_Burst_Handed_Over_Does_Not_Allocate_Once_Its_Shape_Has_Been_Seen()
     {
         // One station and a bare audio layer (no simulation around it, which allocates its own copies). The same datagram a few times: the first sends grow every pool and buffer; later ones allocate nothing.
-        var station = new Station("M0ALLOC", 1, new Random(3), runJobsInline: true);
+        var station = new Station("M0ALLOC", 1, new Random(3), runJobsInline: true) { IdentificationSuspended = true };
         station.Bind(B, 2);
         long id = 0;
         long earliest = 0;

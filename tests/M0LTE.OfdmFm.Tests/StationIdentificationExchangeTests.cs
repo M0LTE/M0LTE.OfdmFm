@@ -81,8 +81,8 @@ public class StationIdentificationExchangeTests
         long aSent = channel.Log.Where(l => l.Contains(" A modem sent Identification", StringComparison.Ordinal)).Select(l => long.Parse(l.Split(' ')[0])).Single();
         long aHeardAtB = b.Identified.Single().Clock;
         aHeardAtB.Should().BeGreaterThan(aSent, "heard when it has been on the air and received");
-        a.IdentificationsDue.Single().Clock.Should().BeLessThanOrEqualTo(aSent);
-        a.Transmissions[0].Start.Should().Be(a.IdentificationsDue.Single().Clock - Interval, "ten minutes (here the shortened interval) after the first transmission");
+        a.IdentificationsDue.Single().Clock.Should().BeLessThan(aSent);
+        a.IdentificationsDue.Single().Clock.Should().Be(a.Transmissions[0].Start + a.Transmissions[0].Length, "due at once, when its first transmission ends");
     }
 
     [Fact]

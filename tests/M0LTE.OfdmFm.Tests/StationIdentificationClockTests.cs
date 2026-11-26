@@ -141,28 +141,40 @@ internal sealed class IdentDriver
 }
 
 /// <summary>
-/// The identification clock (step 7). It runs on the sample clock, only while the station transmits, and these tests step it with a shorter interval (a seam: <c>Station.IdentificationInterval</c>) so that a run is seconds and not ten minutes of audio through the detector.
-/// The seam is sound because the interval is read once, when a transmission starts the count, and goes into the due sample of one timer; the real interval is pinned by a test of its own and run end to end behind <c>SM_MASK_GATE=1</c>.
+/// The identification rule (step 7): due when ten minutes have passed since the last identification (or there was none) and the station has transmitted since. These tests step it with a shorter interval (a seam:
+/// <c>Station.IdentificationInterval</c>) so that a run is seconds and not ten minutes of audio through the detector. The seam is sound because the interval is read in one place (when a transmission starts) and goes into one timer's
+/// due sample and one comparison; the real interval is pinned by a test of its own and run end to end behind <c>SM_MASK_GATE=1</c>.
 /// </summary>
 public class StationIdentificationClockTests
 {
     /// <summary>Twelve seconds: longer than the station's own start-up listen (5 s) and a burst, short enough to step.</summary>
     private const long Interval = 12L * 48000;
 
+    private static void RunUntilAir(IdentDriver d, int count)
+    {
+        while (d.Air.Count < count)
+        {
+            d.RunTo(d.Station.SampleCount + 4800);
+        }
+    }
+
     [Fact]
-    public void The_Interval_Is_Ten_Minutes_Of_The_Sample_Clock_And_The_Count_Starts_At_The_First_Transmission()
+    public void The_Interval_Is_Ten_Minutes_Of_The_Sample_Clock_Counted_From_When_The_Last_Identification_Started()
     {
         Station.IdentificationIntervalSamples.Should().Be(28_800_000);
         var d = new IdentDriver(0);
         d.Station.IdentificationInterval.Should().Be(28_800_000);
-        d.Station.IdentificationResting.Should().BeTrue();
-        d.Station.IdentificationDueAt.Should().BeNull();
+        d.Station.LastIdentificationStart.Should().BeNull();
         d.RunTo(6 * 48000);
         d.SendToEveryone(1);
-        d.RunTo(10 * 48000);
-        d.Air.Should().ContainSingle();
-        d.Station.IdentificationDueAt.Should().Be(d.Air[0].Start + 28_800_000);
-        d.Station.NextTimerDue.Should().Be(d.Station.IdentificationDueAt, "one timer, at the due sample");
+        RunUntilAir(d, 2);
+        long identStart = d.Air[1].Start;
+        d.Station.LastIdentificationStart.Should().Be(identStart);
+        d.Station.IdentificationDueAt.Should().BeNull("nothing has been sent since it");
+        d.RunTo(identStart + 200000);
+        d.SendToEveryone(2);
+        d.RunTo(identStart + 600000);
+        d.Station.IdentificationDueAt.Should().Be(identStart + 28_800_000, "ten minutes from the start of the last identification burst, whatever the wait for the channel was");
     }
 
     [Fact]
@@ -172,11 +184,11 @@ public class StationIdentificationClockTests
         d.RunTo(4 * Interval);
         d.Log.Should().BeEmpty();
         d.Station.IdentificationResting.Should().BeTrue();
-        d.Station.PendingTimers.Should().Be(0, "the clock is not even counting");
+        d.Station.PendingTimers.Should().Be(0);
     }
 
     [Fact]
-    public void A_Station_That_Transmits_Once_Identifies_Once_An_Interval_After_That_First_Transmission_And_Then_Rests()
+    public void A_Station_That_Has_Been_Quiet_And_Transmits_Is_Due_At_Once_At_The_End_Of_That_Transmission_And_Identifies_Right_After_It_And_Only_Once()
     {
         var d = new IdentDriver(Interval);
         d.RunTo(6 * 48000);
@@ -184,34 +196,32 @@ public class StationIdentificationClockTests
         d.RunTo(5 * Interval);
 
         d.Air.Should().HaveCount(2, "the datagram, then the identification");
-        long first = d.Air[0].Start;
-        d.Clocks("due").Should().Equal(first + Interval);
-        d.Log.Single(l => l.What == "due").Value.Should().Be(first + Interval, "the event's time is the due sample");
+        d.Clocks("due").Should().Equal(d.Air[0].End);
+        d.Air[1].Start.Should().Be(d.Air[0].End + 4800 + 2400, "right after, by the ordinary rules: the own tail and the first slot");
         d.Clocks("modem Identification").Should().ContainSingle();
         d.Station.IdentificationsSent.Should().Be(1);
-        d.Station.IdentificationResting.Should().BeTrue("the identification burst did not start the count again");
+        d.Station.IdentificationResting.Should().BeTrue("the identification burst is not a transmission since");
         d.Station.PendingTimers.Should().Be(0);
-        d.Requests.Should().HaveCount(2);
     }
 
     [Fact]
-    public void Each_Identification_Raises_Due_Once_Then_Asks_Then_Starts_Then_Says_Modem_Sent_Once_In_That_Order()
+    public void Each_Identification_Raises_Due_Once_Then_Asks_Then_Says_Modem_Sent_Once_In_That_Order_And_Due_Is_Raised_When_The_Transmission_Ends()
     {
         var d = new IdentDriver(Interval);
         d.RunTo(6 * 48000);
         d.SendToEveryone(1);
         d.RunTo(3 * Interval);
 
-        string[] order = [.. d.Log.Select(l => l.What).SkipWhile(w => w != "due")];
-        order.Should().Equal("due", "request", "modem Identification", "start", "end"); // ModemSent is raised inside the audio layer's call to TransmitStarted, which the driver logs after it returns
+        d.Log.Where(l => l.What is "due" or "request" or "modem Identification").Select(l => l.What).SkipWhile(w => w != "due")
+            .Should().Equal("due", "request", "modem Identification");
         d.Station.IdentificationsDue.Should().Be(1);
+        d.Log.Single(l => l.What == "due").Clock.Should().Be(d.Air[0].End, "not in the middle of the transmission");
     }
 
     [Fact]
-    public void A_Station_That_Keeps_Transmitting_Identifies_Every_Interval_From_The_First_Transmission_After_The_Last_Identification()
+    public void A_Station_That_Keeps_Transmitting_Identifies_Every_Interval_Each_Counted_From_The_Start_Of_The_Previous_Identification()
     {
-        const long interval = Interval;
-        var d = new IdentDriver(interval);
+        var d = new IdentDriver(Interval);
         d.RunTo(6 * 48000);
         for (int i = 0; i < 10; i++)
         {
@@ -221,36 +231,70 @@ public class StationIdentificationClockTests
 
         d.RunTo(90 * 48000L);
         List<long> due = [.. d.Clocks("due")];
-        List<long> sent = [.. d.Log.Where(l => l.What == "modem Identification").Select(l => l.Clock)];
-        due.Count.Should().BeGreaterThanOrEqualTo(4);
-        sent.Should().HaveCount(due.Count, "one burst for each time it fell due");
-
-        // The first is an interval after the first transmission. Each later one is an interval after the first transmission that started after the previous identification burst began.
-        due[0].Should().Be(d.Air[0].Start + interval);
-        int identLength = IdentLength("M0LTE");
-        for (int i = 1; i < due.Count; i++)
+        List<long> starts = [.. d.Air.Where(a => a.Length == IdentLength("M0LTE")).Select(a => a.Start)];
+        starts.Count.Should().BeGreaterThanOrEqualTo(5);
+        starts.Should().HaveCount(due.Count, "one burst for each time it fell due");
+        due[0].Should().Be(d.Air[0].End);
+        for (int i = 1; i < starts.Count; i++)
         {
-            long next = d.Air.First(a => a.Start > sent[i - 1] && a.Length != identLength).Start;
-            due[i].Should().Be(next + interval);
-            (due[i] - sent[i - 1]).Should().BeGreaterThan(interval).And.BeLessThan(interval + (15L * 48000), "a datagram every 8 s follows each identification closely");
+            (starts[i] - starts[i - 1]).Should().BeGreaterThanOrEqualTo(Interval).And.BeLessThan(Interval + (10L * 48000), "an interval from the last one, then the end of the transmission in progress and the wait for the channel");
+            d.Air.Should().NotContain(a => a.Start < due[i] && due[i] < a.End, "it is raised when the station is not keyed, never in the middle of a transmission");
         }
     }
 
     [Fact]
-    public void The_Identification_Burst_Does_Not_Restart_The_Clock_But_A_Later_Datagram_Does()
+    public void A_Station_Quiet_For_More_Than_The_Interval_Since_Its_Last_Identification_Is_Due_At_Once_When_It_Transmits_Again()
     {
         var d = new IdentDriver(Interval);
         d.RunTo(6 * 48000);
         d.SendToEveryone(1);
-        d.RunTo(2 * Interval);
-        long identStart = d.Air[^1].Start;
-        d.Station.IdentificationResting.Should().BeTrue();
-        d.RunTo(identStart + (2 * Interval));
-        d.Air.Should().HaveCount(2, "an idle station does not identify again and again");
+        RunUntilAir(d, 2);
+        long identStart = d.Air[1].Start;
+        d.RunTo(identStart + (3 * Interval));
+        d.Air.Should().HaveCount(2, "nothing sent since: nothing owed, nothing keyed");
         d.SendToEveryone(2);
         d.RunTo(identStart + (4 * Interval));
-        d.Air.Should().HaveCount(4, "a new datagram started the count again");
-        d.Clocks("due").Last().Should().Be(d.Air[2].Start + Interval);
+        d.Air.Should().HaveCount(4);
+        d.Clocks("due").Last().Should().Be(d.Air[2].End, "at once, at the end of that transmission");
+        d.Air[3].Start.Should().Be(d.Air[2].End + 4800 + 2400);
+    }
+
+    [Fact]
+    public void A_Station_That_Identified_Transmitted_Again_Within_The_Interval_And_Went_Quiet_Keys_Once_When_The_Interval_Is_Up()
+    {
+        var d = new IdentDriver(Interval);
+        d.RunTo(6 * 48000);
+        d.SendToEveryone(1);
+        RunUntilAir(d, 2);
+        long identStart = d.Air[1].Start;
+        d.RunTo(d.Air[1].End + 48000);
+        d.SendToEveryone(2);
+        d.RunTo(identStart + (5 * Interval));
+
+        d.Air.Should().HaveCount(4, "datagram, identification, datagram, one more identification");
+        d.Air[2].End.Should().BeLessThan(identStart + Interval);
+        d.Clocks("due").Last().Should().Be(identStart + Interval, "when the ten minutes since the last one are up, while the station is idle");
+        d.Air[3].Start.Should().Be(identStart + Interval, "the channel was long clear, so it goes the moment it is due");
+        d.Station.IdentificationResting.Should().BeTrue();
+    }
+
+    [Fact]
+    public void An_Identification_Due_Inside_The_Stations_Own_Burst_Waits_For_The_Burst_To_End_Before_It_Is_Raised()
+    {
+        var d = new IdentDriver(4 * 48000L);
+        d.RunTo(6 * 48000);
+        d.SendToEveryone(1);
+        RunUntilAir(d, 2);
+        long identStart = d.Air[1].Start;
+        d.SendToEveryone(2, length: 200);
+        RunUntilAir(d, 3);
+        d.RunTo(identStart + (12L * 48000));
+
+        d.Air.Should().HaveCount(4);
+        d.Air[2].Start.Should().BeLessThan(identStart + (4 * 48000L), "the second datagram began before the interval ran out");
+        d.Air[2].End.Should().BeGreaterThan(identStart + (4 * 48000L), "and was still on the air when it did");
+        d.Clocks("due").Last().Should().Be(d.Air[2].End);
+        d.Air[3].Start.Should().Be(d.Air[2].End + 4800 + 2400);
     }
 
     [Fact]
@@ -259,20 +303,20 @@ public class StationIdentificationClockTests
         var d = new IdentDriver(Interval);
         d.RunTo(6 * 48000);
         d.SendToEveryone(1);
-        d.RunTo(10 * 48000);
-        long due = d.Air[0].Start + Interval;
-        long freed = due + (400L * 48000);
+        d.RunTo(7 * 48000);
+        d.Air.Should().ContainSingle();
+        long due = d.Air[0].End;
+        long freed = due + (60L * 48000);
         d.At(due - 1000, () => d.Station.SetExternalBusy(true));
         d.At(freed, () => d.Station.SetExternalBusy(false));
         d.RunTo(freed + 12 * 48000);
 
         d.Clocks("due").Should().Equal(due);
-        d.Requests.Should().HaveCount(2);
         d.Air.Should().HaveCount(2);
         d.Air[1].Start.Should().Be(freed + 4800 + 2400, "100 ms after the indication drops, then the first slot's 50 ms");
         d.Station.IdentificationsDue.Should().Be(1);
         d.Station.IdentificationOwed.Should().BeFalse();
-        d.Station.IdentificationResting.Should().BeTrue();
+        d.Station.LastIdentificationStart.Should().Be(d.Air[1].Start, "counted from when it went on the air, not from when it fell due");
     }
 
     [Fact]
@@ -281,8 +325,9 @@ public class StationIdentificationClockTests
         var d = new IdentDriver(Interval);
         d.RunTo(6 * 48000);
         d.SendToEveryone(1);
-        d.RunTo(12 * 48000);
-        long due = d.Air[0].Start + Interval;
+        d.RunTo(7 * 48000);
+        d.Air.Should().ContainSingle();
+        long due = d.Air[0].End;
         long burstEnd = due + (30L * 48000);
         d.At(due - 100, () => d.Station.NoteBurst(burstEnd));
         d.At(due + 200, () => d.SendToEveryone(2));
@@ -290,26 +335,11 @@ public class StationIdentificationClockTests
         d.RunTo(burstEnd + (11L * 48000));
 
         d.Air.Should().HaveCount(4, "the first datagram, the identification, then the expedited datagram and the ordinary one queued while it was owed");
-        d.Air[2].Start.Should().BeGreaterThan(d.Air[1].End);
         d.Air[1].Start.Should().Be(burstEnd + 2400, "not while another station's burst is on the air, and the channel clear 50 ms after it");
         d.Air[1].Length.Should().Be(IdentLength("M0LTE"), "the identification is first, ahead of the datagrams queued after it fell due");
+        d.Air[2].Start.Should().BeGreaterThan(d.Air[1].End);
         string[] after = [.. d.Log.Select(l => l.What).SkipWhile(w => w != "due")];
         after.Where(w => w.StartsWith("modem", StringComparison.Ordinal) || w.StartsWith("transmitted", StringComparison.Ordinal)).Should().Equal("modem Identification", "transmitted 3", "transmitted 2");
-    }
-
-    [Fact]
-    public void An_Identification_That_Falls_Due_Inside_The_Stations_Own_Burst_Goes_After_It_Ends_Plus_The_Tail_And_The_First_Slot()
-    {
-        var d = new IdentDriver(24000);
-        d.RunTo(6 * 48000);
-        d.SendToEveryone(1, length: 200);
-        d.RunTo(60 * 48000);
-
-        d.Air.Should().HaveCount(2);
-        long start = d.Air[0].Start;
-        d.Clocks("due").Should().Equal(start + 24000);
-        d.Air[0].End.Should().BeGreaterThan(start + 24000, "it fell due while the datagram was on the air");
-        d.Air[1].Start.Should().Be(d.Air[0].End + 4800 + 2400);
     }
 
     [Fact]
@@ -334,21 +364,23 @@ public class StationIdentificationClockTests
     }
 
     [Fact]
-    public void The_Whole_Ten_Minutes_Run_Through_The_Detector_Give_One_Identification_Exactly_Ten_Minutes_After_The_First_Transmission()
+    public void The_Whole_Ten_Minutes_Run_Through_The_Detector_Give_One_Identification_Exactly_Ten_Minutes_After_The_Last_One_Started()
     {
-        Assert.SkipWhen(Environment.GetEnvironmentVariable("SM_MASK_GATE") != "1", "set SM_MASK_GATE=1: ten minutes of audio goes through the detector, twice");
+        Assert.SkipWhen(Environment.GetEnvironmentVariable("SM_MASK_GATE") != "1", "set SM_MASK_GATE=1: ten minutes of audio goes through the detector");
         var d = new IdentDriver(0);
         d.RunTo(6 * 48000);
         d.SendToEveryone(1);
-        d.RunTo(9 * 60 * 48000L);
-        d.Clocks("due").Should().BeEmpty("nine minutes after the first transmission is not ten");
-        d.RunTo(11 * 60 * 48000L);
-        long first = d.Air[0].Start;
-        d.Clocks("due").Should().Equal(first + (600L * 48000));
-        d.Air.Should().HaveCount(2);
-        d.Station.IdentificationsSent.Should().Be(1);
-        d.RunTo(16 * 60 * 48000L);
-        d.Air.Should().HaveCount(2, "rested: nothing sent for fifteen idle minutes");
+        RunUntilAir(d, 2);
+        long identStart = d.Air[1].Start;
+        d.RunTo(d.Air[1].End + 48000);
+        d.SendToEveryone(2);
+        d.RunTo(identStart + 28_800_000 - 48000);
+        d.Clocks("due").Should().HaveCount(1, "only the first: one second short of ten minutes");
+        d.RunTo(identStart + 28_800_000 + (10L * 48000));
+        d.Clocks("due").Last().Should().Be(identStart + 28_800_000);
+        d.Air.Should().HaveCount(4);
+        d.RunTo(identStart + 28_800_000 + (60L * 48000));
+        d.Air.Should().HaveCount(4, "nothing sent since: nothing more");
     }
 
     private static int IdentLength(string callsign)

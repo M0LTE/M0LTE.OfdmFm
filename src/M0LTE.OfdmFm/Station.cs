@@ -21,7 +21,7 @@ internal enum TransmitState
 /// receives (audio pushed in comes out as <see cref="Received"/> datagrams, <see cref="PathReport"/> and <see cref="LinkState"/> events and calls on the adaptation rules), knows when the channel is busy and when it may transmit,
 /// and sends what the host gives it (<see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Bind"/>, <see cref="Snapshot"/>; events <see cref="Transmitted"/>, <see cref="Dropped"/>, <see cref="Congestion"/>).
 /// It tells the stations it hears what the path supports, by the protocol's rules (lone reports, step 6), and tells the host when a burst it sent was heard and not decoded (<see cref="BurstNotDecoded"/>).
-/// And it identifies itself (step 7): while it has been transmitting it sends an identification burst every ten minutes of the sample clock and raises <see cref="IdentificationDue"/> for the audio layer's Morse ident, and it learns the callsigns of the stations it hears do the same (<see cref="Identified"/>).
+/// And it identifies itself (step 7): while it has been transmitting it sends an identification burst by that rule and raises <see cref="IdentificationDue"/> for the audio layer's Morse ident, and it learns the callsigns of the stations it hears do the same (<see cref="Identified"/>).
 /// <para>
 /// <b>The clock.</b> The only clock is the count of receive samples at 48 kHz, advanced by <see cref="Push"/> and <see cref="Skip"/> and by nothing else.
 /// Nothing here reads a wall clock, sleeps or waits. The adaptation rules are given each burst's end on this clock, never the time a verdict arrived.
@@ -75,7 +75,7 @@ internal enum TransmitState
 /// </para>
 /// <para>
 /// <b>Identification.</b> The callsign (a required setting: 1 to 16 characters, upper-case letters, digits, '/' and '-') goes on the air, and the clock that decides when runs on the sample clock only while the station transmits:
-/// the first transmission after the last identification starts it, ten minutes later an identification is due, and then it rests until the station next transmits. An idle station never keys to identify. See <c>docs/station-design.md</c>, "Step 7 as built".
+/// an identification is due when ten minutes have passed since the last one (or there was none) and the station has transmitted since: at once after the first transmission of a quiet station, every ten minutes while it keeps transmitting, and once more when the ten minutes are up for a station that sent something since and went quiet. A station that has sent nothing since its last identification never keys. See <c>docs/station-design.md</c>, "Step 7 as built".
 /// </para>
 /// </summary>
 public sealed partial class Station
@@ -197,8 +197,8 @@ public sealed partial class Station
     public event Action<BurstNotDecodedEvent>? BurstNotDecoded;
 
     /// <summary>
-    /// Raised when the station's identification is due: ten minutes of the sample clock after the first transmission since its last identification (see <c>docs/station-design.md</c>, "Step 7 as built"), so that the audio layer can key its Morse ident.
-    /// The identification burst is queued at the same moment and raises <see cref="ModemSent"/> when it goes on air. Once for each identification, on the audio thread, from the timer at the due sample (the clock reads exactly that sample).
+    /// Raised when the station's identification is due: ten minutes of the sample clock have passed since the last identification started (or there was none) and the station has transmitted since; raised when the station is not keyed (at the end of the transmission in progress) (see <c>docs/station-design.md</c>, "Step 7 as built"), so that the audio layer can key its Morse ident.
+    /// The identification burst is queued at the same moment and raises <see cref="ModemSent"/> when it goes on air. Once for each identification, on the audio thread, at the end of the transmission in progress, or from the timer at the due sample if the station is idle.
     /// </summary>
     public event Action<IdentificationDueEvent>? IdentificationDue;
 

@@ -163,7 +163,7 @@ public sealed partial class Station
         bool late = handshake.WithdrawnBeforeStart;
         if (ReferenceEquals(request, _identRequest))
         {
-            OnIdentificationBurstStarted();
+            OnIdentificationBurstStarted(sampleIndex);
         }
         else
         {
@@ -251,6 +251,11 @@ public sealed partial class Station
             else if (ReferenceEquals(request, _identRequest))
             {
                 OnIdentificationBurstEnded();
+            }
+
+            if (!ReferenceEquals(request, _identRequest))
+            {
+                OnOtherTransmissionEnded();
             }
         }
         finally

@@ -2,12 +2,15 @@ namespace M0LTE.OfdmFm;
 
 // Step 7 of docs/station-design.md: the station identifies itself, and learns the callsigns of the stations that do.
 //
-// The clock. It runs on the sample clock and only while the station transmits. It has three states:
-//   Resting   nothing owed and no count running (the start, and after each identification). The next transmission starts the count.
-//   Counting  a transmission has started since the last identification; ten minutes on from that start (IdentificationIntervalSamples) an identification is due.
-//   Owed      due: IdentificationDue was raised and the burst is queued (class Report, so it goes ahead of the host's datagrams). It stays owed, however long the channel is busy, until it goes on air.
-// The identification burst's own start returns the clock to Resting, and nothing it sends starts it again: only a transmission of something else does. An idle station is therefore never kept keying to identify.
-// A transmission that starts while the identification is owed (one already handed to the audio layer, say) does not start a count: the burst that follows covers it.
+// The rule (it is the host program's existing Morse ident's rule): an identification is due when ten minutes have passed since the station's last identification (or it has never identified)
+// AND the station has transmitted since then. "Last identification" is when its burst started on the air (TransmitStarted), not when it fell due, so a long wait for the channel does not shorten the next interval.
+// The identification burst is not a transmission that makes another owed; anything else the station sends is, a lone report included.
+//   - Nothing sent since the last identification: nothing is owed and nothing is ever sent.
+//   - A transmission starts when the last identification was ten minutes ago or more (or there was none): due at once. IdentificationDue is raised when that transmission ends, not in the middle of it
+//     (the station is no longer keyed, so the audio layer can send its Morse ident), and the burst is queued at that moment.
+//   - A transmission starts within the ten minutes: a timer on the sample clock is set for the end of the ten minutes. When it runs out the identification falls due (at the end of the transmission, if one is on the air then),
+//     so a station that identified, sent something, and went quiet keys once, to cover it.
+// An identification owed stays owed, however long the channel is busy, until its burst starts: IdentificationDue is raised once, and transmissions in the meantime are covered by the burst that follows.
 
 public sealed partial class Station
 {
@@ -16,15 +19,11 @@ public sealed partial class Station
     /// </summary>
     internal const long IdentificationIntervalSamples = 600L * SampleRate;
 
-    private enum IdentificationState : byte
-    {
-        Resting,
-        Counting,
-        Owed,
-    }
-
-    private IdentificationState _identState;
-    private long _identDueAt = -1;
+    private long _lastIdentStart = -1;
+    private bool _transmittedSince;
+    private bool _identOwed;
+    private bool _identDueWaiting;
+    private long _identTimerAt = -1;
     private TimerHandle _identTimer;
     private Action _onIdentificationDue = null!;
     private ChannelAccess.Request? _identRequest;
@@ -35,8 +34,8 @@ public sealed partial class Station
     private long _identificationInterval = IdentificationIntervalSamples;
 
     /// <summary>
-    /// The interval the identification count uses, in samples. A test's seam: it is <see cref="IdentificationIntervalSamples"/> and a test sets a shorter one so that a run does not push ten minutes of audio. Sound because the interval is read in one place only
-    /// (when a transmission starts the count) and enters nothing but the due sample of one timer; set it before the station first transmits. Not for a host.
+    /// The interval the identification rule uses, in samples. A test's seam: it is <see cref="IdentificationIntervalSamples"/> and a test sets a shorter one so that a run does not push ten minutes of audio. Sound because the interval is read in one place only
+    /// (when a transmission starts) and enters nothing but the due sample of one timer and one comparison; set it before the station first transmits. Not for a host.
     /// </summary>
     internal long IdentificationInterval
     {
@@ -48,14 +47,23 @@ public sealed partial class Station
         }
     }
 
-    /// <summary>The sample the identification is due at while the count runs, or null.</summary>
-    internal long? IdentificationDueAt => _identState == IdentificationState.Counting ? _identDueAt : null;
+    /// <summary>
+    /// A test's seam: while set, nothing transmitted makes an identification owed, so that a test of something else (access, sending, reports) sees only the bursts it is about. Not for a host, which cannot switch identification off.
+    /// Set before the station first transmits.
+    /// </summary>
+    internal bool IdentificationSuspended { get; set; }
+
+    /// <summary>The sample the interval since the last identification runs out at, while a timer waits for it; otherwise null.</summary>
+    internal long? IdentificationDueAt => _identTimerAt >= 0 ? _identTimerAt : null;
 
     /// <summary>True from the sample an identification falls due until its burst goes on air.</summary>
-    internal bool IdentificationOwed => _identState == IdentificationState.Owed;
+    internal bool IdentificationOwed => _identOwed;
 
-    /// <summary>True while neither a count is running nor an identification owed.</summary>
-    internal bool IdentificationResting => _identState == IdentificationState.Resting;
+    /// <summary>True when nothing has been sent since the last identification (or ever): nothing is owed and no timer runs.</summary>
+    internal bool IdentificationResting => !_transmittedSince && !_identOwed;
+
+    /// <summary>The sample the last identification burst started at, or null if none has.</summary>
+    internal long? LastIdentificationStart => _lastIdentStart >= 0 ? _lastIdentStart : null;
 
     /// <summary>How many times an identification has fallen due.</summary>
     internal long IdentificationsDue => _identificationsDue;
@@ -63,29 +71,67 @@ public sealed partial class Station
     /// <summary>How many identification bursts have gone on air.</summary>
     internal long IdentificationsSent => _identificationsSent;
 
-    private void InitialiseIdentification() => _onIdentificationDue = OnIdentificationDue;
+    private void InitialiseIdentification() => _onIdentificationDue = OnIdentificationTimer;
 
-    /// <summary>Any transmission but the identification burst has started: if the clock is resting it starts counting from this sample.</summary>
+    /// <summary>Anything but the identification burst has started: something has been sent since the last identification.</summary>
     private void OnOtherTransmissionStarted(long sampleIndex)
     {
-        if (_identState != IdentificationState.Resting)
+        if (_identOwed || IdentificationSuspended)
         {
             return;
         }
 
-        _identState = IdentificationState.Counting;
-        _identDueAt = sampleIndex + _identificationInterval;
-        _identTimer = ScheduleAt(_identDueAt, _onIdentificationDue);
+        _transmittedSince = true;
+        if (_lastIdentStart < 0 || sampleIndex >= _lastIdentStart + _identificationInterval)
+        {
+            BecomeDue();
+        }
+        else if (_identTimerAt < 0)
+        {
+            _identTimerAt = _lastIdentStart + _identificationInterval;
+            _identTimer = ScheduleAt(_identTimerAt, _onIdentificationDue);
+        }
     }
 
-    private void OnIdentificationDue()
+    private void OnIdentificationTimer()
     {
-        if (_identState != IdentificationState.Counting)
+        _identTimerAt = -1;
+        if (_transmittedSince && !_identOwed)
         {
+            BecomeDue();
+        }
+    }
+
+    /// <summary>Owed from now. If the station is keyed, IdentificationDue and the request wait for the end of the transmission (<see cref="OnOtherTransmissionEnded"/>).</summary>
+    private void BecomeDue()
+    {
+        _identOwed = true;
+        if (_identTimerAt >= 0)
+        {
+            CancelTimer(_identTimer);
+            _identTimerAt = -1;
+        }
+
+        if (IsTransmitting)
+        {
+            _identDueWaiting = true;
             return;
         }
 
-        _identState = IdentificationState.Owed;
+        RaiseIdentificationDue();
+    }
+
+    private void OnOtherTransmissionEnded()
+    {
+        if (_identDueWaiting)
+        {
+            _identDueWaiting = false;
+            RaiseIdentificationDue();
+        }
+    }
+
+    private void RaiseIdentificationDue()
+    {
         _identificationsDue++;
         IdentificationDue?.Invoke(new IdentificationDueEvent(Seconds));
         _identRequest ??= new ChannelAccess.Request();
@@ -119,11 +165,18 @@ public sealed partial class Station
         return true;
     }
 
-    /// <summary>The identification burst is on air: the clock rests, and counts again from the next transmission of anything else.</summary>
-    private void OnIdentificationBurstStarted()
+    /// <summary>The identification burst is on air: it is the last identification, and nothing has been sent since it.</summary>
+    private void OnIdentificationBurstStarted(long sampleIndex)
     {
-        _identState = IdentificationState.Resting;
+        _lastIdentStart = sampleIndex;
+        _identOwed = false;
+        _transmittedSince = false;
         _identificationsSent++;
+        if (_identTimerAt >= 0)
+        {
+            CancelTimer(_identTimer);
+            _identTimerAt = -1;
+        }
     }
 
     private void OnIdentificationBurstEnded()

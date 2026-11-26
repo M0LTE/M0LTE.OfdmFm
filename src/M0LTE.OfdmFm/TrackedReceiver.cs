@@ -23,7 +23,7 @@ namespace M0LTE.OfdmFm;
 public sealed class TrackedReceiver
 {
     /// <summary>The most passes of the per-symbol loop.</summary>
-    internal const int MaxSymbolPasses = 8;
+    internal const int MaxSymbolPasses = 5;
 
     /// <summary>The fewest passes of the per-symbol loop before it may stop.</summary>
     internal const int LeastSymbolPasses = 3;

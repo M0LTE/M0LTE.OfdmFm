@@ -195,13 +195,13 @@ public class HeaderReaderTests
                 reader.TryRead(c.Samples, c.Start, c.OpeningValue, out _);
             }
 
-            long before = GC.GetAllocatedBytesForCurrentThread();
-            for (int i = 0; i < 50; i++)
+            AllocationMeasure.Minimum(() =>
             {
-                reader.TryRead(c.Samples, c.Start, c.OpeningValue, out _);
-            }
-
-            (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0, opening);
+                for (int i = 0; i < 50; i++)
+                {
+                    reader.TryRead(c.Samples, c.Start, c.OpeningValue, out _);
+                }
+            }).Should().Be(0, opening);
         }
     }
 

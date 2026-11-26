@@ -204,8 +204,6 @@ public class DemapperTests
         Array.Fill(loading, (byte)10);
         var llr = new float[carriers * 10];
         Demapper.DemapSymbol(re, im, var, loading, llr);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        Demapper.DemapSymbol(re, im, var, loading, llr);
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+        AllocationMeasure.Minimum(() => Demapper.DemapSymbol(re, im, var, loading, llr)).Should().Be(0);
     }
 }

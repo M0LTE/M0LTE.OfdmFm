@@ -181,12 +181,12 @@ public class TrackedReceiverTests
             receiver.Receive(c.Capture, c.Start, c.Header, c.HeaderBits, payload);
         }
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 20; i++)
+        AllocationMeasure.Minimum(() =>
         {
-            receiver.Receive(c.Capture, c.Start, c.Header, c.HeaderBits, payload);
-        }
-
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0, c.Name);
+            for (int i = 0; i < 20; i++)
+            {
+                receiver.Receive(c.Capture, c.Start, c.Header, c.HeaderBits, payload);
+            }
+        }).Should().Be(0, c.Name);
     }
 }

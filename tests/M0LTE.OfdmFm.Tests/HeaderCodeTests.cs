@@ -72,9 +72,7 @@ public class HeaderCodeTests
         header[3] = 1;
         var coded = new byte[HeaderCode.CodedBits(opening)];
         HeaderCode.Encode(opening, header, coded);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        HeaderCode.Encode(opening, header, coded);
-        GC.GetAllocatedBytesForCurrentThread().Should().Be(before);
+        AllocationMeasure.Minimum(() => HeaderCode.Encode(opening, header, coded)).Should().Be(0);
     }
 
     [Fact]

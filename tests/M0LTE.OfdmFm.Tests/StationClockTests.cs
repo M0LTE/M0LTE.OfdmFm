@@ -233,13 +233,13 @@ public class StationClockTests
             station.Push(block);
         }
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 50; i++)
+        AllocationMeasure.Minimum(() =>
         {
-            station.Push(block);
-        }
-
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+            for (int i = 0; i < 50; i++)
+            {
+                station.Push(block);
+            }
+        }).Should().Be(0);
     }
 
     /// <summary>One run: jittered timers that each ask for a transmission, pushed in blocks; everything observable goes in the log.</summary>

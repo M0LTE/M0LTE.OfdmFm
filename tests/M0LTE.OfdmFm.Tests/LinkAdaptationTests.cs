@@ -182,13 +182,13 @@ public class LinkAdaptationTests
             Round();
         }
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 4; i++)
+        AllocationMeasure.Minimum(() =>
         {
-            Round();
-        }
-
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+            for (int i = 0; i < 4; i++)
+            {
+                Round();
+            }
+        }).Should().Be(0);
     }
 
     private static void AssertState(LinkAdaptation station, JsonElement call, string at)

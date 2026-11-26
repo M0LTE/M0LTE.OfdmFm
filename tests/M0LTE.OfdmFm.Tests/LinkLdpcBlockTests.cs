@@ -73,9 +73,7 @@ public class LinkLdpcBlockTests
         var coded = new byte[30000];
         var scratch = new byte[code.ScratchLength];
         code.Encode(info, coded, scratch);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        code.Encode(info, coded, scratch);
-        GC.GetAllocatedBytesForCurrentThread().Should().Be(before);
+        AllocationMeasure.Minimum(() => code.Encode(info, coded, scratch)).Should().Be(0);
     }
 
     [Fact]

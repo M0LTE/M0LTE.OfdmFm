@@ -266,7 +266,7 @@ public sealed class PayloadReceiver
     /// Receives the payload of the burst whose first training sample is <paramref name="start"/> in the capture, its header
     /// (<paramref name="header"/>) and the header's 51 bits as read (<paramref name="headerBits"/>: the opening's second known
     /// symbol is rebuilt from them). The unscrambled payload bytes are written to <paramref name="payload"/> when the check
-    /// passes (see <see cref="PayloadRoom"/>; <see cref="PayloadCodec.TryUnpack"/> reads them). The result's
+    /// passes (see <see cref="PayloadRoom"/>; <see cref="PayloadCodec.TryUnpack(ReadOnlySpan{byte}, bool, out PayloadPrelude, out DatagramReader)"/> reads them). The result's
     /// <see cref="PayloadReceiveResult.Accepted"/> is false, and nothing is computed, when the header is not a data burst of
     /// version 0 with payload symbols or the capture does not hold <see cref="SamplesNeeded"/> samples from the start.
     /// </summary>

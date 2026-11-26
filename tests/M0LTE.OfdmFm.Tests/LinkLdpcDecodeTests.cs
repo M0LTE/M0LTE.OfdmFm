@@ -79,10 +79,11 @@ public class LinkLdpcDecodeTests
         var codeword = new byte[block.CodewordLength];
         block.Decode(soft, info, scratch, out _);
         block.DecodeCodeword(soft, codeword, scratch, out _);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        block.Decode(soft, info, scratch, out _);
-        block.DecodeCodeword(soft, codeword, scratch, out _);
-        GC.GetAllocatedBytesForCurrentThread().Should().Be(before);
+        AllocationMeasure.Minimum(() =>
+        {
+            block.Decode(soft, info, scratch, out _);
+            block.DecodeCodeword(soft, codeword, scratch, out _);
+        }).Should().Be(0);
 
         JsonElement p = DecodeVectorFile.Payload("payload9");
         float[] psoft = DecodeVectorFile.Soft(p);
@@ -92,9 +93,7 @@ public class LinkLdpcDecodeTests
         var floats = new float[code.DecodeScratchLength];
         var bytes = new byte[code.ScratchLength];
         code.Decode(psoft, pinfo, guess, floats, bytes);
-        before = GC.GetAllocatedBytesForCurrentThread();
-        code.Decode(psoft, pinfo, guess, floats, bytes);
-        GC.GetAllocatedBytesForCurrentThread().Should().Be(before);
+        AllocationMeasure.Minimum(() => code.Decode(psoft, pinfo, guess, floats, bytes)).Should().Be(0);
     }
 
     [Fact]

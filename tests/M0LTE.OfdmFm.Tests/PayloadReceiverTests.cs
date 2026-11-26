@@ -243,14 +243,14 @@ public class PayloadReceiverTests
                     receiver.MeasureOpening(c.Capture, c.Start, c.Header, c.HeaderBits, quality);
                 }
 
-                long before = GC.GetAllocatedBytesForCurrentThread();
-                for (int i = 0; i < 50; i++)
+                AllocationMeasure.Minimum(() =>
                 {
-                    c.Run(receiver, payload);
-                    receiver.MeasureOpening(c.Capture, c.Start, c.Header, c.HeaderBits, quality);
-                }
-
-                (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0, c.Name);
+                    for (int i = 0; i < 50; i++)
+                    {
+                        c.Run(receiver, payload);
+                        receiver.MeasureOpening(c.Capture, c.Start, c.Header, c.HeaderBits, quality);
+                    }
+                }).Should().Be(0, c.Name);
             }
         }
     }

@@ -37,6 +37,8 @@ public class ReceiverStagesBenchmark
         int reps = Math.Max(3, Reps);
         Say($"stages benchmark: {reps} repeats, cores {Environment.ProcessorCount}, {System.Runtime.InteropServices.RuntimeInformation.OSArchitecture}, {Environment.Version}");
         Say($"load average {File.ReadAllText("/proc/loadavg").Trim()} (before)");
+        Say($"Vector.IsHardwareAccelerated {System.Numerics.Vector.IsHardwareAccelerated}, Vector<double>.Count {System.Numerics.Vector<double>.Count}, Vector<float>.Count {System.Numerics.Vector<float>.Count}");
+        Micro(reps);
 
         foreach (Case c in Cases)
         {
@@ -151,6 +153,20 @@ public class ReceiverStagesBenchmark
             var times = new double[tracker.MaxBlocks];
             var taus = new double[tracker.MaxBlocks];
             trackerMs = Stat(() => tracker.Track(wave.AsSpan(0, length), refSamples.AsSpan(0, length), times, taus), reps, out _);
+
+            // The tracker's own pieces, summed over the timed calls and shown per call.
+            var exhaustive = new BlockTracker(length + Symbol) { ExhaustiveGridSearch = true };
+            double exhaustiveMs = Stat(() => exhaustive.Track(wave.AsSpan(0, length), refSamples.AsSpan(0, length), times, taus), reps, out _);
+            Say($"  block tracker with the grid search exhaustive: {exhaustiveMs:F1} ms; the search sums {tracker.ChunksSearched * 100.0 / tracker.ChunksPossible:F1} % of the delay chunks an exhaustive search does");
+            tracker.PhaseTicks = new long[8];
+            for (int i = 0; i < reps; i++)
+            {
+                tracker.Track(wave.AsSpan(0, length), refSamples.AsSpan(0, length), times, taus);
+            }
+
+            string[] names = ["energies and selection", "windowed transforms", "power and bootstrap channel", "grid search", "channel over all blocks (3 rounds)", "delay fit (3 rounds)", "gain (3 rounds)", "rest"];
+            double scale = 1000.0 / (Stopwatch.Frequency * reps);
+            Say("  block tracker pieces, ms per call: " + string.Join(", ", names.Select((n, i) => $"{n} {tracker.PhaseTicks[i] * scale:F2}")) + $"; blocks kept {tracker.Track(wave.AsSpan(0, length), refSamples.AsSpan(0, length), times, taus)}");
         }
 
         // The estimated split of one tracked receive: the pieces times how often each runs (each symbol pass resamples and prepares, the last also finishes; each block-tracker round
@@ -160,6 +176,129 @@ public class ReceiverStagesBenchmark
         Say($"  one of each, best: resample {resample:F1} ms, prepare (transform, channel, noise, delay search) {prepare:F1} ms, finish (demap, decode, check, measure) {finish:F1} ms, rebuild reference {reference:F1} ms, block tracker {trackerMs:F1} ms");
         Say($"  estimated split of a tracked receive: resampling {resamples * resample:F0} ms ({resamples}x), delay search and transform {symbolPasses * prepare:F0} ms ({symbolPasses}x), demap/decode/measure {finish + (fine * (plainBest - prepare)):F0} ms, "
             + $"prepare in block-tracker rounds {fine * prepare:F0} ms, reference {fine * reference:F0} ms, block tracker {fine * trackerMs:F0} ms; sum {estimate:F0} ms against {best:F0} measured");
+    }
+
+    // The operations the tracker leans on, one at a time: transcendental calls per second, and the grid search's inner loop in vector and in scalar form.
+    private static void Micro(int reps)
+    {
+        const int N = 1 << 16;
+        var angle = new double[N];
+        var rng = new Random(5);
+        for (int i = 0; i < N; i++)
+        {
+            angle[i] = (rng.NextDouble() - 0.5) * 20;
+        }
+
+        double sink = 0;
+        double PerCall(Func<double> body, int calls)
+        {
+            double best = Stat(() => sink += body(), reps, out _);
+            return best * 1e6 / calls;
+        }
+
+        Say($"  per call, ns: Sin {PerCall(() => { double a = 0; for (int i = 0; i < N; i++) { a += Math.Sin(angle[i]); } return a; }, N):F1}, Cos {PerCall(() => { double a = 0; for (int i = 0; i < N; i++) { a += Math.Cos(angle[i]); } return a; }, N):F1}, "
+            + $"Atan2 {PerCall(() => { double a = 0; for (int i = 0; i < N; i++) { a += Math.Atan2(angle[i], angle[(i + 1) & (N - 1)]); } return a; }, N):F1}, Sqrt {PerCall(() => { double a = 0; for (int i = 0; i < N; i++) { a += Math.Sqrt(angle[i] * angle[i]); } return a; }, N):F1}, "
+            + $"divide {PerCall(() => { double a = 0; for (int i = 0; i < N; i++) { a += angle[i] / angle[(i + 1) & (N - 1)]; } return a; }, N):F1}");
+
+        {
+            var fft = new ComplexFft(StreamingBurstDetector.TransformSize);
+            var fr = new double[StreamingBurstDetector.TransformSize];
+            var fi = new double[StreamingBurstDetector.TransformSize];
+            double big = Stat(() =>
+            {
+                for (int i = 0; i < fr.Length; i++)
+                {
+                    fr[i] = angle[i & (N - 1)];
+                    fi[i] = 0;
+                }
+
+                fft.Forward(fr, fi);
+            }, reps, out _);
+            var small = new double[1024];
+            var smallIm = new double[1024];
+            double little = Stat(() =>
+            {
+                for (int r = 0; r < 100; r++)
+                {
+                    for (int i = 0; i < small.Length; i++)
+                    {
+                        small[i] = angle[i];
+                        smallIm[i] = 0;
+                    }
+
+                    RealFft.Forward(small, smallIm);
+                }
+            }, reps, out _);
+            Say($"  complex transform of {fr.Length} points (the streaming detector's) {big:F2} ms, 1024 points (the block tracker's) {little * 10:F1} microseconds");
+        }
+
+        // The grid search's inner loop: 168 bins, one chunk of delays, vector against plain, for the same number of delays.
+        const int Bins = 168;
+        int lanes = System.Numerics.Vector<double>.Count;
+        var sr = new double[Bins * lanes];
+        var si = new double[Bins * lanes];
+        var cr = new double[Bins];
+        var ci = new double[Bins];
+        for (int i = 0; i < sr.Length; i++)
+        {
+            sr[i] = rng.NextDouble() - 0.5;
+            si[i] = rng.NextDouble() - 0.5;
+        }
+
+        for (int i = 0; i < Bins; i++)
+        {
+            cr[i] = rng.NextDouble() - 0.5;
+            ci[i] = rng.NextDouble() - 0.5;
+        }
+
+        const int Rounds = 4000;
+        double vec = Stat(() =>
+        {
+            double a = 0;
+            for (int r = 0; r < Rounds; r++)
+            {
+                var re = System.Numerics.Vector<double>.Zero;
+                var im = System.Numerics.Vector<double>.Zero;
+                for (int b = 0; b < Bins; b++)
+                {
+                    var vr = new System.Numerics.Vector<double>(sr, b * lanes);
+                    var vi = new System.Numerics.Vector<double>(si, b * lanes);
+                    var xr = new System.Numerics.Vector<double>(cr[b]);
+                    var xi = new System.Numerics.Vector<double>(ci[b]);
+                    re += (xr * vr) - (xi * vi);
+                    im += (xr * vi) + (xi * vr);
+                }
+
+                a += ((re * re) + (im * im))[0];
+            }
+
+            sink += a;
+        }, reps, out _);
+        double scalar = Stat(() =>
+        {
+            double a = 0;
+            for (int r = 0; r < Rounds; r++)
+            {
+                for (int l = 0; l < lanes; l++)
+                {
+                    double re = 0;
+                    double im = 0;
+                    for (int b = 0; b < Bins; b++)
+                    {
+                        double vr = sr[(b * lanes) + l];
+                        double vi = si[(b * lanes) + l];
+                        re += (cr[b] * vr) - (ci[b] * vi);
+                        im += (cr[b] * vi) + (ci[b] * vr);
+                    }
+
+                    a += (re * re) + (im * im);
+                }
+            }
+
+            sink += a;
+        }, reps, out _);
+        double delays = (double)Rounds * lanes;
+        Say($"  grid search inner loop, ns per delay per bin: vector {vec * 1e6 / (delays * Bins):F3}, plain {scalar * 1e6 / (delays * Bins):F3} ({lanes} lanes; ignore {sink:G1})");
     }
 
     private static void Openings(int reps)

@@ -70,6 +70,9 @@ internal sealed class SimNode
     /// <summary>Every <see cref="Station.PathReport"/> event.</summary>
     public List<PathReportEvent> PathReports { get; } = [];
 
+    /// <summary>Every <see cref="Station.BurstNotDecoded"/> event: the clock, the station and the tags.</summary>
+    public List<(long Clock, StationName Station, long[] Tags)> NotDecoded { get; } = [];
+
     /// <summary>Every <see cref="Station.LinkState"/> event.</summary>
     public List<LinkStateEvent> LinkStates { get; } = [];
 
@@ -617,6 +620,12 @@ internal sealed class SimChannel
         {
             n.ModemSent.Add(e);
             Say($"modem sent {e.Kind} to {(e.Station is { } to ? to.ToString() : "-")} fmt {e.Format}");
+        };
+        s.BurstNotDecoded += e =>
+        {
+            long[] tags = [.. e.Tags.Select(t => t.Value)];
+            n.NotDecoded.Add((s.SampleCount, e.Station, tags));
+            Say($"notdecoded {e.Station} tags {string.Join(",", tags)}");
         };
         s.ChannelBusy += e => Say($"busy {e.Busy}");
         s.TransmitRequest += e =>

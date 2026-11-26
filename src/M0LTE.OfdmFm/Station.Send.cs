@@ -105,6 +105,7 @@ public sealed partial class Station
     {
         _onAnswerTimer = OnAnswerTimer;
         _access.Prepare = PrepareBurst;
+        InitialiseReports();
     }
 
     private static int ComputeMaxPayloadBytes()
@@ -504,9 +505,14 @@ public sealed partial class Station
     /// </summary>
     private bool PrepareBurst(ChannelAccess.Request request)
     {
+        if (ReferenceEquals(request, _reportRequest))
+        {
+            return PrepareReport(request);
+        }
+
         if (!ReferenceEquals(request, _data))
         {
-            // A burst the station built for itself some other way (steps 6 and 7) carries its samples already.
+            // A burst the station built for itself some other way (step 7) carries its samples already.
             return true;
         }
 
@@ -654,6 +660,12 @@ public sealed partial class Station
         }
 
         PayloadPrelude? prelude = everyone ? null : new PayloadPrelude(wanted, _link.ReportFor(dest), false, wanted ? CapabilityWord : null);
+        if (prelude is { Recommended: not null })
+        {
+            // The recommendation rides on this burst, so the station has told them: a lone report owed for a drop or a request is not needed (a failed one always goes alone).
+            DropCoveredReport(dest);
+        }
+
         int length = PayloadCodec.Pack(prelude, _pack.AsSpan(0, _burst.Items.Count), _payload);
         int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
         int number = _burstNumber;
@@ -715,6 +727,11 @@ public sealed partial class Station
         if (!_burst.Built)
         {
             return;
+        }
+
+        if (_burst.Dest != 0)
+        {
+            RememberBurst(_burst.Dest, sampleIndex);
         }
 
         double timeOut = ClockSeconds(sampleIndex);

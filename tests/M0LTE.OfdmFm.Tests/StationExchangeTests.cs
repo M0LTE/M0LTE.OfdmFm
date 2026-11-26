@@ -61,38 +61,6 @@ public class StationExchangeTests
     }
 
     [Fact]
-    public void Traffic_One_Way_Is_Delivered_But_Stays_At_The_First_Contact_Rate_Because_The_Sender_Hears_Nothing_Back()
-    {
-        var rig = new SimRig(2);
-        SimNode a = rig.Nodes[0];
-        SimNode b = rig.Nodes[1];
-        rig.RunTo(6);
-        var sent = new List<byte[]>();
-        for (int i = 0; i < 5; i++)
-        {
-            sent.Add(SimRig.Datagram(i, 30));
-            rig.Send(1, 2, i).Should().Be(SendResult.Accepted);
-            rig.Run(8);
-        }
-
-        rig.Run(10);
-        b.Received.Select(r => r.Data).Should().BeEquivalentTo(sent, o => o.WithStrictOrdering());
-        a.Transmitted.Should().HaveCount(5);
-
-        // B measures A and would recommend a fast format, but a recommendation reaches A only in a burst from B, and B has nothing to send (the lone report that would carry it is step 6).
-        // So A has no report and has heard nothing: every burst is at first contact, asks for a report, and is met with silence.
-        a.Transmitted.Select(t => t.Event.Format).Should().OnlyContain(f => f == StandardFormats.FirstContact);
-        a.Transmitted.Select(t => t.Event.RateBitsPerSecond).Should().OnlyContain(r => r == FirstContactRate);
-        rig.Stations[0].Adaptation.TryGetNeighbour(2, out LinkNeighbour? atA).Should().BeTrue();
-        atA!.ReportFormat.Should().BeNull();
-        atA.Silences.Should().Be(5);
-        rig.Stations[1].Adaptation.TryGetNeighbour(1, out LinkNeighbour? atB).Should().BeTrue();
-        StandardFormats.Rate(atB!.Recommended!.Value).Should().BeGreaterThan(10.0, "B could take a much faster format if it could tell A");
-        b.PathReports.Should().BeEmpty();
-        a.PathReports.Should().BeEmpty();
-    }
-
-    [Fact]
     public void A_Datagram_To_Everyone_Is_Heard_By_Both_Listeners_With_No_Prelude_At_The_First_Contact_Format()
     {
         var rig = new SimRig(3);
@@ -200,7 +168,7 @@ public class StationExchangeTests
             }
 
             formats.Add(a.Transmitted[k].Event.Format);
-            SimTransmission tx = a.Transmissions[k];
+            SimTransmission tx = a.Transmissions[^1];
             long due = tx.Start + tx.Length + Station.AnswerWaitSamples(tx.Length);
             rig.Channel.Run(due - 1);
             silences.Add(far.Silences);

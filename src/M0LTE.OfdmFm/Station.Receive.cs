@@ -52,7 +52,6 @@ public sealed partial class Station
     private LinkAdaptation _link = null!;
     private readonly StationName[] _placeholders = new StationName[64];
     private readonly LinkShown[] _shown = new LinkShown[64];
-    private readonly Dictionary<int, OwedReport> _owed = [];
     private readonly List<Candidate> _candidates = [];
     private readonly List<BurstRecord> _bursts = [];
     private readonly List<Extent> _extents = [];
@@ -182,7 +181,7 @@ public sealed partial class Station
     /// <summary>A header whose check passed and that the station took no further action on (step 4 reads these for busy detection).</summary>
     internal readonly record struct NotedHeader(long Index, FormatOpening Opening, BurstHeader Header, NoteReason Reason);
 
-    /// <summary>A report this station owes a neighbour, from the rules, waiting for step 6 to send it.</summary>
+    /// <summary>A report this station owes a neighbour, from the rules, that has not yet gone on air (step 6 sends it: see <c>Station.Reports.cs</c>).</summary>
     /// <param name="Station">The neighbour's number.</param>
     /// <param name="Report">The report: "failed" or "drop".</param>
     /// <param name="SinceSample">The sample the burst that caused it ended at.</param>
@@ -199,14 +198,23 @@ public sealed partial class Station
     /// <summary>A test's hook, called by a worker just before it runs a job (it may block, to hold the job until the test lets it go).</summary>
     internal Action<JobStart>? JobStarting { get; set; }
 
+    /// <summary>
+    /// A test's seam: while set, no burst's receive job is taken (header reads still are), so that a verdict can be made to arrive as late as the test likes without any real time passing. Setting it back and calling
+    /// <see cref="DeliverResults"/> (or pushing) lets the held receives run, inline or on a worker. Audio thread.
+    /// </summary>
+    internal bool ReceivesHeld
+    {
+        get => _receivesHeld;
+        set => _receivesHeld = value;
+    }
+
+    private volatile bool _receivesHeld;
+
     /// <summary>A test's hook, called just after each call into the adaptation rules.</summary>
     internal Action<AdaptationCall>? AdaptationCalled { get; set; }
 
     /// <summary>The adaptation rules this station drives.</summary>
     internal LinkAdaptation Adaptation => _link;
-
-    /// <summary>Reports owed to neighbours, by neighbour, the newest for each.</summary>
-    internal IReadOnlyList<OwedReport> OwedReports => [.. _owed.Values.OrderBy(o => o.Station)];
 
     /// <summary>Headers that read and were not acted on, oldest first, the latest 64.</summary>
     internal IReadOnlyList<NotedHeader> NotedHeaders => _noted;
@@ -385,6 +393,10 @@ public sealed partial class Station
             if (_detector.FramesProcessed != _framesSeen)
             {
                 OnFrame();
+
+                // The results that are ready now are applied now, at the frame's end, whatever the block size: what a result sets going (a lone report, step 6) then starts at a sample that is a function of the audio.
+                Pump();
+                ApplyReadyResults();
             }
         }
     }
@@ -814,7 +826,7 @@ public sealed partial class Station
                 candidate = _headerCandidate;
                 header = true;
             }
-            else if (_jobQueue.Count > 0)
+            else if (_jobQueue.Count > 0 && !ReceivesHeld)
             {
                 burst = _jobQueue[0];
                 _jobQueue.RemoveAt(0);
@@ -961,6 +973,12 @@ public sealed partial class Station
 
     private void ApplyReadyResults()
     {
+        if (_inline && SampleCount != _boundary)
+        {
+            // An inline station applies its results at a frame's end only, so that the same audio gives the same events at the same samples however it is cut into blocks (a station with workers applies them as they come).
+            return;
+        }
+
         long floor = _detector.CandidateFloor;
         while (_bursts.Count > 0)
         {
@@ -1050,11 +1068,6 @@ public sealed partial class Station
 
         LinkReport? owed = _link.HeardData(sender, h.Destination, h.Format, decoded, quality, now, footing, job.Sudden, their, capability);
         AdaptationCalled?.Invoke(new AdaptationCall(false, sender, h.Destination, h.Format, decoded, quality.ToArray(), now, footing, job.Sudden, their, capability, owed));
-        if (owed is { } report)
-        {
-            _owed[sender] = new OwedReport(sender, report, r.End);
-        }
-
         if (unpacked)
         {
             if (mine && prelude.Recommended is int recommended)
@@ -1069,6 +1082,11 @@ public sealed partial class Station
                 int offset = (int)Unsafe.ByteOffset(ref MemoryMarshal.GetReference(payload), ref MemoryMarshal.GetReference(datagram));
                 Received?.Invoke(new ReceivedEvent(job.Payload.AsMemory(offset, datagram.Length), name, sender, everyone, db));
             }
+        }
+
+        if (mine)
+        {
+            NoteVerdict(sender, r.End, owed, decoded && unpacked && prelude.Wanted);
         }
 
         RaiseLinkState(sender, now);
@@ -1091,20 +1109,10 @@ public sealed partial class Station
         PathReport?.Invoke(new PathReportEvent(NameFor(h.Sender), h.Format, h.Failed));
         if (h.Failed)
         {
-            OnReportedNotDecoded(h.Sender, r.Start);
+            RaiseNotDecoded(h.Sender, r.Start);
         }
 
         RaiseLinkState(h.Sender, now);
-    }
-
-    /// <summary>
-    /// A station reports that it heard a burst from this one and could not decode it. Step 5 knows this station's own transmissions and raises <see cref="BurstNotDecoded"/> here, with the tags of the datagrams
-    /// in the latest burst to that station that ended before <paramref name="reportStart"/>. Nothing is sent yet, so there is nothing to attribute.
-    /// </summary>
-    private void OnReportedNotDecoded(int station, long reportStart)
-    {
-        _ = station;
-        _ = reportStart;
     }
 
     private static double MeanQualityDb(ReadOnlySpan<double> quality, int carriers)

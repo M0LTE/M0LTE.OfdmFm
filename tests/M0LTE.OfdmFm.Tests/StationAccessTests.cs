@@ -301,14 +301,14 @@ public class StationAccessTests
     [InlineData(0)]
     public void Audio_in_the_window_of_the_stations_own_transmission_is_ignored_and_audio_after_it_is_not(int block)
     {
-        // The station sends from 6.0 s for 60000 samples. Bursts begin 1000 before its start, inside it, 8000 after its end (inside the 12000 of mute), and 30000 after its end.
+        // The station sends from 6.0 s for 60000 samples. Bursts begin 1000 before its start, inside it, 300 after its end (inside the 4800 of mute), and 30000 after its end.
         long txStart = Start;
         long txEnd = txStart + 60000;
         var builder = new StreamBuilder();
         TestBurst report = TestBurst.Report(7, 1, 80, false, FormatOpening.Full);
         PlaceAt(builder, report, txStart - 1000);
         PlaceAt(builder, report, txStart + 15000);
-        PlaceAt(builder, report, txEnd + 8000);
+        PlaceAt(builder, report, txEnd + 300);
         Placed late = PlaceAt(builder, report, txEnd + 30000);
         builder.Silence(4.0);
         float[] stream = builder.ToArray();

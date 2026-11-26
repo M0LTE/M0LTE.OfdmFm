@@ -138,6 +138,7 @@ internal sealed class ChannelAccess
     private long _externalUntil;
     private long _ownUntil;
     private long _ordinaryNotBefore;
+    private long _straightOnFrom = -1;
     private int _draw = -1;
     private TimerHandle _horizonTimer;
     private long _horizonAt = -1;
@@ -343,6 +344,16 @@ internal sealed class ChannelAccess
         Update();
     }
 
+    /// <summary>
+    /// After a lone report this station sent: ordinary traffic goes without the 0.8 s wait and the random draw, a first-slot time after the channel was clear (the protocol: "the station that sent it goes straight on with its own data").
+    /// It holds for this clear period only: anything that turns the channel busy again moves <see cref="ClearSince"/> past the point recorded here and the ordinary wait applies once more.
+    /// </summary>
+    public void GoStraightOn()
+    {
+        _straightOnFrom = ClearSince;
+        Update();
+    }
+
     /// <summary>The audio layer keyed <paramref name="request"/>. <paramref name="late"/>: it had been withdrawn and started anyway (the tolerated race).</summary>
     public void Started(Request request, long sample, bool late)
     {
@@ -482,6 +493,11 @@ internal sealed class ChannelAccess
         if (request.Class != TransmitClass.Ordinary)
         {
             return clear + FirstSlotClear;
+        }
+
+        if (_straightOnFrom >= 0 && clear == _straightOnFrom)
+        {
+            return Math.Max(clear + FirstSlotClear, _ordinaryNotBefore);
         }
 
         long wait;

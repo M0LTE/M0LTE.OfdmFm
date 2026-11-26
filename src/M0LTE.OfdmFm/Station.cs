@@ -17,10 +17,10 @@ internal enum TransmitState
 }
 
 /// <summary>
-/// The live station: one per radio channel. So far (steps 1 to 5 of docs/station-design.md) it keeps a sample clock with timers on it, runs the transmit handshake with the audio layer,
+/// The live station: one per radio channel. So far (steps 1 to 6 of docs/station-design.md) it keeps a sample clock with timers on it, runs the transmit handshake with the audio layer,
 /// receives (audio pushed in comes out as <see cref="Received"/> datagrams, <see cref="PathReport"/> and <see cref="LinkState"/> events and calls on the adaptation rules), knows when the channel is busy and when it may transmit,
 /// and sends what the host gives it (<see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Bind"/>, <see cref="Snapshot"/>; events <see cref="Transmitted"/>, <see cref="Dropped"/>, <see cref="Congestion"/>).
-/// It does not yet send lone reports or identify (steps 6 and 7).
+/// It tells the stations it hears what the path supports, by the protocol's rules (lone reports, step 6), and tells the host when a burst it sent was heard and not decoded (<see cref="BurstNotDecoded"/>). It does not yet identify (step 7).
 /// <para>
 /// <b>The clock.</b> The only clock is the count of receive samples at 48 kHz, advanced by <see cref="Push"/> and <see cref="Skip"/> and by nothing else.
 /// Nothing here reads a wall clock, sleeps or waits. The adaptation rules are given each burst's end on this clock, never the time a verdict arrived.
@@ -66,7 +66,14 @@ internal enum TransmitState
 /// (its <see cref="HasWork"/> is false and <see cref="RunOne"/> returns false).
 /// </para>
 /// <para>
-/// <b>Not yet here.</b> Lone reports and identification (steps 6 and 7): <see cref="BurstNotDecoded"/> and <see cref="IdentificationDue"/> are declared and not yet raised, and <see cref="ModemSent"/> is wired and raised for nothing yet.
+/// <b>Reports.</b> A burst addressed to this station that failed to decode owes its sender a lone report marked failed, sent as soon as the channel has been clear for the first slot's time (50 ms), however late the verdict is.
+/// One that decoded owes a lone report, in the first slot, if the recommendation for its sender fell below what that sender was last told; and one that decoded with "report wanted" in its prelude owes the recommendation, which rides on whatever
+/// the host sends back to that station and goes alone if 1.5 s from the burst's end pass with nothing going back. Nothing is owed for a burst addressed to everyone or to another station. A lone report opens the way this station's own data to
+/// that station would and at the same drive, and raises <see cref="ModemSent"/>. After one, the station that sent it goes straight on with its own data if it is not still waiting for an answer, and the station that heard it leaves the channel clear for about a second.
+/// A report heard satisfies the answer wait and, if it says failed, raises <see cref="BurstNotDecoded"/> with the datagrams of the latest burst sent to that station that ended before the report began.
+/// </para>
+/// <para>
+/// <b>Not yet here.</b> Identification (step 7): <see cref="IdentificationDue"/> is declared and not yet raised.
 /// </para>
 /// </summary>
 public sealed partial class Station
@@ -173,14 +180,17 @@ public sealed partial class Station
     /// </summary>
     public event Action<CongestionEvent>? Congestion;
 
-    /// <summary>Raised when a burst the host did not ask for goes on air (reports and identification, steps 6 and 7; nothing yet in step 5). On the audio thread, in the call to <see cref="TransmitStarted"/>.</summary>
+    /// <summary>Raised when a burst the host did not ask for goes on air: a lone report (identification, step 7, is not yet sent). On the audio thread, in the call to <see cref="TransmitStarted"/>.</summary>
     public event Action<ModemSentEvent>? ModemSent;
 
-    // Declared so that the host interface is complete; later steps raise them and this pragma goes.
-#pragma warning disable CS0067
-    /// <summary>Declared, not yet raised: a burst of this station's was heard and not decoded (step 6).</summary>
+    /// <summary>
+    /// Raised when a station reports that it heard a burst of this station's and could not decode it: the tags of the datagrams in the latest burst this station sent to it that ended before the report began, once for that burst.
+    /// A hint: the library resends nothing. Raised on the audio thread, in the call that applies the report (<see cref="Push"/>, <see cref="Skip"/> or <see cref="DeliverResults"/>), after <see cref="PathReport"/>.
+    /// </summary>
     public event Action<BurstNotDecodedEvent>? BurstNotDecoded;
 
+    // Declared so that the host interface is complete; step 7 raises it and this pragma goes.
+#pragma warning disable CS0067
     /// <summary>Declared, not yet raised: the identification interval has run out (step 7).</summary>
     public event Action<IdentificationDueEvent>? IdentificationDue;
 #pragma warning restore CS0067

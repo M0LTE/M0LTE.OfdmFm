@@ -26,7 +26,28 @@ jobs:
       # Runs the whole suite, including PublicApiTests, the public-API lock. Any
       # unintended change to the public surface fails here (see docs/versioning.md).
       - name: Test
+        id: test
         run: dotnet test -c Release --no-build --verbosity normal
+
+      # The runner prints only "Failed: N" and writes the names and messages to a log under
+      # TestResults. That log is UTF-16 (plain grep finds nothing in it) and carries ANSI colour
+      # codes, so decode and strip before reading it. Runs only after a failed step and cannot
+      # change the job's result.
+      - name: Name the failures
+        if: failure() && steps.test.outcome == 'failure'
+        run: |
+          found=0
+          while IFS= read -r f; do
+            found=1
+            echo "::group::$(basename "$f")"
+            log="$(iconv -f UTF-16LE -t UTF-8 "$f" 2>/dev/null || cat "$f")"
+            log="$(sed 's/\x1b\[[0-9;]*m//g' <<<"$log")"
+            grep -A 8 -E "^\s*failed " <<<"$log" | head -150 || true
+            echo "--- tail ---"
+            grep -vE "^\s*$" <<<"$log" | tail -12
+            echo "::endgroup::"
+          done < <(find tests -path '*/TestResults/*.log' -newermt '-30 minutes' 2>/dev/null)
+          [ "$found" = 1 ] || echo "::warning::no TestResults log found to report"
 
       - name: Pack
         run: dotnet pack -c Release --no-build -o artifacts

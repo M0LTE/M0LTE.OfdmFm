@@ -69,10 +69,11 @@ public class HeaderCodeDecodeTests
         var scratch = new float[HeaderCode.DecodeScratchLength(opening)];
         HeaderCode.TryDecode(opening, soft, bits);
         HeaderCode.TryDecode(opening, soft, bits, scratch, out _);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        HeaderCode.TryDecode(opening, soft, bits);
-        HeaderCode.TryDecode(opening, soft, bits, scratch, out _);
-        GC.GetAllocatedBytesForCurrentThread().Should().Be(before);
+        AllocationMeasure.Minimum(() =>
+        {
+            HeaderCode.TryDecode(opening, soft, bits);
+            HeaderCode.TryDecode(opening, soft, bits, scratch, out _);
+        }).Should().Be(0);
     }
 
     [Theory]

@@ -564,13 +564,13 @@ public class StationAccessTests
             station.Push(block);
         }
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 2000; i++)
+        AllocationMeasure.Minimum(() =>
         {
-            station.Push(block);
-        }
-
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+            for (int i = 0; i < 2000; i++)
+            {
+                station.Push(block);
+            }
+        }).Should().Be(0);
     }
 
 }

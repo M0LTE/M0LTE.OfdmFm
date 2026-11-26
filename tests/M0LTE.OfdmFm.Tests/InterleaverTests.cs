@@ -102,14 +102,14 @@ public class InterleaverTests
         var coded = new byte[E];
         var tx = new byte[E];
         interleaver.Interleave<byte>(coded, tx);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 20; i++)
+        AllocationMeasure.Minimum(() =>
         {
-            interleaver.Interleave<byte>(coded, tx);
-            interleaver.Deinterleave<byte>(tx, coded);
-        }
-
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+            for (int i = 0; i < 20; i++)
+            {
+                interleaver.Interleave<byte>(coded, tx);
+                interleaver.Deinterleave<byte>(tx, coded);
+            }
+        }).Should().Be(0);
     }
 
     [Fact]

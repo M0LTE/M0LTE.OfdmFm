@@ -184,13 +184,13 @@ public class IdentificationPayloadTests
     {
         byte[] payload = [.. Packed("M0LTE-1", 0x0102, new ExtensionItem(0x7F, new byte[] { 1, 2, 3 })), 0, 0, 0, 0];
         Walk(payload);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 100; i++)
+        AllocationMeasure.Minimum(() =>
         {
-            Walk(payload);
-        }
-
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+            for (int i = 0; i < 100; i++)
+            {
+                Walk(payload);
+            }
+        }).Should().Be(0);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

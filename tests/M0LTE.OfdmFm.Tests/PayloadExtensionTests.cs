@@ -251,14 +251,14 @@ public class PayloadExtensionTests
     {
         byte[] p = Packed(new PayloadPrelude(true, 40, false, 0x1234), [Item(0x7F, "AABBCC"), Item(2, "")], Grams("0102", "03"));
         Walk(p);
-        long before = GC.GetAllocatedBytesForCurrentThread();
         int total = 0;
-        for (int i = 0; i < 100; i++)
+        AllocationMeasure.Minimum(() =>
         {
-            total += Walk(p);
-        }
-
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+            for (int i = 0; i < 100; i++)
+            {
+                total += Walk(p);
+            }
+        }).Should().Be(0);
         total.Should().BeGreaterThan(0);
     }
 

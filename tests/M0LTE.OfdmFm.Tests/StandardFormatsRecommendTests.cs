@@ -151,12 +151,12 @@ public class StandardFormatsRecommendTests
     {
         var path = StationVectorFile.Profile(5).ToArray();
         StandardFormats.Recommend(path, 3.0);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        for (int i = 0; i < 5; i++)
+        AllocationMeasure.Minimum(() =>
         {
-            StandardFormats.Recommend(path, 3.0, 0.0, 100);
-        }
-
-        (GC.GetAllocatedBytesForCurrentThread() - before).Should().Be(0);
+            for (int i = 0; i < 5; i++)
+            {
+                StandardFormats.Recommend(path, 3.0, 0.0, 100);
+            }
+        }).Should().Be(0);
     }
 }

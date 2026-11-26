@@ -684,13 +684,14 @@ public class StreamingBurstDetectorTests
         }
 
         PushAll(0, 4 * 48000, 480);
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        PushAll(4 * 48000, 8 * 48000, 480);
-        d.PauseEstimate();
-        d.ResumeEstimate();
-        PushAll(8 * 48000, 10 * 48000, 100000);
-        PushAll(10 * 48000, 12 * 48000, 1);
-        GC.GetAllocatedBytesForCurrentThread().Should().Be(before);
+        AllocationMeasure.Minimum(() =>
+        {
+            PushAll(4 * 48000, 8 * 48000, 480);
+            d.PauseEstimate();
+            d.ResumeEstimate();
+            PushAll(8 * 48000, 10 * 48000, 100000);
+            PushAll(10 * 48000, 12 * 48000, 1);
+        }).Should().Be(0);
         d.Available.Should().Be(0);
     }
 

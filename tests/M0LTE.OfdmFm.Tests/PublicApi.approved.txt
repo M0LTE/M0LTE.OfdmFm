@@ -107,6 +107,16 @@ namespace M0LTE.OfdmFm
         public M0LTE.OfdmFm.DropReason Reason { get; init; }
         public M0LTE.OfdmFm.HostTag Tag { get; init; }
     }
+    public readonly struct ExtensionItem : System.IEquatable<M0LTE.OfdmFm.ExtensionItem>
+    {
+        public ExtensionItem(byte Tag, System.ReadOnlyMemory<byte> Value) { }
+        public byte Tag { get; init; }
+        public System.ReadOnlyMemory<byte> Value { get; init; }
+    }
+    public ref struct ExtensionReader
+    {
+        public bool TryNext(out byte tag, out System.ReadOnlySpan<byte> value) { }
+    }
     public enum FormatOpening
     {
         Full = 0,
@@ -251,12 +261,18 @@ namespace M0LTE.OfdmFm
     public static class PayloadCodec
     {
         public const int CheckBits = 32;
+        public const int MaxExtensionBytes = 255;
         public static int Capacity(int format, int payloadSymbols) { }
+        public static int Capacity(int format, int payloadSymbols, int extensionBlockBytes) { }
         public static void Encode(System.ReadOnlySpan<byte> payload, int infoBits, int sender, int destination, int burstNumber, System.Span<byte> bits) { }
+        public static int ExtensionBlockSize(System.ReadOnlySpan<M0LTE.OfdmFm.ExtensionItem> extensions) { }
         public static int Pack(M0LTE.OfdmFm.PayloadPrelude? prelude, System.ReadOnlySpan<System.ReadOnlyMemory<byte>> datagrams, System.Span<byte> destination) { }
+        public static int Pack(M0LTE.OfdmFm.PayloadPrelude? prelude, System.ReadOnlySpan<M0LTE.OfdmFm.ExtensionItem> extensions, System.ReadOnlySpan<System.ReadOnlyMemory<byte>> datagrams, System.Span<byte> destination) { }
         public static int? SymbolsFor(int format, int loadBytes) { }
+        public static int? SymbolsFor(int format, int loadBytes, int extensionBlockBytes) { }
         public static bool TryDecode(System.ReadOnlySpan<byte> bits, int sender, int destination, int burstNumber, System.Span<byte> payload, out int length) { }
         public static bool TryUnpack(System.ReadOnlySpan<byte> payload, bool toEveryone, out M0LTE.OfdmFm.PayloadPrelude prelude, out M0LTE.OfdmFm.DatagramReader datagrams) { }
+        public static bool TryUnpack(System.ReadOnlySpan<byte> payload, bool toEveryone, out M0LTE.OfdmFm.PayloadPrelude prelude, out M0LTE.OfdmFm.ExtensionReader extensions, out M0LTE.OfdmFm.DatagramReader datagrams) { }
     }
     public readonly struct PayloadPrelude : System.IEquatable<M0LTE.OfdmFm.PayloadPrelude>
     {
@@ -343,6 +359,7 @@ namespace M0LTE.OfdmFm
         public void Push(System.ReadOnlySpan<float> samples) { }
         public bool RunOne() { }
         public int RunPending() { }
+        public void SetExternalBusy(bool busy) { }
         public void Skip(int count) { }
         public void TransmitEnded(long id, long sampleIndex) { }
         public void TransmitStarted(long id, long sampleIndex) { }

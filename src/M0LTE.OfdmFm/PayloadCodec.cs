@@ -7,6 +7,50 @@ namespace M0LTE.OfdmFm;
 /// <param name="Capability">The sender's 16-bit capability word, or null when it is not sent.</param>
 public readonly record struct PayloadPrelude(bool Wanted, int? Recommended, bool Failed, int? Capability);
 
+/// <summary>One item of a prelude's extension block: a tag (1 to 255) and its value (0 to 253 bytes).</summary>
+/// <param name="Tag">The item's tag. 0 is reserved and never sent.</param>
+/// <param name="Value">The item's value.</param>
+public readonly record struct ExtensionItem(byte Tag, ReadOnlyMemory<byte> Value);
+
+/// <summary>
+/// Walks the items of an unpacked payload's extension block, without allocating. It stops at the end of the block, and
+/// at an item whose length runs past the block: what follows such a point is ignored.
+/// </summary>
+public ref struct ExtensionReader
+{
+    private readonly ReadOnlySpan<byte> _block;
+    private int _position;
+
+    internal ExtensionReader(ReadOnlySpan<byte> block)
+    {
+        _block = block;
+        _position = 0;
+    }
+
+    /// <summary>The next item, whatever its tag. False at the end of the block or at an item that does not fit in it.</summary>
+    public bool TryNext(out byte tag, out ReadOnlySpan<byte> value)
+    {
+        tag = 0;
+        value = default;
+        if (_position + 2 > _block.Length)
+        {
+            return false;
+        }
+
+        int length = _block[_position + 1];
+        if (_position + 2 + length > _block.Length)
+        {
+            _position = _block.Length;
+            return false;
+        }
+
+        tag = _block[_position];
+        value = _block.Slice(_position + 2, length);
+        _position += 2 + length;
+        return true;
+    }
+}
+
 /// <summary>Walks the datagrams of an unpacked payload, without allocating.</summary>
 public ref struct DatagramReader
 {
@@ -41,7 +85,7 @@ public ref struct DatagramReader
 }
 
 /// <summary>
-/// Between a payload's bytes (prelude, capability word, datagrams) and a burst's information bits (padding,
+/// Between a payload's bytes (prelude, capability word, extension block, datagrams) and a burst's information bits (padding,
 /// scrambling, 32-bit check), as <c>docs/adaptation-protocol.md</c> sets out. Pinned to the prototype's
 /// <c>link.py</c>. Bits are held one to a byte (0 or 1). Nothing here allocates.
 /// </summary>
@@ -54,14 +98,53 @@ public static class PayloadCodec
     private const int HasCapability = 0x40;
     private const int Given = 0x20;
     private const int FailedFlag = 0x10;
+    private const int HasExtension = 0x08;
+
+    /// <summary>The most bytes of items an extension block holds (its length is one byte).</summary>
+    public const int MaxExtensionBytes = 255;
 
     /// <summary>Bytes of prelude and datagrams (lengths included) that a format carries in this many payload symbols. Negative when the burst is too small to hold even its check.</summary>
     public static int Capacity(int format, int payloadSymbols) => (StandardFormats.InfoBits(format, payloadSymbols) - CheckBits) >> 3;
 
-    /// <summary>The shortest burst of the format, in payload symbols (a multiple of four), that carries <paramref name="loadBytes"/> (never fewer than 8 are asked for), or null if even the longest does not.</summary>
-    public static int? SymbolsFor(int format, int loadBytes)
+    /// <summary>As <see cref="Capacity(int, int)"/>, less the extension block, whose size (its length byte included) comes from <see cref="ExtensionBlockSize"/>.</summary>
+    public static int Capacity(int format, int payloadSymbols, int extensionBlockBytes) => Capacity(format, payloadSymbols) - extensionBlockBytes;
+
+    /// <summary>
+    /// The bytes an extension block takes in a payload: 0 for no items, otherwise one length byte and the items.
+    /// Throws when a tag is 0 or the items do not fit in 255 bytes (an item's value is at most 253 bytes).
+    /// </summary>
+    public static int ExtensionBlockSize(ReadOnlySpan<ExtensionItem> extensions)
     {
-        int need = Math.Max(loadBytes, 8);
+        if (extensions.IsEmpty)
+        {
+            return 0;
+        }
+
+        int n = 0;
+        foreach (ExtensionItem item in extensions)
+        {
+            if (item.Tag == 0)
+            {
+                throw new ArgumentException("Tag 0 is reserved.", nameof(extensions));
+            }
+
+            n += 2 + item.Value.Length;
+            if (n > MaxExtensionBytes)
+            {
+                throw new ArgumentException("The items do not fit in an extension block of 255 bytes.", nameof(extensions));
+            }
+        }
+
+        return 1 + n;
+    }
+
+    /// <summary>The shortest burst of the format, in payload symbols (a multiple of four), that carries <paramref name="loadBytes"/> (never fewer than 8 are asked for), or null if even the longest does not.</summary>
+    public static int? SymbolsFor(int format, int loadBytes) => SymbolsFor(format, loadBytes, 0);
+
+    /// <summary>As <see cref="SymbolsFor(int, int)"/>, for a load that also carries an extension block of <paramref name="extensionBlockBytes"/> (see <see cref="ExtensionBlockSize"/>).</summary>
+    public static int? SymbolsFor(int format, int loadBytes, int extensionBlockBytes)
+    {
+        int need = Math.Max(loadBytes + extensionBlockBytes, 8);
         for (int symbols = 4; symbols <= StandardFormats.MaxSymbols; symbols += 4)
         {
             if (Capacity(format, symbols) >= need)
@@ -78,8 +161,24 @@ public static class PayloadCodec
     /// everyone) and the datagrams, each behind a two-byte length. Returns the length, or -1 when it does not fit
     /// in <paramref name="destination"/>. Datagrams are 1 to 65535 bytes.
     /// </summary>
-    public static int Pack(PayloadPrelude? prelude, ReadOnlySpan<ReadOnlyMemory<byte>> datagrams, Span<byte> destination)
+    public static int Pack(PayloadPrelude? prelude, ReadOnlySpan<ReadOnlyMemory<byte>> datagrams, Span<byte> destination) =>
+        Pack(prelude, default, datagrams, destination);
+
+    /// <summary>
+    /// As <see cref="Pack(PayloadPrelude?, ReadOnlySpan{ReadOnlyMemory{byte}}, Span{byte})"/>, with extension items. When
+    /// there are any, the prelude's extension flag is set and the block (one length byte, then each item as a tag, a
+    /// length and its value) follows the capability word and precedes the datagrams. With none the bytes are exactly
+    /// those of the shorter overload. A burst to everyone has no prelude and so no block: items with a null prelude, a
+    /// tag of 0, or items that do not fit in 255 bytes throw.
+    /// </summary>
+    public static int Pack(PayloadPrelude? prelude, ReadOnlySpan<ExtensionItem> extensions, ReadOnlySpan<ReadOnlyMemory<byte>> datagrams, Span<byte> destination)
     {
+        int block = ExtensionBlockSize(extensions);
+        if (block > 0 && prelude is null)
+        {
+            throw new ArgumentException("A burst to everyone has no prelude and so no extension block.", nameof(extensions));
+        }
+
         int p = 0;
         if (prelude is { } pre)
         {
@@ -88,13 +187,13 @@ public static class PayloadCodec
                 throw new ArgumentOutOfRangeException(nameof(prelude));
             }
 
-            int need = pre.Capability is null ? 2 : 4;
+            int need = (pre.Capability is null ? 2 : 4) + block;
             if (destination.Length < need)
             {
                 return -1;
             }
 
-            destination[0] = (byte)((pre.Wanted ? Wanted : 0) | (pre.Capability is not null ? HasCapability : 0) | (pre.Recommended is not null ? Given : 0) | (pre.Failed ? FailedFlag : 0));
+            destination[0] = (byte)((pre.Wanted ? Wanted : 0) | (pre.Capability is not null ? HasCapability : 0) | (pre.Recommended is not null ? Given : 0) | (pre.Failed ? FailedFlag : 0) | (block > 0 ? HasExtension : 0));
             destination[1] = (byte)(pre.Recommended ?? 0);
             p = 2;
             if (pre.Capability is { } cap)
@@ -102,6 +201,18 @@ public static class PayloadCodec
                 destination[2] = (byte)(cap >> 8);
                 destination[3] = (byte)cap;
                 p = 4;
+            }
+
+            if (block > 0)
+            {
+                destination[p++] = (byte)(block - 1);
+                foreach (ExtensionItem item in extensions)
+                {
+                    destination[p] = item.Tag;
+                    destination[p + 1] = (byte)item.Value.Length;
+                    item.Value.Span.CopyTo(destination[(p + 2)..]);
+                    p += 2 + item.Value.Length;
+                }
             }
         }
 
@@ -131,9 +242,19 @@ public static class PayloadCodec
     /// datagrams, which stop at a zero length. False when the payload is too short for its prelude (or the capability
     /// word it flags); the prototype would read a short word there, which only a payload that no station sends can show.
     /// </summary>
-    public static bool TryUnpack(ReadOnlySpan<byte> payload, bool toEveryone, out PayloadPrelude prelude, out DatagramReader datagrams)
+    public static bool TryUnpack(ReadOnlySpan<byte> payload, bool toEveryone, out PayloadPrelude prelude, out DatagramReader datagrams) =>
+        TryUnpack(payload, toEveryone, out prelude, out _, out datagrams);
+
+    /// <summary>
+    /// As <see cref="TryUnpack(ReadOnlySpan{byte}, bool, out PayloadPrelude, out DatagramReader)"/>, also exposing the
+    /// extension block's items (none when the prelude does not flag a block, or in a burst to everyone). The datagram
+    /// reader always begins at the length byte plus that length, so a block of malformed items cannot move it; a
+    /// block that runs past the end of the payload leaves no datagrams. Spare prelude bits are ignored.
+    /// </summary>
+    public static bool TryUnpack(ReadOnlySpan<byte> payload, bool toEveryone, out PayloadPrelude prelude, out ExtensionReader extensions, out DatagramReader datagrams)
     {
         prelude = new PayloadPrelude(false, null, false, null);
+        extensions = new ExtensionReader(default);
         datagrams = new DatagramReader(payload, 0);
         if (toEveryone)
         {
@@ -157,6 +278,14 @@ public static class PayloadCodec
 
             cap = (payload[2] << 8) | payload[3];
             position = 4;
+        }
+
+        if ((flags & HasExtension) != 0)
+        {
+            int n = position < payload.Length ? payload[position] : 0;
+            int start = Math.Min(position + 1, payload.Length);
+            extensions = new ExtensionReader(payload.Slice(start, Math.Min(n, payload.Length - start)));
+            position += 1 + n;
         }
 
         prelude = new PayloadPrelude((flags & Wanted) != 0, (flags & Given) != 0 ? payload[1] : null, (flags & FailedFlag) != 0, cap);

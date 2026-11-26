@@ -297,7 +297,7 @@ public class StationClockTests
     {
         string src = Path.Combine(RepoRoot(), "src", "M0LTE.OfdmFm");
         string[] banned = ["DateTime", "Stopwatch", "Task.Delay", "Thread.Sleep", "TimeProvider", "System.Threading.Timer", "Environment.TickCount"];
-        foreach (string file in Directory.EnumerateFiles(src, "Station*.cs").Concat(Directory.EnumerateFiles(src, "SampleTimers.cs")))
+        foreach (string file in Directory.EnumerateFiles(src, "Station*.cs").Concat(Directory.EnumerateFiles(src, "SampleTimers.cs")).Concat(Directory.EnumerateFiles(src, "ChannelAccess.cs")))
         {
             string text = File.ReadAllText(file);
             foreach (string word in banned)

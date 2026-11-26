@@ -221,85 +221,23 @@ internal sealed class LinkLdpcStructure
         Span<float> r = work.Slice(n, _edgeColumn.Length * z);
         r.Clear();
         iterations = 0;
-        if (HardSyndromeIsZero(l))
+        Span<float> min1 = z <= 1024 ? stackalloc float[z] : new float[z];
+        Span<float> min2 = z <= 1024 ? stackalloc float[z] : new float[z];
+        Span<int> negative = z <= 1024 ? stackalloc int[z] : new int[z];
+        if (HardSyndromeIsZero(l, negative))
         {
             return true;
         }
 
-        int[] rowStart = _rowStart;
-        int[] edgeShift = _edgeShift;
-        int[] edgeBase = _edgeBase;
         for (int it = 1; it <= MaxIterations; it++)
         {
             for (int row = 0; row < Rows; row++)
             {
-                int e0 = rowStart[row];
-                int e1 = rowStart[row + 1];
-                int degree = e1 - e0;
-                if (degree == 0)
-                {
-                    continue;
-                }
-
-                for (int i = 0; i < z; i++)
-                {
-                    float min1 = float.PositiveInfinity;
-                    float min2 = float.PositiveInfinity;
-                    int negatives = 0;
-                    for (int e = e0; e < e1; e++)
-                    {
-                        int j = i + edgeShift[e];
-                        if (j >= z)
-                        {
-                            j -= z;
-                        }
-
-                        float q = l[edgeBase[e] + j] - r[e * z + i];
-                        if (q < 0)
-                        {
-                            negatives ^= 1;
-                        }
-
-                        float mag = MathF.Abs(q);
-                        if (mag < min1)
-                        {
-                            min2 = min1;
-                            min1 = mag;
-                        }
-                        else if (mag < min2)
-                        {
-                            min2 = mag;
-                        }
-                    }
-
-                    if (degree < 2)
-                    {
-                        // the prototype gives a row with one entry a message of zero
-                        min1 = 0f;
-                        min2 = 0f;
-                    }
-
-                    for (int e = e0; e < e1; e++)
-                    {
-                        int j = i + edgeShift[e];
-                        if (j >= z)
-                        {
-                            j -= z;
-                        }
-
-                        int at = edgeBase[e] + j;
-                        float q = l[at] - r[e * z + i];
-                        float m = MathF.Abs(q) == min1 ? min2 : min1;
-                        bool flip = (q < 0) ^ (negatives != 0);
-                        float message = Alpha * (flip ? -m : m);
-                        r[e * z + i] = message;
-                        l[at] = q + message;
-                    }
-                }
+                UpdateRow(l, r, row, min1, min2, negative);
             }
 
             iterations = it;
-            if (HardSyndromeIsZero(l))
+            if (HardSyndromeIsZero(l, negative))
             {
                 return true;
             }
@@ -308,32 +246,141 @@ internal sealed class LinkLdpcStructure
         return false;
     }
 
-    // The syndrome of the hard decisions (a value below zero is a 1).
-    private bool HardSyndromeIsZero(ReadOnlySpan<float> l)
+    // One layer of the layered min-sum: every lifted row of one base row at once. The lifted rows are independent (a base row has one entry in each of its columns, and
+    // a shift is a permutation of a column's Z positions), so they are taken a vector of them at a time; each is worked out with the scalar loop's operations.
+    // An edge's Z lifted rows read a column from its shift on and then from its start: two runs, contiguous in both the values and the messages.
+    private void UpdateRow(Span<float> l, Span<float> r, int row, Span<float> min1, Span<float> min2, Span<int> negative)
     {
         int z = LiftingSize;
-        for (int r = 0; r < Rows; r++)
+        int e0 = _rowStart[row];
+        int e1 = _rowStart[row + 1];
+        int degree = e1 - e0;
+        if (degree == 0)
         {
-            int e0 = _rowStart[r];
-            int e1 = _rowStart[r + 1];
+            return;
+        }
+
+        min1.Fill(float.PositiveInfinity);
+        min2.Fill(float.PositiveInfinity);
+        negative.Clear();
+        for (int e = e0; e < e1; e++)
+        {
+            int shift = _edgeShift[e];
+            int split = z - shift;
+            int b = _edgeBase[e];
+            Gather(l.Slice(b + shift, split), r.Slice(e * z, split), min1[..split], min2[..split], negative[..split]);
+            Gather(l.Slice(b, shift), r.Slice((e * z) + split, shift), min1[split..], min2[split..], negative[split..]);
+        }
+
+        if (degree < 2)
+        {
+            // the prototype gives a row with one entry a message of zero
+            min1.Fill(0f);
+            min2.Fill(0f);
+        }
+
+        for (int e = e0; e < e1; e++)
+        {
+            int shift = _edgeShift[e];
+            int split = z - shift;
+            int b = _edgeBase[e];
+            Scatter(l.Slice(b + shift, split), r.Slice(e * z, split), min1[..split], min2[..split], negative[..split]);
+            Scatter(l.Slice(b, shift), r.Slice((e * z) + split, shift), min1[split..], min2[split..], negative[split..]);
+        }
+    }
+
+    // The two smallest magnitudes and the parity of the signs of l - r over the edges seen so far, for each lifted row of a run.
+    private static void Gather(ReadOnlySpan<float> l, ReadOnlySpan<float> r, Span<float> min1, Span<float> min2, Span<int> negative)
+    {
+        int i = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            for (; i + Vector<float>.Count <= l.Length; i += Vector<float>.Count)
+            {
+                Vector<float> q = new Vector<float>(l[i..]) - new Vector<float>(r[i..]);
+                Vector<float> mag = Vector.Abs(q);
+                var m1 = new Vector<float>(min1[i..]);
+                var m2 = new Vector<float>(min2[i..]);
+                Vector<int> lessThanFirst = Vector.LessThan(mag, m1);
+                Vector.ConditionalSelect(lessThanFirst, m1, Vector.ConditionalSelect(Vector.LessThan(mag, m2), mag, m2)).CopyTo(min2[i..]);
+                Vector.ConditionalSelect(lessThanFirst, mag, m1).CopyTo(min1[i..]);
+                (new Vector<int>(negative[i..]) ^ Vector.LessThan(q, Vector<float>.Zero)).CopyTo(negative[i..]);
+            }
+        }
+
+        for (; i < l.Length; i++)
+        {
+            float q = l[i] - r[i];
+            if (q < 0)
+            {
+                negative[i] ^= -1;
+            }
+
+            float mag = MathF.Abs(q);
+            if (mag < min1[i])
+            {
+                min2[i] = min1[i];
+                min1[i] = mag;
+            }
+            else if (mag < min2[i])
+            {
+                min2[i] = mag;
+            }
+        }
+    }
+
+    // Each lifted row of a run takes the other edges' smaller magnitude (or the second smallest where this edge holds the smallest), the sign the other edges' signs make,
+    // and the normalisation; the message and the new value are stored.
+    private static void Scatter(Span<float> l, Span<float> r, ReadOnlySpan<float> min1, ReadOnlySpan<float> min2, ReadOnlySpan<int> negative)
+    {
+        int i = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            var sign = new Vector<float>(-0.0f);
+            var alpha = new Vector<float>(Alpha);
+            for (; i + Vector<float>.Count <= l.Length; i += Vector<float>.Count)
+            {
+                Vector<float> q = new Vector<float>(l[i..]) - new Vector<float>(r[i..]);
+                Vector<float> m = Vector.ConditionalSelect(Vector.Equals(Vector.Abs(q), new Vector<float>(min1[i..])), new Vector<float>(min2[i..]), new Vector<float>(min1[i..]));
+                Vector<int> flip = Vector.LessThan(q, Vector<float>.Zero) ^ new Vector<int>(negative[i..]);
+                Vector<float> message = alpha * Vector.ConditionalSelect(flip, Vector.Xor(m, sign), m);
+                message.CopyTo(r[i..]);
+                (q + message).CopyTo(l[i..]);
+            }
+        }
+
+        for (; i < l.Length; i++)
+        {
+            float q = l[i] - r[i];
+            float m = MathF.Abs(q) == min1[i] ? min2[i] : min1[i];
+            bool flip = (q < 0) ^ (negative[i] != 0);
+            float message = Alpha * (flip ? -m : m);
+            r[i] = message;
+            l[i] = q + message;
+        }
+    }
+
+    // The syndrome of the hard decisions (a value below zero is a 1): each lifted row's parity over the edges of its base row, a vector of them at a time.
+    private bool HardSyndromeIsZero(ReadOnlySpan<float> l, Span<int> parity)
+    {
+        int z = LiftingSize;
+        for (int row = 0; row < Rows; row++)
+        {
+            int e0 = _rowStart[row];
+            int e1 = _rowStart[row + 1];
+            parity.Clear();
+            for (int e = e0; e < e1; e++)
+            {
+                int shift = _edgeShift[e];
+                int split = z - shift;
+                int b = _edgeBase[e];
+                Signs(l.Slice(b + shift, split), parity[..split]);
+                Signs(l.Slice(b, shift), parity[split..]);
+            }
+
             for (int i = 0; i < z; i++)
             {
-                int sum = 0;
-                for (int e = e0; e < e1; e++)
-                {
-                    int j = i + _edgeShift[e];
-                    if (j >= z)
-                    {
-                        j -= z;
-                    }
-
-                    if (l[_edgeBase[e] + j] < 0)
-                    {
-                        sum ^= 1;
-                    }
-                }
-
-                if (sum != 0)
+                if (parity[i] != 0)
                 {
                     return false;
                 }
@@ -341,6 +388,26 @@ internal sealed class LinkLdpcStructure
         }
 
         return true;
+    }
+
+    private static void Signs(ReadOnlySpan<float> l, Span<int> parity)
+    {
+        int i = 0;
+        if (Vector.IsHardwareAccelerated)
+        {
+            for (; i + Vector<float>.Count <= l.Length; i += Vector<float>.Count)
+            {
+                (new Vector<int>(parity[i..]) ^ Vector.LessThan(new Vector<float>(l[i..]), Vector<float>.Zero)).CopyTo(parity[i..]);
+            }
+        }
+
+        for (; i < l.Length; i++)
+        {
+            if (l[i] < 0)
+            {
+                parity[i] ^= -1;
+            }
+        }
     }
 
     // dst[i] ^= src[(i + s) % Z]

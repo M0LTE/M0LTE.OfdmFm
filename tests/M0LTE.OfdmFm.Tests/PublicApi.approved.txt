@@ -343,6 +343,7 @@ namespace M0LTE.OfdmFm
         public void Push(System.ReadOnlySpan<float> samples) { }
         public bool RunOne() { }
         public int RunPending() { }
+        public void SetExternalBusy(bool busy) { }
         public void Skip(int count) { }
         public void TransmitEnded(long id, long sampleIndex) { }
         public void TransmitStarted(long id, long sampleIndex) { }

@@ -17,24 +17,39 @@ internal enum TransmitState
 }
 
 /// <summary>
-/// The live station: one per radio channel. This is its skeleton (step 1 of docs/station-design.md): a sample clock, timers on that clock,
-/// the transmit handshake with the audio layer, and the event types of the host interface. It does not yet detect, receive, decide or send.
+/// The live station: one per radio channel. So far (steps 1 to 3 of docs/station-design.md) it keeps a sample clock with timers on it, runs the transmit handshake with the audio layer,
+/// and receives: audio pushed in comes out as <see cref="Received"/> datagrams, <see cref="PathReport"/> and <see cref="LinkState"/> events and calls on the adaptation rules.
+/// It does not yet send, decide the channel is busy, or identify.
 /// <para>
 /// <b>The clock.</b> The only clock is the count of receive samples at 48 kHz, advanced by <see cref="Push"/> and <see cref="Skip"/> and by nothing else.
-/// Nothing here reads a wall clock, sleeps or waits.
+/// Nothing here reads a wall clock, sleeps or waits. The adaptation rules are given each burst's end on this clock, never the time a verdict arrived.
 /// </para>
 /// <para>
-/// <b>Threads.</b> A station is not thread-safe and has no threads of its own. The caller must serialise every call on one station (<see cref="Push"/>,
-/// <see cref="Skip"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/> and the property reads), and events are raised on the thread that made the call
-/// that caused them. <see cref="Push"/>, <see cref="Skip"/>, <see cref="TransmitStarted"/> and <see cref="TransmitEnded"/> are refused when called from inside a timer action.
+/// <b>Receiving.</b> <see cref="Push"/> keeps the last 16.4 s of audio in a ring, feeds the streaming detector for the three openings, and queues what it finds as jobs: a header read for each
+/// candidate (one at a time, in the order the candidates came), then, for each burst whose header read and whose last sample is in the ring, a receive of its payload. <see cref="Push"/> itself does no
+/// header read and no receive. Jobs are run by <see cref="RunOne"/> and <see cref="RunPending"/> on threads the caller owns, or inside <see cref="Push"/> when the station was made with <c>runJobsInline</c>.
+/// Whatever order jobs finish in, their results are applied in the order the bursts started, on the thread that calls <see cref="Push"/>, <see cref="Skip"/> or <see cref="DeliverResults"/>,
+/// so the same audio gives the same events and the same adaptation state whether jobs run inline, on one worker or on several, and in whatever block sizes it was pushed.
+/// </para>
+/// <para>
+/// <b>Threads.</b> A station has no threads of its own. Two groups of members exist.
+/// The <i>audio-thread</i> members are <see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/> and the properties
+/// <see cref="SampleCount"/> and <see cref="Seconds"/>; the caller must serialise every call to them on one station (one thread, or a lock), events are raised on the thread that made the call that
+/// caused them, and an event handler must not call any of these members (they throw <see cref="InvalidOperationException"/>, as they do from a timer action).
+/// The <i>worker</i> members are <see cref="RunOne"/>, <see cref="RunPending"/> and <see cref="HasWork"/>; they may be called from any number of threads at the same time, and from the audio thread too when it is not inside a call of its own (a single-threaded host can run its own jobs between pushes),
+/// each call using its own pair of receivers (made on first use, one pair for each thread running a job at that moment, and kept). The <see cref="WorkAvailable"/> event is raised on the audio thread
+/// and its handler must only signal. A worker call never raises an event, never calls the adaptation rules and never touches the clock or anything else the audio thread owns.
+/// Forbidden: two audio-thread members running at once on one station, any of them called from an event handler or a timer action, and expecting an inline station to give workers anything to do
+/// (its <see cref="HasWork"/> is false and <see cref="RunOne"/> returns false).
 /// </para>
 /// <para>
 /// <b>Not yet here.</b> The host operations arrive in later steps and are left out of the public surface until then, so that the API snapshot says what works:
 /// <c>Send(ReadOnlyMemory&lt;byte&gt; datagram, StationName name, HostTag tag, bool reportWanted, SendPriority priority)</c>, <c>Cancel(HostTag)</c>, <c>Cancel(StationName)</c>,
-/// <c>Snapshot()</c>, <c>SetExternalBusy(bool)</c> and <c>Bind(StationName, int)</c>. The host events below are declared and not yet raised.
+/// <c>Snapshot()</c>, <c>SetExternalBusy(bool)</c> and <c>Bind(StationName, int)</c>. The events <see cref="Transmitted"/>, <see cref="Dropped"/>, <see cref="BurstNotDecoded"/>, <see cref="ChannelBusy"/>,
+/// <see cref="Congestion"/>, <see cref="ModemSent"/> and <see cref="IdentificationDue"/> are declared and not yet raised.
 /// </para>
 /// </summary>
-public sealed class Station
+public sealed partial class Station
 {
     /// <summary>The sample rate the clock counts at, Hz.</summary>
     public const int SampleRate = 48000;
@@ -59,9 +74,10 @@ public sealed class Station
     /// <param name="callsign">The station's callsign. Required.</param>
     /// <param name="stationNumber">Its on-air station number, 1 to 63.</param>
     /// <param name="random">The source of every random choice the station makes. The caller seeds it; one seed and the same calls give the same run.</param>
+    /// <param name="runJobsInline">False (the default): header reads and receives are jobs for <see cref="RunOne"/>, run by worker threads the caller owns. True: <see cref="Push"/> runs every job itself, before it returns; for tests and simple hosts that can afford the time (a receive takes a good part of a burst's own length on a slow processor).</param>
     /// <exception cref="ArgumentException">The callsign is empty or white space.</exception>
     /// <exception cref="ArgumentOutOfRangeException">The station number is outside 1 to 63.</exception>
-    public Station(string callsign, int stationNumber, Random random)
+    public Station(string callsign, int stationNumber, Random random, bool runJobsInline = false)
     {
         ArgumentNullException.ThrowIfNull(callsign);
         ArgumentException.ThrowIfNullOrWhiteSpace(callsign);
@@ -71,6 +87,8 @@ public sealed class Station
         Callsign = callsign;
         StationNumber = stationNumber;
         _random = random;
+        _inline = runJobsInline;
+        InitialiseReceive();
     }
 
     /// <summary>The station's callsign.</summary>
@@ -91,6 +109,23 @@ public sealed class Station
     /// <summary>Raised to take back a request that has not been keyed.</summary>
     public event Action<WithdrawRequestEvent>? WithdrawRequest;
 
+    /// <summary>
+    /// Raised for each datagram received, addressed to this station or to everyone, in the order the bursts started. The datagram's memory is valid only during the call: copy it to keep it.
+    /// The sender's name is null until a later step binds names; <see cref="ReceivedEvent.SenderNumber"/> always says who.
+    /// </summary>
+    public event Action<ReceivedEvent>? Received;
+
+    /// <summary>
+    /// Raised when a report for this station is heard, alone or in the prelude of a data burst that gives a recommendation. Until names are bound the station is named by <see cref="PlaceholderName"/>.
+    /// </summary>
+    public event Action<PathReportEvent>? PathReport;
+
+    /// <summary>Raised when what the station knows of a neighbour changes (its format, the room in a burst or where the format came from), and when it is forgotten after ten minutes without a word from it. Named as <see cref="PathReport"/> names them.</summary>
+    public event Action<LinkStateEvent>? LinkState;
+
+    /// <summary>Raised on the audio thread when a job becomes available to <see cref="RunOne"/>. The handler must only signal a worker (a semaphore, say); it must not run work or call the station.</summary>
+    public event Action? WorkAvailable;
+
     // Declared now so that the host interface is complete; later steps raise them and this pragma goes.
 #pragma warning disable CS0067
     /// <summary>Declared, not yet raised: a datagram's burst has left the audio device.</summary>
@@ -99,17 +134,8 @@ public sealed class Station
     /// <summary>Declared, not yet raised: a datagram will not go out.</summary>
     public event Action<DroppedEvent>? Dropped;
 
-    /// <summary>Declared, not yet raised: a datagram arrived.</summary>
-    public event Action<ReceivedEvent>? Received;
-
-    /// <summary>Declared, not yet raised: a report came back about a path.</summary>
-    public event Action<PathReportEvent>? PathReport;
-
     /// <summary>Declared, not yet raised: a burst of this station's was heard and not decoded.</summary>
     public event Action<BurstNotDecodedEvent>? BurstNotDecoded;
-
-    /// <summary>Declared, not yet raised: what is known of a link changed.</summary>
-    public event Action<LinkStateEvent>? LinkState;
 
     /// <summary>Declared, not yet raised: the channel became busy or clear.</summary>
     public event Action<ChannelBusyEvent>? ChannelBusy;
@@ -127,13 +153,15 @@ public sealed class Station
     /// <summary>
     /// Takes received audio of any length and advances the clock by that many samples. Timers due within the block run, in order, each at its own sample:
     /// the clock reads exactly the due index while the action runs, not the end of the block. A timer due at index N runs once N samples have been received.
-    /// Allocates nothing when no timer runs.
+    /// The audio goes into the ring and the detector, which is the work of correlating a frame once every 0.42 s of audio (about 1 ms on a desktop processor); header reads and receives are jobs,
+    /// not done here unless the station was made inline. Results ready to be applied are applied before it returns, and raise their events here.
+    /// Allocates nothing when no timer runs and no burst is received.
     /// </summary>
     /// <exception cref="InvalidOperationException">Called from inside a timer action.</exception>
     public void Push(ReadOnlySpan<float> samples) => Advance(samples, samples.Length);
 
     /// <summary>
-    /// The audio layer dropped <paramref name="count"/> samples: the clock advances by that many without audio, and timers passed run at their own samples, as for <see cref="Push"/>.
+    /// The audio layer dropped <paramref name="count"/> samples: the clock advances by that many, silence goes through the ring and the detector in their place, and timers passed run at their own samples, as for <see cref="Push"/>.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="count"/> is negative.</exception>
     /// <exception cref="InvalidOperationException">Called from inside a timer action.</exception>
@@ -311,7 +339,8 @@ public sealed class Station
 
     /// <summary>
     /// Advances the clock by <paramref name="length"/> samples, stopping at each due timer so that its action sees the clock at its own index.
-    /// <paramref name="samples"/> is the audio for them, or empty for a skip. Actions scheduled for an index already reached run in the same pass.
+    /// <paramref name="samples"/> is the audio for them, or empty for a skip (silence is fed in its place). Actions scheduled for an index already reached run in the same pass.
+    /// Results of the receive jobs that are ready are applied last, in order.
     /// </summary>
     private void Advance(ReadOnlySpan<float> samples, int length)
     {
@@ -320,6 +349,7 @@ public sealed class Station
         try
         {
             long end = SampleCount + length;
+            int offset = 0;
             RunDue();
             while (SampleCount < end)
             {
@@ -327,12 +357,15 @@ public sealed class Station
                 int take = (int)(stop - SampleCount);
                 if (take > 0)
                 {
-                    // Later steps feed the next 'take' samples of 'samples' to the detector here, if there are any.
-                    SampleCount += take;
+                    FeedAudio(samples.IsEmpty ? default : samples.Slice(offset, take), take);
+                    offset += take;
                 }
 
                 RunDue();
             }
+
+            Pump();
+            ApplyReadyResults();
         }
         finally
         {

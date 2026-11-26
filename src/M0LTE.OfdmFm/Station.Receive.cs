@@ -1,0 +1,1124 @@
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+
+namespace M0LTE.OfdmFm;
+
+// Step 3 of docs/station-design.md: reception. Audio in, datagrams and adaptation calls out.
+//
+// Who touches what. The audio thread (whoever calls Push, Skip or DeliverResults) owns everything not under _gate: the ring's writes, the detector, the candidate list, the burst table,
+// the adaptation rules and every event. Workers (RunOne) touch only what is under _gate, the ring's reads (checked after the copy), their own receivers and the burst job they were handed.
+//
+// Why the pipeline looks as it does. The same audio must give the same events and the same adaptation state however the audio is cut into blocks and however fast the jobs run, so:
+//  * the detector works in frames, whatever the block size, and the station feeds it in pieces that end at each frame's end; candidates are taken after each frame;
+//  * a candidate becomes eligible for a header read only at a frame end (_boundary), once its opening is in the ring; reads go one at a time in the order candidates came, so that
+//    the decision "this candidate lies inside a burst already known, so ignore it" is made with every earlier candidate settled;
+//  * the threshold estimate is paused over a burst when its header read has been taken in, which is before the next frame is correlated unless a worker is starved for a frame's worth of audio
+//    (docs/station-design.md, "Step 3 as built"); everything else the station does is a function of the audio alone;
+//  * results are applied in the order bursts started, when no earlier candidate or burst can still turn up (the detector's CandidateFloor), with the burst's end as the time.
+public sealed partial class Station
+{
+    /// <summary>Samples the ring keeps: 16.4 s, the longest burst (261 symbols, 11.5 s) with its lead-in and the wait for a candidate to come out of the detector, and 4 s over.</summary>
+    internal const int RingSamples = 786432;
+
+    /// <summary>More bursts than this waiting for a worker, and the oldest is dropped.</summary>
+    internal const int MaxQueuedBursts = 4;
+
+    /// <summary>Samples before a burst's first one that are copied with it: the receiver's lead-in.</summary>
+    internal const int PrePadSamples = BurstRenderer.DefaultLeadSamples;
+
+    /// <summary>Samples after a burst's last one that are copied with it, for the resampler's reach.</summary>
+    internal const int PostPadSamples = 512;
+
+    private const int Sym = BurstRenderer.SymbolSamples;
+    private const int Frame = StreamingBurstDetector.TransformSize;
+    private const int HeaderBitCount = BurstHeaderCodec.HeaderBits;
+    private const int Carriers = BurstRenderer.Carriers;
+    private const int MaxNoted = 64;
+
+    /// <summary>The overhead a datagram has in a burst's payload: the largest prelude (4 bytes) and the datagram's own length (2 bytes).</summary>
+    private const int DatagramOverhead = 6;
+
+    private readonly bool _inline;
+    private readonly object _gate = new();
+    private readonly float[] _ring = new float[RingSamples];
+    private readonly float[] _silence = new float[4096];
+    private readonly StreamingBurstDetector _detector = new();
+    private LinkAdaptation _link = null!;
+    private readonly StationName[] _placeholders = new StationName[64];
+    private readonly LinkShown[] _shown = new LinkShown[64];
+    private readonly Dictionary<int, OwedReport> _owed = [];
+    private readonly List<Candidate> _candidates = [];
+    private readonly List<BurstRecord> _bursts = [];
+    private readonly List<Extent> _extents = [];
+    private readonly List<NotedHeader> _noted = [];
+    private readonly Stack<BurstJob> _freeJobs = new();
+    private readonly Stack<BurstRecord> _freeRecords = new();
+    private readonly List<BurstRecord> _jobQueue = [];
+    private readonly Stack<WorkerContext> _freeContexts = new();
+
+    private long _ringEnd;
+    private long _framesSeen;
+    private long _boundary;
+    private long _lastMark;
+    private long _burstSequence;
+    private bool _notify;
+
+    // Under _gate: the one header job in flight.
+    private HeaderPhase _headerPhase;
+    private Candidate _headerCandidate;
+    private HeaderStatus _headerStatus;
+    private BurstHeader _headerRead;
+    private readonly byte[] _headerBits = new byte[HeaderBitCount];
+
+    private long _candidatesSeen;
+    private long _candidatesIgnored;
+    private long _headerReads;
+    private long _headersLost;
+    private long _burstsDropped;
+    private long _burstsLost;
+    private long _burstsApplied;
+    private long _burstsMerged;
+    private long _pausedSamples;
+
+    private enum HeaderPhase
+    {
+        Idle,
+        Released,
+        Running,
+        Done,
+    }
+
+    private enum HeaderStatus
+    {
+        Unreadable,
+        Read,
+        Lost,
+    }
+
+    private enum BurstState
+    {
+        /// <summary>Header read; the burst's last sample is not in yet.</summary>
+        Known,
+
+        /// <summary>Copied; waiting for a worker.</summary>
+        Queued,
+
+        /// <summary>A worker has it.</summary>
+        Running,
+
+        /// <summary>Received (decoded or not).</summary>
+        Done,
+
+        /// <summary>Taken off the queue because more than four were waiting.</summary>
+        Dropped,
+
+        /// <summary>The ring had overwritten its start before its header was read or before it was copied.</summary>
+        Lost,
+
+        /// <summary>A report: nothing to receive.</summary>
+        Report,
+    }
+
+    private readonly record struct Candidate(long Index, FormatOpening Opening);
+
+    private readonly record struct Extent(long Start, long End, BurstHeader Header);
+
+    private readonly record struct LinkShown(bool Shown, bool Gone, int Format, int Room, LinkKnowledge Knowledge);
+
+    private sealed class BurstRecord
+    {
+        public long Sequence;
+        public long Start;
+        public long End;
+        public BurstHeader Header;
+        public byte[] Bits = new byte[HeaderBitCount];
+        public FormatOpening Opening;
+        public volatile BurstState State;
+        public BurstJob? Job;
+    }
+
+    /// <summary>A burst's audio and the room for its result. Pooled: the arrays only grow.</summary>
+    private sealed class BurstJob
+    {
+        public float[] Samples = [];
+        public byte[] Payload = [];
+        public readonly double[] Quality = new double[Carriers];
+        public int Length;
+        public int Pre;
+        public bool Decoded;
+        public int PayloadBytes;
+        public bool Sudden;
+        public bool HasQuality;
+    }
+
+    /// <summary>What one thread running a job needs. Large, so made on first use and kept.</summary>
+    private sealed class WorkerContext
+    {
+        public readonly HeaderReader Reader = new();
+        public readonly TrackedReceiver Tracked = new();
+        public readonly float[] Scratch = new float[HeaderReader.OpeningSamples(FormatOpening.UpTo1500Hz)];
+    }
+
+    /// <summary>Why a header that read was noted and not acted on.</summary>
+    internal enum NoteReason
+    {
+        /// <summary>A version this code does not know: nothing else of the header means anything.</summary>
+        UnknownVersion,
+
+        /// <summary>A version 0 burst type this step does not receive (an identification burst, or one of the spare types).</summary>
+        UnsupportedKind,
+
+        /// <summary>A header that cannot describe a burst: sender 0, or a data burst the receiver cannot read.</summary>
+        Invalid,
+    }
+
+    /// <summary>A header whose check passed and that the station took no further action on (step 4 reads these for busy detection).</summary>
+    internal readonly record struct NotedHeader(long Index, FormatOpening Opening, BurstHeader Header, NoteReason Reason);
+
+    /// <summary>A report this station owes a neighbour, from the rules, waiting for step 6 to send it.</summary>
+    /// <param name="Station">The neighbour's number.</param>
+    /// <param name="Report">The report: "failed" or "drop".</param>
+    /// <param name="SinceSample">The sample the burst that caused it ended at.</param>
+    internal readonly record struct OwedReport(int Station, LinkReport Report, long SinceSample);
+
+    /// <summary>A job a worker is about to run, for a test's hook.</summary>
+    /// <param name="IsHeader">True for a header read, false for a burst's receive.</param>
+    /// <param name="Start">The candidate's index or the burst's first sample.</param>
+    internal readonly record struct JobStart(bool IsHeader, long Start);
+
+    /// <summary>One call into the adaptation rules, as made, for a test's hook.</summary>
+    internal readonly record struct AdaptationCall(bool IsReport, int Sender, int Dest, int Format, bool Decoded, double[] Quality, double Now, double? FootingDb, bool Sudden, LinkReport? TheirReport, int? Capability, LinkReport? Returned);
+
+    /// <summary>A test's hook, called by a worker just before it runs a job (it may block, to hold the job until the test lets it go).</summary>
+    internal Action<JobStart>? JobStarting { get; set; }
+
+    /// <summary>A test's hook, called just after each call into the adaptation rules.</summary>
+    internal Action<AdaptationCall>? AdaptationCalled { get; set; }
+
+    /// <summary>The adaptation rules this station drives.</summary>
+    internal LinkAdaptation Adaptation => _link;
+
+    /// <summary>Reports owed to neighbours, by neighbour, the newest for each.</summary>
+    internal IReadOnlyList<OwedReport> OwedReports => [.. _owed.Values.OrderBy(o => o.Station)];
+
+    /// <summary>Headers that read and were not acted on, oldest first, the latest 64.</summary>
+    internal IReadOnlyList<NotedHeader> NotedHeaders => _noted;
+
+    /// <summary>Candidates the detector gave the station.</summary>
+    internal long CandidatesSeen => Volatile.Read(ref _candidatesSeen);
+
+    /// <summary>Candidates dropped without a header read because they lay inside a burst already known.</summary>
+    internal long CandidatesIgnored => Volatile.Read(ref _candidatesIgnored);
+
+    /// <summary>Header reads begun.</summary>
+    internal long HeaderReads => Volatile.Read(ref _headerReads);
+
+    /// <summary>Candidates whose opening the ring had overwritten before a worker could read it.</summary>
+    internal long HeadersLost => Volatile.Read(ref _headersLost);
+
+    /// <summary>Bursts dropped because more than four were waiting for a worker. Nothing is raised for one.</summary>
+    internal long BurstsDropped => Volatile.Read(ref _burstsDropped);
+
+    /// <summary>Bursts whose start the ring had overwritten before they could be copied.</summary>
+    internal long BurstsLost => Volatile.Read(ref _burstsLost);
+
+    /// <summary>Bursts whose result has been applied.</summary>
+    internal long BurstsApplied => Volatile.Read(ref _burstsApplied);
+
+    /// <summary>Candidates that read a header already known for a burst starting within a symbol, and so were the same burst.</summary>
+    internal long BurstsMerged => Volatile.Read(ref _burstsMerged);
+
+    /// <summary>Samples the detector's threshold estimate has been told to ignore: the length of each burst known, less what overlapped one before it.</summary>
+    internal long PausedSamples => _pausedSamples;
+
+    /// <summary>Takes a header read from candidate <paramref name="index"/> of <paramref name="opening"/> in as if a worker had read it. For a test of what a header the audio cannot show does (an unknown version).</summary>
+    internal void TakeInHeader(long index, FormatOpening opening, BurstHeader header, ReadOnlySpan<byte> bits)
+    {
+        bits[..HeaderBitCount].CopyTo(_headerBits);
+        HandleHeader(new Candidate(index, opening), HeaderStatus.Read, header);
+    }
+
+    /// <summary>Bursts known and not yet applied.</summary>
+    internal int BurstsInFlight => _bursts.Count;
+
+    /// <summary>True while a header read is released, running or finished and not yet taken in.</summary>
+    internal bool HeaderJobPending
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _headerPhase != HeaderPhase.Idle;
+            }
+        }
+    }
+
+    /// <summary>Bursts waiting for a worker now.</summary>
+    internal int BurstsQueued
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _jobQueue.Count;
+            }
+        }
+    }
+
+    /// <summary>The adaptation rules' time for a sample index: seconds on the sample clock.</summary>
+    private static double ClockSeconds(long sample) => sample / (double)SampleRate;
+
+    /// <summary>
+    /// The name a station heard by its number alone is given until names can be bound: the ASCII text "#" and the number in decimal ("#7", "#42"). A later step's binding replaces the name in these events,
+    /// not their type.
+    /// </summary>
+    public static StationName PlaceholderName(int number)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(number, 0);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, 63);
+        return StationName.FromAscii("#" + number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>True when a job waits for <see cref="RunOne"/>: a header read, or a burst to receive. Always false for an inline station. Safe from any thread.</summary>
+    public bool HasWork
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _headerPhase == HeaderPhase.Released || _jobQueue.Count > 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs one job if one is waiting and returns true; false if none was. A header read is taken before a burst's receive, since a read is short and the pause of the threshold estimate waits on it; receives go oldest first.
+    /// Safe to call from any number of threads at the same time, the audio thread's included between its own calls. The thread uses a pair of receivers of its own (made the first time, and kept), so a call can take a good part of the
+    /// burst's own length on a slow processor. It raises no event and calls nothing outside the library; its result is applied by the audio thread (see <see cref="DeliverResults"/>).
+    /// </summary>
+    public bool RunOne() => RunJob();
+
+    /// <summary>Runs jobs until none is waiting and returns how many ran. Safe from any number of threads at the same time.</summary>
+    public int RunPending()
+    {
+        int count = 0;
+        while (RunJob())
+        {
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Takes in the jobs finished since the last call and applies every result that is ready, in the order the bursts started: <see cref="Received"/>, <see cref="PathReport"/> and <see cref="LinkState"/> are raised on this thread, and the
+    /// adaptation rules are called, each with the burst's end on the sample clock. <see cref="Push"/> and <see cref="Skip"/> do this before they return; call it from the audio thread after workers finish when no audio is coming. A result
+    /// is held back until no earlier burst can still turn up, which is a fraction of a second of audio after a short burst ends; the clock moving on releases it.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
+    public void DeliverResults()
+    {
+        EnsureNotAdvancing();
+        _advancing = true;
+        try
+        {
+            Pump();
+            ApplyReadyResults();
+        }
+        finally
+        {
+            _advancing = false;
+        }
+    }
+
+    private void InitialiseReceive()
+    {
+        _link = new LinkAdaptation(StationNumber);
+        for (int n = 0; n < _placeholders.Length; n++)
+        {
+            _placeholders[n] = PlaceholderName(n);
+        }
+    }
+
+    // ---- feeding audio ----
+
+    /// <summary>Feeds <paramref name="count"/> samples of audio (silence if <paramref name="audio"/> is empty) to the ring and the detector, in pieces that end at each frame's end.</summary>
+    private void FeedAudio(ReadOnlySpan<float> audio, int count)
+    {
+        int done = 0;
+        while (done < count)
+        {
+            // Before the next samples: take in finished jobs and start the next header read, so that a pause is in before a frame that needs it.
+            Pump();
+            int n = Math.Min(count - done, _detector.SamplesToNextFrame);
+            ReadOnlySpan<float> piece;
+            if (audio.IsEmpty)
+            {
+                n = Math.Min(n, _silence.Length);
+                piece = _silence.AsSpan(0, n);
+            }
+            else
+            {
+                piece = audio.Slice(done, n);
+            }
+
+            RingWrite(piece);
+            _detector.Push(piece);
+            SampleCount += n;
+            done += n;
+            if (_detector.FramesProcessed != _framesSeen)
+            {
+                OnFrame();
+            }
+        }
+    }
+
+    private void RingWrite(ReadOnlySpan<float> piece)
+    {
+        int head = (int)(SampleCount % RingSamples);
+        int first = Math.Min(piece.Length, RingSamples - head);
+        piece[..first].CopyTo(_ring.AsSpan(head));
+        piece[first..].CopyTo(_ring);
+        Volatile.Write(ref _ringEnd, SampleCount + piece.Length);
+    }
+
+    /// <summary>Copies the ring from absolute sample <paramref name="from"/> to <paramref name="destination"/>; the audio thread's own read, which nothing can overwrite.</summary>
+    private void RingCopy(long from, Span<float> destination)
+    {
+        int at = (int)(from % RingSamples);
+        int first = Math.Min(destination.Length, RingSamples - at);
+        _ring.AsSpan(at, first).CopyTo(destination);
+        _ring.AsSpan(0, destination.Length - first).CopyTo(destination[first..]);
+    }
+
+    /// <summary>
+    /// A worker's read of the ring. The audio thread keeps writing, up to one frame beyond what it has published, so the copy is good only if the start is still a frame's worth inside the ring afterwards.
+    /// </summary>
+    private bool TryRingCopy(long from, Span<float> destination)
+    {
+        long end = Volatile.Read(ref _ringEnd);
+        if (from < 0 || from + destination.Length > end || end + Frame - from > RingSamples)
+        {
+            return false;
+        }
+
+        RingCopy(from, destination);
+        Interlocked.MemoryBarrier();
+        return Volatile.Read(ref _ringEnd) + Frame - from <= RingSamples;
+    }
+
+    /// <summary>A frame has just been correlated: take its candidates, move the boundary, and forget what can no longer matter.</summary>
+    private void OnFrame()
+    {
+        _framesSeen = _detector.FramesProcessed;
+        _boundary = SampleCount;
+
+        // One frame's candidates go in by index (then opening), so that a burst's own start is read before the candidates other openings find inside it, which are then ignored unread.
+        int first = _candidates.Count;
+        while (_detector.TryTake(out DetectedBurst d))
+        {
+            _candidates.Add(new Candidate(d.Index, d.Opening));
+            _candidatesSeen++;
+        }
+
+        // (An insertion sort: a frame gives a handful, and List.Sort makes a delegate each time it runs.)
+        for (int i = first + 1; i < _candidates.Count; i++)
+        {
+            Candidate c = _candidates[i];
+            int j = i - 1;
+            while (j >= first && (_candidates[j].Index > c.Index || (_candidates[j].Index == c.Index && _candidates[j].Opening > c.Opening)))
+            {
+                _candidates[j + 1] = _candidates[j];
+                j--;
+            }
+
+            _candidates[j + 1] = c;
+        }
+
+        // A candidate can come out up to two frames after the start it names, so a burst is remembered for that long past its end.
+        long keepFrom = SampleCount - (4L * Frame);
+        for (int i = _extents.Count - 1; i >= 0; i--)
+        {
+            if (_extents[i].End < keepFrom)
+            {
+                _extents.RemoveAt(i);
+            }
+        }
+    }
+
+    // ---- pumping: the audio thread takes in finished jobs and starts the next ----
+
+    private void Pump()
+    {
+        for (;;)
+        {
+            if (ConsumeHeader())
+            {
+                continue;
+            }
+
+            if (ReleaseHeader())
+            {
+                if (_inline)
+                {
+                    RunJob();
+                }
+
+                continue;
+            }
+
+            break;
+        }
+
+        CompleteBursts();
+        if (_inline)
+        {
+            while (RunJob())
+            {
+            }
+        }
+
+        if (_notify)
+        {
+            _notify = false;
+            if (!_inline)
+            {
+                WorkAvailable?.Invoke();
+            }
+        }
+    }
+
+    /// <summary>Takes in the finished header read, if there is one.</summary>
+    private bool ConsumeHeader()
+    {
+        Candidate candidate;
+        HeaderStatus status;
+        BurstHeader header;
+        lock (_gate)
+        {
+            if (_headerPhase != HeaderPhase.Done)
+            {
+                return false;
+            }
+
+            candidate = _headerCandidate;
+            status = _headerStatus;
+            header = _headerRead;
+            _headerPhase = HeaderPhase.Idle;
+        }
+
+        HandleHeader(candidate, status, header);
+        return true;
+    }
+
+    /// <summary>
+    /// Starts the next candidate's header read if none is going: the first in line whose opening is in the ring as of the last frame's end. A candidate inside a burst already known is dropped here,
+    /// unread. True if a read was started.
+    /// </summary>
+    private bool ReleaseHeader()
+    {
+        lock (_gate)
+        {
+            if (_headerPhase != HeaderPhase.Idle)
+            {
+                return false;
+            }
+        }
+
+        while (_candidates.Count > 0)
+        {
+            Candidate c = _candidates[0];
+            if (c.Index + HeaderReader.OpeningSamples(c.Opening) > _boundary)
+            {
+                return false;
+            }
+
+            _candidates.RemoveAt(0);
+            if (InsideKnownBurst(c.Index))
+            {
+                _candidatesIgnored++;
+                continue;
+            }
+
+            lock (_gate)
+            {
+                _headerCandidate = c;
+                _headerPhase = HeaderPhase.Released;
+            }
+
+            _notify = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool InsideKnownBurst(long index)
+    {
+        foreach (Extent e in _extents)
+        {
+            if (index > e.Start + Sym && index < e.End)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>A header read has come back: a new burst, the same as one already known, or something to note.</summary>
+    private void HandleHeader(Candidate c, HeaderStatus status, BurstHeader header)
+    {
+        if (status == HeaderStatus.Lost)
+        {
+            _headersLost++;
+            return;
+        }
+
+        if (status != HeaderStatus.Read)
+        {
+            return;
+        }
+
+        if (!header.IsKnownVersion)
+        {
+            Note(c, header, NoteReason.UnknownVersion);
+            return;
+        }
+
+        if (header.Kind is not (BurstKind.Data or BurstKind.Report))
+        {
+            Note(c, header, NoteReason.UnsupportedKind);
+            return;
+        }
+
+        if (header.Sender == 0)
+        {
+            Note(c, header, NoteReason.Invalid);
+            return;
+        }
+
+        int length;
+        if (header.Kind == BurstKind.Data)
+        {
+            length = PayloadReceiver.SamplesNeeded(header);
+            if (length < 0 || StandardFormats.Describe(header.Format).Opening != c.Opening)
+            {
+                // A data burst opens the way its format says; a read under another opening is not a burst.
+                Note(c, header, NoteReason.Invalid);
+                return;
+            }
+        }
+        else
+        {
+            length = HeaderReader.OpeningSamples(c.Opening);
+        }
+
+        foreach (Extent e in _extents)
+        {
+            if (e.Header == header && Math.Abs(e.Start - c.Index) <= Sym)
+            {
+                _burstsMerged++;
+                return;
+            }
+        }
+
+        BurstRecord record = _freeRecords.Count > 0 ? _freeRecords.Pop() : new BurstRecord();
+        record.Sequence = _burstSequence++;
+        record.Start = c.Index;
+        record.End = c.Index + length;
+        record.Header = header;
+        record.Opening = c.Opening;
+        record.Job = null;
+        _headerBits.AsSpan().CopyTo(record.Bits);
+        record.State = header.Kind == BurstKind.Data ? BurstState.Known : BurstState.Report;
+        int at = _bursts.Count;
+        while (at > 0 && _bursts[at - 1].Start > record.Start)
+        {
+            at--;
+        }
+
+        _bursts.Insert(at, record);
+        _extents.Add(new Extent(record.Start, record.End, header));
+        PauseEstimateOver(record.Start, record.End);
+    }
+
+    private void Note(Candidate c, BurstHeader header, NoteReason reason)
+    {
+        if (_noted.Count == MaxNoted)
+        {
+            _noted.RemoveAt(0);
+        }
+
+        _noted.Add(new NotedHeader(c.Index, c.Opening, header, reason));
+    }
+
+    /// <summary>
+    /// Keeps the detector's threshold estimate from taking values over a burst. Marks go in by sample index and must not go backwards, so a burst that starts inside one already marked
+    /// is clipped to begin where the last mark ended.
+    /// </summary>
+    private void PauseEstimateOver(long start, long end)
+    {
+        long from = Math.Max(start, _lastMark);
+        if (end <= from || _detector.FreeMarks < 2)
+        {
+            return;
+        }
+
+        _detector.PauseEstimate(from);
+        _detector.ResumeEstimate(end);
+        _lastMark = end;
+        _pausedSamples += end - from;
+    }
+
+    /// <summary>Makes a receive job of each known burst whose last sample (and its pad) is in the ring.</summary>
+    private void CompleteBursts()
+    {
+        for (int i = 0; i < _bursts.Count; i++)
+        {
+            BurstRecord r = _bursts[i];
+            if (r.State != BurstState.Known || SampleCount < r.End + PostPadSamples)
+            {
+                continue;
+            }
+
+            long oldest = SampleCount - RingSamples;
+            long from = Math.Max(Math.Max(0, r.Start - PrePadSamples), oldest);
+            if (from > r.Start)
+            {
+                r.State = BurstState.Lost;
+                _burstsLost++;
+                continue;
+            }
+
+            int total = (int)(r.End + PostPadSamples - from);
+            BurstJob job = RentJob(total, PayloadReceiver.PayloadRoom(r.Header));
+            RingCopy(from, job.Samples.AsSpan(0, total));
+            job.Length = total;
+            job.Pre = (int)(r.Start - from);
+            job.Decoded = false;
+            job.PayloadBytes = 0;
+            job.Sudden = false;
+            job.HasQuality = false;
+            r.Job = job;
+            lock (_gate)
+            {
+                r.State = BurstState.Queued;
+                _jobQueue.Add(r);
+                while (_jobQueue.Count > MaxQueuedBursts)
+                {
+                    BurstRecord oldestQueued = _jobQueue[0];
+                    _jobQueue.RemoveAt(0);
+                    oldestQueued.State = BurstState.Dropped;
+                    _burstsDropped++;
+                    ReturnJob(oldestQueued.Job!);
+                    oldestQueued.Job = null;
+                }
+            }
+
+            _notify = true;
+        }
+    }
+
+    private BurstJob RentJob(int samples, int payloadRoom)
+    {
+        BurstJob job = _freeJobs.Count > 0 ? _freeJobs.Pop() : new BurstJob();
+        if (job.Samples.Length < samples)
+        {
+            job.Samples = new float[samples];
+        }
+
+        if (job.Payload.Length < payloadRoom)
+        {
+            job.Payload = new byte[payloadRoom];
+        }
+
+        return job;
+    }
+
+    private void ReturnJob(BurstJob job) => _freeJobs.Push(job);
+
+    // ---- the jobs themselves, run by whoever calls RunOne (or Push, for an inline station) ----
+
+    private bool RunJob()
+    {
+        BurstRecord? burst = null;
+        Candidate candidate = default;
+        bool header;
+        lock (_gate)
+        {
+            if (_headerPhase == HeaderPhase.Released)
+            {
+                _headerPhase = HeaderPhase.Running;
+                candidate = _headerCandidate;
+                header = true;
+            }
+            else if (_jobQueue.Count > 0)
+            {
+                burst = _jobQueue[0];
+                _jobQueue.RemoveAt(0);
+                burst.State = BurstState.Running;
+                header = false;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        WorkerContext context = RentContext();
+        try
+        {
+            JobStarting?.Invoke(new JobStart(header, header ? candidate.Index : burst!.Start));
+            if (header)
+            {
+                RunHeaderRead(context, candidate);
+            }
+            else
+            {
+                RunReceive(context, burst!);
+            }
+        }
+        catch
+        {
+            // Settle the job as failed so that the audio thread is not left waiting for it, then let the caller see the fault.
+            lock (_gate)
+            {
+                if (header)
+                {
+                    _headerStatus = HeaderStatus.Unreadable;
+                    _headerPhase = HeaderPhase.Done;
+                }
+                else
+                {
+                    burst!.Job!.Decoded = false;
+                    burst.Job.HasQuality = false;
+                    burst.State = BurstState.Done;
+                }
+            }
+
+            throw;
+        }
+        finally
+        {
+            lock (_gate)
+            {
+                _freeContexts.Push(context);
+            }
+        }
+
+        return true;
+    }
+
+    private WorkerContext RentContext()
+    {
+        lock (_gate)
+        {
+            if (_freeContexts.Count > 0)
+            {
+                return _freeContexts.Pop();
+            }
+        }
+
+        return new WorkerContext();
+    }
+
+    private void RunHeaderRead(WorkerContext context, Candidate c)
+    {
+        int n = HeaderReader.OpeningSamples(c.Opening);
+        HeaderStatus status;
+        BurstHeader read = default;
+        if (!TryRingCopy(c.Index, context.Scratch.AsSpan(0, n)))
+        {
+            status = HeaderStatus.Lost;
+        }
+        else
+        {
+            Interlocked.Increment(ref _headerReads);
+            status = context.Reader.TryRead(context.Scratch, 0, c.Opening, out read) ? HeaderStatus.Read : HeaderStatus.Unreadable;
+        }
+
+        lock (_gate)
+        {
+            _headerStatus = status;
+            _headerRead = read;
+            if (status == HeaderStatus.Read)
+            {
+                context.Reader.Bits[..HeaderBitCount].CopyTo(_headerBits);
+            }
+
+            _headerPhase = HeaderPhase.Done;
+        }
+    }
+
+    private void RunReceive(WorkerContext context, BurstRecord r)
+    {
+        BurstJob job = r.Job!;
+        ReadOnlySpan<float> capture = job.Samples.AsSpan(0, job.Length);
+        PayloadReceiveResult result = context.Tracked.Receive(capture, job.Pre, r.Header, r.Bits, job.Payload);
+        job.Sudden = context.Tracked.Sudden;
+        if (result.Accepted && result.CheckPassed)
+        {
+            job.Decoded = true;
+            job.PayloadBytes = result.PayloadBytes;
+            ReadOnlySpan<double> quality = context.Tracked.Quality;
+            if (quality.Length == Carriers)
+            {
+                quality.CopyTo(job.Quality);
+                job.HasQuality = true;
+            }
+        }
+        else
+        {
+            job.Decoded = false;
+            job.HasQuality = context.Tracked.MeasureOpening(capture, job.Pre, r.Header, r.Bits, job.Quality);
+        }
+
+        lock (_gate)
+        {
+            r.State = BurstState.Done;
+        }
+    }
+
+    // ---- applying results, in order ----
+
+    private bool UnsettledBefore(long start)
+    {
+        foreach (Candidate c in _candidates)
+        {
+            if (c.Index < start)
+            {
+                return true;
+            }
+        }
+
+        lock (_gate)
+        {
+            return _headerPhase != HeaderPhase.Idle && _headerCandidate.Index < start;
+        }
+    }
+
+    private void ApplyReadyResults()
+    {
+        long floor = _detector.CandidateFloor;
+        while (_bursts.Count > 0)
+        {
+            BurstRecord r = _bursts[0];
+            BurstState state = r.State;
+            if (state is BurstState.Known or BurstState.Queued or BurstState.Running)
+            {
+                break;
+            }
+
+            if (floor < r.Start || UnsettledBefore(r.Start))
+            {
+                break;
+            }
+
+            _bursts.RemoveAt(0);
+            CheckGone(ClockSeconds(r.End));
+            _burstsApplied++;
+            switch (state)
+            {
+                case BurstState.Done:
+                    ApplyData(r);
+                    break;
+                case BurstState.Report:
+                    ApplyReport(r);
+                    break;
+            }
+
+            if (r.Job is { } job)
+            {
+                ReturnJob(job);
+                r.Job = null;
+            }
+
+            _freeRecords.Push(r);
+        }
+
+        // With nothing earlier to come, a neighbour can be seen to have gone quiet for good.
+        long safe = floor;
+        if (_bursts.Count > 0)
+        {
+            safe = Math.Min(safe, _bursts[0].Start);
+        }
+
+        foreach (Candidate c in _candidates)
+        {
+            safe = Math.Min(safe, c.Index);
+        }
+
+        lock (_gate)
+        {
+            if (_headerPhase != HeaderPhase.Idle)
+            {
+                safe = Math.Min(safe, _headerCandidate.Index);
+            }
+        }
+
+        CheckGone(ClockSeconds(Math.Min(safe, SampleCount)));
+    }
+
+    private void ApplyData(BurstRecord r)
+    {
+        BurstJob job = r.Job!;
+        BurstHeader h = r.Header;
+        double now = ClockSeconds(r.End);
+        int sender = h.Sender;
+        bool mine = h.Destination == StationNumber;
+        bool everyone = h.Destination == 0;
+        bool decoded = job.Decoded;
+        ReadOnlySpan<double> quality = job.HasQuality ? job.Quality : default;
+        double footing = LinkAdaptation.Footing(h.Format, opening: !decoded);
+        LinkReport? their = null;
+        int? capability = null;
+        PayloadPrelude prelude = default;
+        bool unpacked = false;
+        ReadOnlySpan<byte> payload = job.Payload.AsSpan(0, job.PayloadBytes);
+        DatagramReader datagrams = default;
+        if (decoded && (mine || everyone))
+        {
+            unpacked = PayloadCodec.TryUnpack(payload, everyone, out prelude, out datagrams);
+            if (unpacked && mine)
+            {
+                their = new LinkReport(prelude.Recommended, prelude.Failed);
+                capability = prelude.Capability;
+            }
+        }
+
+        LinkReport? owed = _link.HeardData(sender, h.Destination, h.Format, decoded, quality, now, footing, job.Sudden, their, capability);
+        AdaptationCalled?.Invoke(new AdaptationCall(false, sender, h.Destination, h.Format, decoded, quality.ToArray(), now, footing, job.Sudden, their, capability, owed));
+        if (owed is { } report)
+        {
+            _owed[sender] = new OwedReport(sender, report, r.End);
+        }
+
+        if (unpacked)
+        {
+            if (mine && prelude.Recommended is int recommended)
+            {
+                PathReport?.Invoke(new PathReportEvent(NameFor(sender), recommended, prelude.Failed));
+            }
+
+            double db = MeanQualityDb(job.Quality, StandardFormats.Describe(h.Format).Carriers);
+            StationName? name = _bound[sender];
+            while (datagrams.TryNext(out ReadOnlySpan<byte> datagram))
+            {
+                int offset = (int)Unsafe.ByteOffset(ref MemoryMarshal.GetReference(payload), ref MemoryMarshal.GetReference(datagram));
+                Received?.Invoke(new ReceivedEvent(job.Payload.AsMemory(offset, datagram.Length), name, sender, everyone, db));
+            }
+        }
+
+        RaiseLinkState(sender, now);
+    }
+
+    private void ApplyReport(BurstRecord r)
+    {
+        BurstHeader h = r.Header;
+        if (h.Destination != StationNumber)
+        {
+            // A report for another station, or for everyone, is read and neither measured nor acted on.
+            return;
+        }
+
+        double now = ClockSeconds(r.End);
+        _link.HeardReport(h.Sender, h.Format, h.Failed, now);
+        AdaptationCalled?.Invoke(new AdaptationCall(true, h.Sender, h.Destination, h.Format, false, [], now, null, false, new LinkReport(h.Format, h.Failed), null, null));
+        PathReport?.Invoke(new PathReportEvent(NameFor(h.Sender), h.Format, h.Failed));
+        if (h.Failed)
+        {
+            OnReportedNotDecoded(h.Sender, r.Start);
+        }
+
+        RaiseLinkState(h.Sender, now);
+    }
+
+    /// <summary>
+    /// A station reports that it heard a burst from this one and could not decode it. Step 5 knows this station's own transmissions and raises <see cref="BurstNotDecoded"/> here, with the tags of the datagrams
+    /// in the latest burst to that station that ended before <paramref name="reportStart"/>. Nothing is sent yet, so there is nothing to attribute.
+    /// </summary>
+    private void OnReportedNotDecoded(int station, long reportStart)
+    {
+        _ = station;
+        _ = reportStart;
+    }
+
+    private static double MeanQualityDb(ReadOnlySpan<double> quality, int carriers)
+    {
+        double sum = 0;
+        int count = 0;
+        for (int c = 0; c < carriers && c < quality.Length; c++)
+        {
+            double q = quality[c];
+            if (double.IsFinite(q))
+            {
+                sum += 10 * Math.Log10(Math.Max(q, 1e-12));
+                count++;
+            }
+        }
+
+        return count == 0 ? double.NaN : sum / count;
+    }
+
+    // ---- what the station knows of each neighbour, for the host ----
+
+    private readonly StationName?[] _bound = new StationName?[64];
+
+    private StationName NameFor(int number) => _bound[number] ?? _placeholders[number];
+
+    /// <summary>The largest datagram one burst to a neighbour at this format carries: the longest burst's payload less the largest prelude and the datagram's length.</summary>
+    private static int DatagramRoomFor(int format) => Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - DatagramOverhead);
+
+    private void RaiseLinkState(int who, double now)
+    {
+        if (!_link.TryGetNeighbour(who, out LinkNeighbour? nb) || nb is null)
+        {
+            return;
+        }
+
+        int format = _link.Choose(who, now).Format;
+        LinkKnowledge knowledge;
+        double age;
+        if (nb.ReportFormat is not null)
+        {
+            knowledge = LinkKnowledge.Report;
+            age = now - nb.ReportTime.GetValueOrDefault(now);
+        }
+        else if (nb.Recommended is not null || nb.Measures > 0)
+        {
+            knowledge = LinkKnowledge.OwnEstimate;
+            age = now - (nb.MeasuredAt ?? nb.LastHeard ?? now);
+        }
+        else
+        {
+            knowledge = LinkKnowledge.FirstContact;
+            age = 0;
+        }
+
+        int room = DatagramRoomFor(format);
+        LinkShown shown = _shown[who];
+        if (shown.Shown && !shown.Gone && shown.Format == format && shown.Room == room && shown.Knowledge == knowledge)
+        {
+            return;
+        }
+
+        _shown[who] = new LinkShown(true, false, format, room, knowledge);
+        bool known = knowledge != LinkKnowledge.FirstContact;
+        LinkState?.Invoke(new LinkStateEvent(NameFor(who), known ? format : null, known ? StandardFormats.Rate(format) * 1000.0 : null, room, knowledge, Math.Max(0, age), false));
+    }
+
+    /// <summary>Raises "gone" for each neighbour the rules forget by <paramref name="seconds"/>: ten minutes without a word. The rules drop the record themselves the next time they are given the time for it.</summary>
+    private void CheckGone(double seconds)
+    {
+        for (int who = 1; who < _shown.Length; who++)
+        {
+            if (_shown[who].Shown && !_shown[who].Gone && _link.TryGetNeighbour(who, out LinkNeighbour? nb) && nb?.LastHeard is double heard
+                && seconds - heard > LinkAdaptation.ForgetSeconds)
+            {
+                _shown[who] = _shown[who] with { Gone = true };
+                LinkState?.Invoke(new LinkStateEvent(NameFor(who), null, null, DatagramRoomFor(StandardFormats.FirstContact), LinkKnowledge.FirstContact, 0, true));
+            }
+        }
+    }
+}

@@ -433,8 +433,15 @@ public sealed partial class Station
         int first = _candidates.Count;
         while (_detector.TryTake(out DetectedBurst d))
         {
-            _candidates.Add(new Candidate(d.Index, d.Opening));
             _candidatesSeen++;
+            if (InOwnWindow(d.Index))
+            {
+                // The audio is muted or full of this station's own signal: nothing to find there.
+                _candidatesMuted++;
+                continue;
+            }
+
+            _candidates.Add(new Candidate(d.Index, d.Opening));
         }
 
         // (An insertion sort: a frame gives a handful, and List.Sort makes a delegate each time it runs.)
@@ -467,6 +474,9 @@ public sealed partial class Station
                 _extents.RemoveAt(i);
             }
         }
+
+        ForgetOldWindows();
+        RefreshPending();
     }
 
     // ---- pumping: the audio thread takes in finished jobs and starts the next ----
@@ -501,6 +511,8 @@ public sealed partial class Station
             }
         }
 
+        SettleUnreadable();
+        RefreshPending();
         if (_notify)
         {
             _notify = false;
@@ -551,17 +563,28 @@ public sealed partial class Station
         while (_candidates.Count > 0)
         {
             Candidate c = _candidates[0];
+            if (InOwnWindow(c.Index))
+            {
+                _candidates.RemoveAt(0);
+                _candidatesMuted++;
+                continue;
+            }
+
+            // A candidate inside a burst already known, or within a symbol of its start (the same burst found again under another opening, which can be a frame or two later), is not read: reading
+            // it could only find the same burst again, and waiting for its opening would hold up the candidates behind it.
+            if (IsExplained(c.Index))
+            {
+                _candidates.RemoveAt(0);
+                _candidatesIgnored++;
+                continue;
+            }
+
             if (c.Index + HeaderReader.OpeningSamples(c.Opening) > _boundary)
             {
                 return false;
             }
 
             _candidates.RemoveAt(0);
-            if (InsideKnownBurst(c.Index))
-            {
-                _candidatesIgnored++;
-                continue;
-            }
 
             lock (_gate)
             {
@@ -595,29 +618,35 @@ public sealed partial class Station
         if (status == HeaderStatus.Lost)
         {
             _headersLost++;
+            HoldForUnreadable(c);
             return;
         }
 
         if (status != HeaderStatus.Read)
         {
+            HoldForUnreadable(c);
             return;
         }
 
         if (!header.IsKnownVersion)
         {
             Note(c, header, NoteReason.UnknownVersion);
+            HoldForUnknownVersion();
             return;
         }
 
         if (header.Kind is not (BurstKind.Data or BurstKind.Report))
         {
+            // An unknown type under a known version still carries its length: the opening and the payload symbols it names.
             Note(c, header, NoteReason.UnsupportedKind);
+            HoldForBurst(c.Index + HeaderReader.OpeningSamples(c.Opening) + (header.PayloadSymbols * Sym));
             return;
         }
 
         if (header.Sender == 0)
         {
             Note(c, header, NoteReason.Invalid);
+            HoldForUnreadable(c);
             return;
         }
 
@@ -629,6 +658,7 @@ public sealed partial class Station
             {
                 // A data burst opens the way its format says; a read under another opening is not a burst.
                 Note(c, header, NoteReason.Invalid);
+                HoldForUnreadable(c);
                 return;
             }
         }
@@ -642,6 +672,7 @@ public sealed partial class Station
             if (e.Header == header && Math.Abs(e.Start - c.Index) <= Sym)
             {
                 _burstsMerged++;
+                HoldForBurst(e.End);
                 return;
             }
         }
@@ -664,6 +695,7 @@ public sealed partial class Station
         _bursts.Insert(at, record);
         _extents.Add(new Extent(record.Start, record.End, header));
         PauseEstimateOver(record.Start, record.End);
+        HoldForBurst(record.End);
     }
 
     private void Note(Candidate c, BurstHeader header, NoteReason reason)
@@ -1045,6 +1077,8 @@ public sealed partial class Station
             return;
         }
 
+        // After a lone report for this station, ordinary traffic leaves the channel clear for about a second from the report's last sample.
+        _access.HoldOffOrdinaryUntil(r.End + ChannelAccess.ReportHoldOff);
         double now = ClockSeconds(r.End);
         _link.HeardReport(h.Sender, h.Format, h.Failed, now);
         AdaptationCalled?.Invoke(new AdaptationCall(true, h.Sender, h.Destination, h.Format, false, [], now, null, false, new LinkReport(h.Format, h.Failed), null, null));

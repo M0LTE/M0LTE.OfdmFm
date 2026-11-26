@@ -3,7 +3,7 @@
   <PropertyGroup>
     <PackageId>M0LTE.OfdmFm</PackageId>
     <Title>M0LTE.OfdmFm</Title>
-    <Description>An adaptive OFDM modem for the audio path of an FM radio, for .NET. Every burst carries a header naming its own format, so a receiver needs no setting to decode it. 256 standard formats run from 0.25 to about 70 kbit/s on a 25 kHz FM channel, and stations tell each other over the air what rate the path supports. Burst renderer, burst finder, header reader, payload receiver with clock tracking, header and payload codecs. The transmit side and the receive arithmetic are complete and pinned to a prototype by test vectors, and the live station receives from a continuous audio stream (it does not yet send). Extracted from the pdn-soundmodem packet-radio modem.</Description>
+    <Description>An adaptive OFDM modem for the audio path of an FM radio, for .NET. Every burst carries a header naming its own format, so a receiver needs no setting to decode it. 256 standard formats run from 0.25 to about 70 kbit/s on a 25 kHz FM channel, and stations tell each other over the air what rate the path supports. Burst renderer, burst finder, header reader, payload receiver with clock tracking, header and payload codecs. The transmit side and the receive arithmetic are complete and pinned to a prototype by test vectors, and the live station receives from a continuous audio stream, and knows when the channel is busy and when it may transmit (it does not yet send). Extracted from the pdn-soundmodem packet-radio modem.</Description>
     <PackageTags>ofdm;fm;modem;ldpc;adaptive;amateur-radio;ham-radio;packet-radio</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>

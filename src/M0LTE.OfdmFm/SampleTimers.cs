@@ -17,6 +17,7 @@ internal sealed class SampleTimers
     }
 
     private readonly List<Entry> _entries = [];
+    private readonly Stack<Entry> _free = new();
     private long _nextSequence = 1;
 
     /// <summary>How many timers are waiting.</summary>
@@ -28,7 +29,11 @@ internal sealed class SampleTimers
     /// <summary>Schedules <paramref name="action"/> for index <paramref name="due"/>.</summary>
     public TimerHandle Schedule(long due, Action action)
     {
-        var entry = new Entry { Due = due, Sequence = _nextSequence++, Action = action };
+        // Entries are reused, so that a station that schedules and runs timers all day allocates nothing for them.
+        Entry entry = _free.Count > 0 ? _free.Pop() : new Entry();
+        entry.Due = due;
+        entry.Sequence = _nextSequence++;
+        entry.Action = action;
         int at = _entries.Count;
         while (at > 0 && _entries[at - 1].Due > due)
         {
@@ -46,6 +51,8 @@ internal sealed class SampleTimers
         {
             if (_entries[i].Sequence == handle.Sequence)
             {
+                _entries[i].Action = null!;
+                _free.Push(_entries[i]);
                 _entries.RemoveAt(i);
                 return true;
             }
@@ -60,6 +67,8 @@ internal sealed class SampleTimers
         if (_entries.Count > 0 && _entries[0].Due <= now)
         {
             action = _entries[0].Action;
+            _entries[0].Action = null!;
+            _free.Push(_entries[0]);
             _entries.RemoveAt(0);
             return true;
         }

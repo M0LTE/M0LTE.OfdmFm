@@ -33,7 +33,7 @@ public class HostileLongTests
         r.DeliveredWithoutEvent.Should().Be(0, "nothing arrives that the sender was not told went out");
         r.Accepted.Should().Be(r.Transmitted + r.Dropped + r.StillQueued, "every datagram accepted went out, was reported dropped or is still queued");
         r.StillQueued.Should().Be(0, "the queues emptied in the 90 s after the traffic stopped");
-        r.Dropped.Should().Be(r.Cancelled, "the only datagrams dropped are those the host cancelled");
+        r.Dropped.Should().Be(r.Cancelled + r.NoLongerFit, "the only datagrams dropped are those the host cancelled and those that no longer fit a burst after the format fell");
         r.WrongHints.Should().Be(0, "a hint names only datagrams sent to that station that did not arrive");
         r.MisattributedReports.Should().Be(0);
         r.Reordered.Should().Be(0, "ordinary datagrams from one station to another arrive in the order they were sent");

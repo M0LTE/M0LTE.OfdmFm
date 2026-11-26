@@ -587,7 +587,7 @@ internal static class HostileScenarios
 
     public sealed record Soak(
         int Offered, int Refused, int Accepted, int Transmitted, int Dropped, int StillQueued, int Delivered, int Lost, int LostOverlapped, int LostByPath, int Duplicates, int DeliveredWithoutEvent, int Bursts, int CollidedBursts, int[] BytesBySender,
-        double MaxWaitSeconds, int MaxBurstsInFlight, int MaxCandidatesWaiting, int MaxTimers, int MaxQueued, int ReceivedByB, string FormatsFromA, int Hints, int WrongHints, int MisattributedReports, int Congestions, int Reordered, int ClocksBackwards, int Cancelled, List<string> Log);
+        double MaxWaitSeconds, int MaxBurstsInFlight, int MaxCandidatesWaiting, int MaxTimers, int MaxQueued, int ReceivedByB, string FormatsFromA, int Hints, int WrongHints, int MisattributedReports, int Congestions, int Reordered, int ClocksBackwards, int Cancelled, int NoLongerFit, List<string> Log);
 
     /// <summary>
     /// Three stations, mixed traffic (to one station or to everyone, short and long, ordinary and expedited) at seeded moments for <paramref name="seconds"/>, with the path between A and B fading in steps (0, -20, -40, -20, 0 dB, then cut
@@ -726,11 +726,11 @@ internal static class HostileScenarios
         int stillQueued = Enumerable.Range(0, 3).Sum(i => Enumerable.Range(0, 64).Sum(n => rig.Stations[i].QueuedFor(n)));
         return new Soak(
             ledger.Items.Count, ledger.Refused.Count, accepted, transmitted, ledger.DroppedCount(), stillQueued, delivered, lost, lostOverlap, lost - lostOverlap, ledger.Duplicates().Count, ledger.DeliveredWithoutTransmittedEvent(),
-            rig.Nodes.Sum(n => n.Transmissions.Count), cb, bytes, maxWait, maxFlight, maxCand, maxTimers, maxQueued, rig.Nodes[1].Received.Count, Formats(rig.Nodes[0], 40), rig.Nodes.Sum(n => n.NotDecoded.Count), wrongHints, misattributed, rig.Nodes.Sum(n => n.Congestion.Count), ledger.Reordered(), Ledger.ClocksGoingBackwards(rig.Channel.Log), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.Cancelled)), rig.Channel.Log);
+            rig.Nodes.Sum(n => n.Transmissions.Count), cb, bytes, maxWait, maxFlight, maxCand, maxTimers, maxQueued, rig.Nodes[1].Received.Count, Formats(rig.Nodes[0], 40), rig.Nodes.Sum(n => n.NotDecoded.Count), wrongHints, misattributed, rig.Nodes.Sum(n => n.Congestion.Count), ledger.Reordered(), Ledger.ClocksGoingBackwards(rig.Channel.Log), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.Cancelled)), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.NoLongerFits)), rig.Channel.Log);
     }
 
     public static string Describe(Soak r) =>
-        $"soak: offered {r.Offered} (refused {r.Refused}), transmitted {r.Transmitted}, dropped {r.Dropped} ({r.Cancelled} cancelled by the host), still queued {r.StillQueued}, delivered {r.Delivered}; addressed datagrams lost on the air {r.Lost} ({r.LostOverlapped} in a burst another station overlapped, {r.LostByPath} not); "
+        $"soak: offered {r.Offered} (refused {r.Refused}), transmitted {r.Transmitted}, dropped {r.Dropped} ({r.Cancelled} cancelled by the host, {r.NoLongerFit} no longer fit after the format fell), still queued {r.StillQueued}, delivered {r.Delivered}; addressed datagrams lost on the air {r.Lost} ({r.LostOverlapped} in a burst another station overlapped, {r.LostByPath} not); "
         + $"duplicates {r.Duplicates}, delivered with no Transmitted event {r.DeliveredWithoutEvent}, hints {r.Hints} (wrong {r.WrongHints}), path reports with no burst or report to explain them {r.MisattributedReports}, ordinary datagrams reordered {r.Reordered}, log clocks going backwards {r.ClocksBackwards}; bursts {r.Bursts}, collided {r.CollidedBursts}; bytes delivered by sender {string.Join("/", r.BytesBySender)}; "
         + $"longest a station with traffic went without transmitting {Hostile.F(r.MaxWaitSeconds)} s; at most in flight {r.MaxBurstsInFlight}, candidates waiting {r.MaxCandidatesWaiting}, timers {r.MaxTimers}, queued {r.MaxQueued}; A's formats {r.FormatsFromA}";
 

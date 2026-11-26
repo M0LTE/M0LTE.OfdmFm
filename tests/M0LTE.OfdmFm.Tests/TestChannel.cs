@@ -61,6 +61,24 @@ internal sealed class TestBurst
         return new TestBurst { Header = header, Audio = audio, Lead = Renderer.LeadSamples, Length = audio.Length - Renderer.LeadSamples };
     }
 
+    /// <summary>An identification burst at the first-contact format, to everyone, with this callsign and capability word, and any items after them.</summary>
+    public static TestBurst Identification(int sender, string callsign, int capability, int burstNumber = 0, ExtensionItem[]? items = null, int format = StandardFormats.FirstContact)
+    {
+        var packed = new byte[400];
+        int length = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(callsign), capability, items ?? [], packed);
+        return IdentificationWithPayload(sender, packed.AsSpan(0, length), burstNumber, format);
+    }
+
+    /// <summary>A burst of the identification type to everyone with exactly these payload bytes (they need not be a valid identification).</summary>
+    public static TestBurst IdentificationWithPayload(int sender, ReadOnlySpan<byte> payload, int burstNumber = 0, int format = StandardFormats.FirstContact)
+    {
+        int n = PayloadCodec.SymbolsFor(format, payload.Length)!.Value;
+        BurstHeader header = BurstHeader.Identification(sender, format, n, burstNumber);
+        var audio = new float[Renderer.SamplesFor(format, n)];
+        Renderer.RenderData(header, payload, audio);
+        return new TestBurst { Header = header, Audio = audio, Lead = Renderer.LeadSamples, Length = audio.Length - Renderer.LeadSamples };
+    }
+
     /// <summary>A datagram of <paramref name="length"/> bytes that no other of the same <paramref name="tag"/> and length equals.</summary>
     public static byte[] Datagram(int tag, int length)
     {

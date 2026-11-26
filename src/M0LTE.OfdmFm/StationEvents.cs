@@ -62,6 +62,13 @@ public readonly record struct CongestionEvent(StationName Station, bool Writable
 /// <param name="Format">The format it went at.</param>
 public readonly record struct ModemSentEvent(ModemSentKind Kind, StationName? Station, int Format);
 
+/// <summary>An identification burst from another station was decoded: that number says it is that callsign.</summary>
+/// <param name="StationNumber">The sender's on-air number.</param>
+/// <param name="Callsign">The callsign it sent, as it sent it.</param>
+/// <param name="Capability">The capability word it sent.</param>
+/// <param name="Name">The name events about that number carry from now on: the callsign as a name, or the host's own name for the number when the host bound one with <see cref="Station.Bind"/> (the host's name is never replaced).</param>
+public readonly record struct IdentifiedEvent(int StationNumber, string Callsign, int Capability, StationName Name);
+
 /// <summary>The identification interval has run out on the sample clock.</summary>
 /// <param name="Seconds">The sample clock when it came due.</param>
 public readonly record struct IdentificationDueEvent(double Seconds);

@@ -9,7 +9,7 @@ public enum BurstKind
     /// <summary>A header with no payload: the format the sender recommends to the destination, and whether the destination's last burst failed.</summary>
     Report = 1,
 
-    /// <summary>A burst that carries the sender's callsign and capability word.</summary>
+    /// <summary>A burst to everyone that carries the sender's callsign and capability word, laid out as a data burst.</summary>
     Identification = 2,
 }
 
@@ -37,6 +37,10 @@ public readonly record struct BurstHeader(int Version, BurstKind Kind, int Sende
     /// <summary>A version 0 data burst.</summary>
     public static BurstHeader Data(int sender, int destination, int format, int payloadSymbols, int burstNumber) =>
         new(0, BurstKind.Data, sender, destination, format, payloadSymbols, burstNumber);
+
+    /// <summary>A version 0 identification burst from <paramref name="sender"/>: addressed to everyone (destination 0), laid out as a data burst, its payload the callsign and capability word (see <see cref="PayloadCodec.PackIdentification"/>).</summary>
+    public static BurstHeader Identification(int sender, int format, int payloadSymbols, int burstNumber) =>
+        new(0, BurstKind.Identification, sender, 0, format, payloadSymbols, burstNumber);
 
     /// <summary>A report from <paramref name="sender"/> to <paramref name="destination"/>: the recommended format, no payload, and the failed flag.</summary>
     public static BurstHeader Report(int sender, int destination, int recommendedFormat, bool failed) =>

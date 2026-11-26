@@ -119,7 +119,7 @@ public class StationAccessTests
         return () => rng.Next(1, 1500);
     }
 
-    private static Station Make(int seed = 1) => new("M0LTE", 1, new Random(seed), runJobsInline: true);
+    private static Station Make(int seed = 1) => new("M0LTE", 1, new Random(seed), runJobsInline: true) { IdentificationSuspended = true };
 
     private static (float[] Stream, Placed Placed) OneDataBurst()
     {
@@ -232,7 +232,7 @@ public class StationAccessTests
         Station station = Make();
         var driver = new StreamDriver(station);
         var bits = new byte[BurstHeaderCodec.HeaderBits];
-        var ident = new BurstHeader(0, BurstKind.Identification, 5, 0, 12, 40, 0);
+        var ident = new BurstHeader(0, (BurstKind)3, 5, 0, 12, 40, 0);
         driver.PushTo(Start, Blocks(block));
         long index = Start - 3000;
         driver.At(Start + 100, () => station.TakeInHeader(index, FormatOpening.Full, ident, bits));

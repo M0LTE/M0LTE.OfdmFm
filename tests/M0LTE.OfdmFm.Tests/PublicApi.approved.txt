@@ -29,6 +29,7 @@ namespace M0LTE.OfdmFm
         public int Sender { get; init; }
         public int Version { get; init; }
         public static M0LTE.OfdmFm.BurstHeader Data(int sender, int destination, int format, int payloadSymbols, int burstNumber) { }
+        public static M0LTE.OfdmFm.BurstHeader Identification(int sender, int format, int payloadSymbols, int burstNumber) { }
         public static M0LTE.OfdmFm.BurstHeader Report(int sender, int destination, int recommendedFormat, bool failed) { }
     }
     public static class BurstHeaderCodec
@@ -161,6 +162,14 @@ namespace M0LTE.OfdmFm
         public IdentificationDueEvent(double Seconds) { }
         public double Seconds { get; init; }
     }
+    public readonly struct IdentifiedEvent : System.IEquatable<M0LTE.OfdmFm.IdentifiedEvent>
+    {
+        public IdentifiedEvent(int StationNumber, string Callsign, int Capability, M0LTE.OfdmFm.StationName Name) { }
+        public string Callsign { get; init; }
+        public int Capability { get; init; }
+        public M0LTE.OfdmFm.StationName Name { get; init; }
+        public int StationNumber { get; init; }
+    }
     public sealed class Interleaver
     {
         public Interleaver() { }
@@ -262,18 +271,22 @@ namespace M0LTE.OfdmFm
     public static class PayloadCodec
     {
         public const int CheckBits = 32;
+        public const int MaxCallsignBytes = 16;
         public const int MaxExtensionBytes = 255;
         public static int Capacity(int format, int payloadSymbols) { }
         public static int Capacity(int format, int payloadSymbols, int extensionBlockBytes) { }
         public static void Encode(System.ReadOnlySpan<byte> payload, int infoBits, int sender, int destination, int burstNumber, System.Span<byte> bits) { }
         public static int ExtensionBlockSize(System.ReadOnlySpan<M0LTE.OfdmFm.ExtensionItem> extensions) { }
+        public static bool IsValidCallsign(System.ReadOnlySpan<char> callsign) { }
         public static int Pack(M0LTE.OfdmFm.PayloadPrelude? prelude, System.ReadOnlySpan<System.ReadOnlyMemory<byte>> datagrams, System.Span<byte> destination) { }
         public static int Pack(M0LTE.OfdmFm.PayloadPrelude? prelude, System.ReadOnlySpan<M0LTE.OfdmFm.ExtensionItem> extensions, System.ReadOnlySpan<System.ReadOnlyMemory<byte>> datagrams, System.Span<byte> destination) { }
+        public static int PackIdentification(System.ReadOnlySpan<byte> callsign, int capability, System.ReadOnlySpan<M0LTE.OfdmFm.ExtensionItem> items, System.Span<byte> destination) { }
         public static int? SymbolsFor(int format, int loadBytes) { }
         public static int? SymbolsFor(int format, int loadBytes, int extensionBlockBytes) { }
         public static bool TryDecode(System.ReadOnlySpan<byte> bits, int sender, int destination, int burstNumber, System.Span<byte> payload, out int length) { }
         public static bool TryUnpack(System.ReadOnlySpan<byte> payload, bool toEveryone, out M0LTE.OfdmFm.PayloadPrelude prelude, out M0LTE.OfdmFm.DatagramReader datagrams) { }
         public static bool TryUnpack(System.ReadOnlySpan<byte> payload, bool toEveryone, out M0LTE.OfdmFm.PayloadPrelude prelude, out M0LTE.OfdmFm.ExtensionReader extensions, out M0LTE.OfdmFm.DatagramReader datagrams) { }
+        public static bool TryUnpackIdentification(System.ReadOnlySpan<byte> payload, out System.ReadOnlySpan<byte> callsign, out int capability, out M0LTE.OfdmFm.ExtensionReader items) { }
     }
     public readonly struct PayloadPrelude : System.IEquatable<M0LTE.OfdmFm.PayloadPrelude>
     {
@@ -355,6 +368,7 @@ namespace M0LTE.OfdmFm
         public event System.Action<M0LTE.OfdmFm.CongestionEvent>? Congestion;
         public event System.Action<M0LTE.OfdmFm.DroppedEvent>? Dropped;
         public event System.Action<M0LTE.OfdmFm.IdentificationDueEvent>? IdentificationDue;
+        public event System.Action<M0LTE.OfdmFm.IdentifiedEvent>? Identified;
         public event System.Action<M0LTE.OfdmFm.LinkStateEvent>? LinkState;
         public event System.Action<M0LTE.OfdmFm.ModemSentEvent>? ModemSent;
         public event System.Action<M0LTE.OfdmFm.PathReportEvent>? PathReport;

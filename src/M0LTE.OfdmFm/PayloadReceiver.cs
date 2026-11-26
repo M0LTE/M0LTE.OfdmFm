@@ -186,7 +186,7 @@ public sealed class PayloadReceiver
     /// <summary>
     /// The samples a burst with this header needs, counted from its first training sample (the start index of
     /// <see cref="Receive"/>): the opening's symbols and the payload's, 2112 samples each. -1 when the header is not one this
-    /// receiver reads (a data burst of version 0 with payload symbols, 4 to 252).
+    /// receiver reads (a data or identification burst of version 0 with payload symbols, 4 to 252).
     /// </summary>
     public static int SamplesNeeded(in BurstHeader header)
     {
@@ -605,7 +605,7 @@ public sealed class PayloadReceiver
     }
 
     private static bool Readable(in BurstHeader header) =>
-        header.Kind == BurstKind.Data && header.Version == 0 && header.PayloadSymbols > 0 && header.PayloadSymbols <= StandardFormats.MaxSymbols
+        (header.Kind is BurstKind.Data or BurstKind.Identification) && header.Version == 0 && header.PayloadSymbols > 0 && header.PayloadSymbols <= StandardFormats.MaxSymbols
         && (uint)header.Format < StandardFormats.Count && PayloadCodec.Capacity(header.Format, header.PayloadSymbols) >= 0;
 
     // numpy's median: the middle value, or the mean of the two middle ones. Sorts a copy in the scratch.

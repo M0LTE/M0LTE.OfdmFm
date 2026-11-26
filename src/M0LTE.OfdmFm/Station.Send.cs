@@ -106,6 +106,7 @@ public sealed partial class Station
         _onAnswerTimer = OnAnswerTimer;
         _access.Prepare = PrepareBurst;
         InitialiseReports();
+        InitialiseIdentification();
     }
 
     private static int ComputeMaxPayloadBytes()
@@ -165,9 +166,11 @@ public sealed partial class Station
             }
 
             _bound[number] = name;
+            _hostBound[number] = true;
             if (moved != 0)
             {
                 _bound[moved] = null;
+                _hostBound[moved] = false;
                 AnnounceLink(moved);
             }
 
@@ -510,9 +513,14 @@ public sealed partial class Station
             return PrepareReport(request);
         }
 
+        if (ReferenceEquals(request, _identRequest))
+        {
+            return PrepareIdentification(request);
+        }
+
         if (!ReferenceEquals(request, _data))
         {
-            // A burst the station built for itself some other way (step 7) carries its samples already.
+            // A burst that carries its samples already.
             return true;
         }
 

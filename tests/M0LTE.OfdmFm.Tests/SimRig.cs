@@ -14,6 +14,7 @@ internal sealed class SimRig
         for (int i = 1; i <= stations; i++)
         {
             Station s = new($"M0S{i}", i, new Random((seed * 100) + i), runJobsInline: true);
+            s.IdentificationSuspended = true; // identification has its own tests; the others see only what they are about (a test of it sets this back)
             Stations.Add(s);
             Nodes.Add(Channel.Add(s, $"S{i}"));
         }

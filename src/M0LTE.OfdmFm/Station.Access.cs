@@ -11,8 +11,13 @@ public sealed partial class Station
     /// </summary>
     internal const int MuteBeforeOwnTransmission = BurstRenderer.SymbolSamples;
 
-    /// <summary>Candidates up to this many samples after a transmission ends (0.25 s) are ignored, as above. The design's (E).</summary>
-    internal const int MuteAfterOwnTransmission = 12000;
+    /// <summary>
+    /// Candidates up to this many samples after a transmission ends (100 ms) are ignored, as above: the same figure as the tail the channel stays busy after the station's own transmission, <see cref="ChannelAccess.OwnTail"/>,
+    /// so that the two are one figure. It must be shorter than the first slot's clear time plus the lead-in (<see cref="ChannelAccess.FirstSlotClear"/> and <see cref="BurstRenderer.DefaultLeadSamples"/>: 2400 + 4224, 138 ms):
+    /// a reply in the first slot has its first training sample that long after the end of the burst it answers, and a longer mute makes the station deaf to exactly the replies the slot exists for. The margin is 38 ms.
+    /// Step 4 had the design's 0.25 s here, which step 5 found to be that fault. How long a real radio takes to hear again is packet-net/pdn-soundmodem#891's question.
+    /// </summary>
+    internal const int MuteAfterOwnTransmission = ChannelAccess.OwnTail;
 
     private ChannelAccess _access = null!;
     private readonly List<(long Start, long End)> _ownWindows = [];
@@ -160,6 +165,10 @@ public sealed partial class Station
         {
             OnDataBurstStarted(sampleIndex);
         }
+        else if (ReferenceEquals(request, _reportRequest))
+        {
+            OnReportBurstStarted();
+        }
 
         if (request.Modem is { } modem)
         {
@@ -224,6 +233,10 @@ public sealed partial class Station
             if (ReferenceEquals(request, _data))
             {
                 OnDataBurstEnded(sampleIndex);
+            }
+            else if (ReferenceEquals(request, _reportRequest))
+            {
+                OnReportBurstEnded(sampleIndex);
             }
         }
         finally

@@ -107,11 +107,10 @@ public class SimChannelTests
     }
 
     [Fact]
-    public void Records_Present_Behaviour_A_Reply_In_The_First_Slot_Is_Not_Heard_By_The_Station_That_Just_Transmitted()
+    public void A_Reply_In_The_First_Slot_Is_Heard_By_The_Station_That_Just_Transmitted()
     {
-        // Step 4 ignores candidates for 0.25 s after a station's own transmission ends (docs/station-design.md E). An expedited reply goes 50 ms after the channel clears and its first training sample is a lead-in later,
-        // 4224 samples (88 ms), so 138 ms after the end: inside the mute. The station that sent the burst being answered cannot hear its own acknowledgement; with a radio that needs the turn-round time that is what the mute is for,
-        // but with none (a simulated channel with every knob off) it is lost. Recorded for the design to settle (#883 item 8): this is the figure that decides it.
+        // An expedited reply goes 50 ms after the channel clears and its first training sample is a lead-in later, 4224 samples (88 ms), so 138 ms after the end of the burst it answers. Step 4 ignored candidates for 0.25 s after a
+        // station's own transmission and so made the station deaf to exactly these replies (step 5 pinned the fault); the mute is now the own tail, 100 ms, which ends before the reply's first training sample with a margin of 38 ms.
         var rig = new SimRig(2);
         rig.RunTo(6);
         rig.Send(1, 2, 1, priority: SendPriority.Expedited);
@@ -122,8 +121,9 @@ public class SimChannelTests
         long end = rig.Nodes[0].Transmissions[0].Start + rig.Nodes[0].Transmissions[0].Length;
         long reply = rig.Nodes[1].Transmissions[0].Start;
         reply.Should().Be(end + ChannelAccess.FirstSlotClear, "the first slot");
-        (reply + BurstRenderer.DefaultLeadSamples - end).Should().BeLessThan(Station.MuteAfterOwnTransmission);
-        rig.Nodes[0].Received.Should().BeEmpty();
+        (reply + BurstRenderer.DefaultLeadSamples - end).Should().Be(6624).And.BeGreaterThan(Station.MuteAfterOwnTransmission);
+        rig.Nodes[0].Received.Should().ContainSingle("the reply in the first slot is heard").Which.Data.Should().Equal(SimRig.Datagram(2, 30));
+        rig.Nodes[0].Received[0].Clock.Should().BeGreaterThan(reply);
     }
 
     [Fact]

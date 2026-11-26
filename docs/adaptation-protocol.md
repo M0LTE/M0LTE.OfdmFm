@@ -1,6 +1,6 @@
 # Adaptation over the air: the protocol
 
-Status: a design record, agreed 2026-11-24 and brought into line with the prototype on 2026-11-24, later the same day, and again on 2026-11-26 after the first runs over weak and changing paths. For packet-net/pdn-soundmodem#830 (part of packet-net/pdn-soundmodem#829): Tom read it, commented (a version number and feature flags, the FM capture effect, a check against the flows of AX.25 2.3) and agreed the nine choices listed under "Decided". A prototype was then built to it, run in simulation and run on two real radios (packet-net/pdn-soundmodem#833), and the rules changed in a number of places: "Changed since it was agreed" lists every one. Built and run on the bench from about -78 to -124 dBm, and over a path that drops, is cut and comes back (packet-net/pdn-soundmodem#834); not yet with more than two stations (packet-net/pdn-soundmodem#835). The burst's remaining details (the opening, the two codes, the interleaver) were written down on 2026-11-26 as the port to this repository began. The transmit side's pieces are in this repository under `src/M0LTE.OfdmFm/`, and no mode uses them yet; the prototype is kept outside this repository, and the rest of the port follows (packet-net/pdn-soundmodem#837 to packet-net/pdn-soundmodem#840).
+Status: a design record, agreed 2026-11-24, brought into line with the prototype later that day, and again on 2026-11-26 after the first runs over weak and changing paths. For packet-net/pdn-soundmodem#830 (part of packet-net/pdn-soundmodem#829): Tom read it, commented (a version number and feature flags, the FM capture effect, a check against the flows of AX.25 2.3) and agreed the nine choices listed under "Decided". A prototype was then built to it, run in simulation and run on two real radios (packet-net/pdn-soundmodem#833), and the rules changed in a number of places: "Changed since it was agreed" lists every one. It was run on the bench from about -78 to -124 dBm, and over a path that drops, is cut and comes back (packet-net/pdn-soundmodem#834); not yet with more than two stations (packet-net/pdn-soundmodem#835). The burst's remaining details (the opening, the two codes, the interleaver) were written down on 2026-11-26, and the document moved to this repository with the code the same day. The code is here under `src/M0LTE.OfdmFm/`: the transmit side, the receive arithmetic and the adaptation rules, pinned to the prototype by the test vectors. There is no live streaming receiver yet, and no mode in pdn-soundmodem uses the modem yet. Issues are tracked in packet-net/pdn-soundmodem (packet-net/pdn-soundmodem#837 to packet-net/pdn-soundmodem#840 cover the rest).
 
 This says how two stations with the adaptive OFDM-FM modem find and keep the best rate for the link between them, with nothing passing between them but the radio. The sections down to "Who measures, who decides" give the design in a few minutes; the rest is what to build from.
 
@@ -38,11 +38,11 @@ One figure of quality for each carrier, in decibels, held as a full-band burst a
 1. **What is measured.** A burst whose payload decoded is measured on the carriers its payload used, with every symbol now known: an accurate figure. A burst whose payload failed is measured on the carriers of its opening, from the training and the header: a coarse one. A burst that something else came on top of (see Loss, below) is not measured at all. The prototype measures data bursts only; a lone report is read and not measured.
 2. **Through the peak limit.** The robust formats are driven into the sender's peak limit: the drive is part of the format (see the format number, below). The limit's own distortion is no part of the path, and it is known exactly, because the limit did the same arithmetic to the same samples at the sender. So the receiver of a decoded burst rebuilds every symbol as it left the limit and measures the burst against that. Measured against the burst as built, the limit's distortion reads as noise on the path, and a robust burst undersells the path by many decibels (the figures are under "What the bench has shown"). This makes the limit part of the burst format: the whole burst after its opening silence is scaled so that its root mean square level is 12.8 dB under full scale at full drive, and higher by the format's drive, and is then clipped at 0.95 of full scale (packet-net/pdn-soundmodem#837 is where the exact arithmetic belongs). The opening of a failed burst is measured the same way, against what the limit left of it. The limit's scale is set by the whole burst, which the receiver does not have when the payload failed, so it works the limit on the opening alone, which is built to the same level as the payload.
 3. **A common footing.** A format on fewer carriers puts more power on each, and one driven harder has that much more. From every figure take off 10 log10(all carriers / carriers the measured part used) plus the format's drive, in decibels. The measured part is the payload for a decoded burst and the opening for a failed one.
-4. **Folding it in.** A failed burst's figures first have 3 dB taken off them: one or a few symbols of opening, read at a level that failed, are coarse and tend to flatter. Then compare the new figures with the estimate, each averaged over the carriers that have both.
-   - **More than 2 dB under the estimate:** the path has got worse, and that is believed at once. The new figures replace the estimate on the carriers measured, and the estimate on every other carrier comes down by the same average amount, since what was known of those is from before.
-   - **Otherwise, from a decoded burst:** on each carrier measured, the estimate becomes half the old figure and half the new, in decibels. A neighbour's first three measurements count in full, since there is no history worth averaging with, and so do the first three after 30 s without a measurement of that neighbour. A carrier with no figure yet takes the new one. The carriers the burst did not measure then move by the same average amount as the ones it did, up as well as down: a station brought down to a narrow format is sent nothing that measures the rest of the band, and would otherwise never learn that it had come back.
-   - **Otherwise, from a failed burst:** nothing. A failed burst's own measurement is believed only where it says the path is worse; one that measures well is the margin's business. The one exception is a failed burst on carriers with no estimate at all, whose figures (less the 3 dB) are taken as they are.
-5. **Carriers never measured.** A narrow burst says nothing about the carriers above its band. For the recommendation they are filled in from the top of what was measured: the median of the highest seven carriers measured, falling 20 dB for each decade of frequency above the highest (as FM noise does), less 3 dB of caution.
+4. **Folding it in.** A failed burst's figures first have 3 dB taken off them: one or a few symbols of opening, read at a level that failed, are coarse and tend to flatter. Then compare the new figures with the estimate, each averaged over the carriers that have an estimate and were measured.
+   - **more than 2 dB under the estimate:** the path has got worse, and that is believed at once. The new figures replace the estimate on every carrier measured, including any that had none, and the estimate on every other carrier comes down by the same average amount, since what was known of those is from before. This holds for a failed burst too.
+   - **Otherwise, from a decoded burst:** on each carrier measured, the estimate becomes half the old figure and half the new, in decibels. A neighbour's first three measurements count in full, since there is no history worth averaging with, and so do the first three after a gap of more than 30 s without a measurement of that neighbour. A carrier with no figure yet takes the new one. The carriers the burst did not measure then move by the same average amount as the ones it did, up as well as down: a station brought down to a narrow format is sent nothing that measures the rest of the band, and would otherwise never learn that it had come back.
+   - **Otherwise, from a failed burst:** nothing. A failed burst's own measurement is believed only where it says the path is worse; one that measures well is the margin's business. The one exception is a failed burst none of whose carriers has an estimate, as with a new neighbour's first: its figures (less the 3 dB) are taken as they are.
+5. **Carriers never measured.** A narrow burst says nothing about the carriers above its band. For the recommendation they are filled in from the top of what was measured: the median of the seven carrier positions ending at the highest one measured (fewer near the bottom of the band), which are always measured ones because every format measures an unbroken run of carriers from the bottom of the band, falling 20 dB for each decade of frequency above the highest (as FM noise does), less 3 dB of caution.
 
 ### The margin
 
@@ -59,11 +59,11 @@ That settles where about one burst in fifty fails.
 2. Take the fastest format whose margin is at least M, and which is no faster than the cap (below) if there is one. Formats are compared by their rate, across bands; of two with the same rate, the one with more margin. If no format has M, take the most robust.
 3. **Step down at once.** If that format is no faster than the current recommendation, or there is none yet, it becomes the recommendation, and anything waiting (next) is dropped.
 4. **Step up only on two bursts running.** A faster format waits. If the next burst also supports something faster than the recommendation, the slower of the two becomes the recommendation: it is the one both bursts supported. (If the two have the same rate, the newer one is taken.)
-5. **A new neighbour's first three measurements may raise the recommendation at once**, and so may the first three after 30 s without one. Without this, and with the estimate moving by halves, a link from cold climbs a staircase.
+5. **A new neighbour's first three measurements may raise the recommendation at once**, and so may the first three after a gap of more than 30 s without one. Without this, and with the estimate moving by halves, a link from cold climbs a staircase.
 
 ### After a failure: the cap
 
-When a payload fails, and the failure is not put down to something else on the channel, the receiver recommends nothing faster than the format one rung below the one that failed, in whatever band and whatever it measures, until two bursts running from that neighbour have decoded. A further failure can lower the cap and never raises it. This is separate from the margin: the margin moves half a decibel at a time, and a measurement that still looks good after a failure would otherwise send the sender straight back to the format that had just failed.
+When a payload fails, and the failure is not put down to something else on the channel, the receiver recommends nothing faster than the format one rung slower than the one that failed (as "One rung slower" is defined under "The format number": in the 1 kHz band's lowest rungs that can be the band's bottom rung itself), in whatever band and whatever it measures, until two bursts running from that neighbour have decoded. A further failure can lower the cap and never raises it. This is separate from the margin: the margin moves half a decibel at a time, and a measurement that still looks good after a failure would otherwise send the sender straight back to the format that had just failed.
 
 ## How the recommendation gets back: the report
 
@@ -74,8 +74,8 @@ Two ways, the same content: the recommended format (8 bits), and one bit saying 
 
 **When a station sends a report by itself:**
 
-- at once, when a payload addressed to it failed to decode, whatever the cause, provided it has a recommendation to give (it has none only when a new neighbour's very first burst is lost to something else on the channel);
-- when the sender asked ("report wanted") and the burst decoded: anything the host sends in the first slot carries the report in its prelude, and the modem sends it alone once that slot has passed with nothing going back;
+- at once, when a payload addressed to it failed to decode, whatever the cause, provided it has a recommendation to give. A station that has none, because nothing has yet been measured from that neighbour, gets from the rules a report with no format, and the modem sends nothing;
+- when the sender asked ("report wanted") and the burst decoded. The rules never read that flag; acting on it is for whatever drives the station: anything the host sends in the first slot carries the report in its prelude, and the modem sends it alone once that slot has passed with nothing going back;
 - at once, when a burst addressed to it decodes and its recommendation for the sender drops, on that burst, to below what the sender was last told (in a prelude or a lone report);
 - otherwise not: a recommendation that has only risen waits for traffic to ride on, or for the sender to ask;
 - never for a burst addressed to everyone, or to another station. Those are measured all the same.
@@ -91,8 +91,8 @@ For each neighbour the sender holds the last report received and when, how many 
 | What it has | What it sends at | "Report wanted" |
 |---|---|---|
 | A report less than 30 s old | the recommended format | clear |
-| An older report | the recommended format, one rung slower for each whole 30 s of the report's age (one at 30 s, two at 60 s). Ageing stops at the estimate in the next row (or at the first-contact format if there is none), and does not start at all if that estimate is faster than the report: the sender is never faster than it was told | set |
-| No report, but it has heard the neighbour | its own recommendation for the opposite direction, two rungs slower | set |
+| A report 30 s old or more | the recommended format, one rung slower for each whole 30 s of the report's age (one at 30 s, two at 60 s). Ageing stops at the estimate in the next row (or at the first-contact format if there is none), and does not start at all if that estimate is faster than the report: the sender is never faster than it was told | set |
+| No report, but it has heard the neighbour | its own recommendation for the opposite direction if it has one, otherwise the fastest format its estimate supports with the margin (the cap after a failure does not enter), then two rungs slower | set |
 | Nothing at all | the first-contact format (packet-net/pdn-soundmodem#835) | set |
 
 **"Report wanted" is also set:**
@@ -126,7 +126,7 @@ A burst whose header read always gives a measurement from its opening, so a fail
 
 And the sender:
 
-- **"Failed", with a slower format:** use it.
+- **"Failed", with a slower format:** use it. The sender's rules never read "failed" in a report.
 - **"Failed", format unchanged:** the same format again for whatever comes next. Going slower would make the burst longer and the next overlap more likely.
 - Both come to one rule, which is all the prototype's sender has: use the format the report gives. It does not look at the failed bit.
 - **No report at all** when one was due, which is when the burst had "report wanted" set: the burst may never have been heard (captured from the start, or the station gone), or the report was lost. Each such burst counts one silence, whether nothing came back or a burst whose prelude gave no recommendation. After one silence the next burst goes at the format the table gives, unchanged. After two, two rungs slower than the table gives. After three or more, the first-contact format. Silence never moves M, which is the receiver's alone.
@@ -138,7 +138,7 @@ A report is a header, the most robust thing the modem sends, so it gets through 
 
 - **As a receiver, per neighbour:** the estimate, how many measurements have gone into it and when the last one did, M, the current recommendation and any faster one waiting, the cap and the count of bursts decoded running, and what the neighbour was last told.
 - **As a sender, per neighbour:** the last report and its age; the count of silences; the count of bursts sent since anything was heard; the neighbour's capability word.
-- **All of it is dropped, both roles together, ten minutes after the neighbour was last heard**: a data burst of theirs to anyone, or a report to this station.
+- **All of it is dropped, both roles together, once the neighbour has gone unheard for more than ten minutes**, hearing being a data burst of theirs to anyone, or a report to this station. It is dropped the next time the rules are given the time for that neighbour: on hearing a burst or a report from them, or on choosing a format for them. Notes that carry no time (that a recommendation went in a prelude, that a burst was sent, that an asked-for answer did not come) drop nothing.
 - **Nothing is negotiated**, so nothing has to survive a restart. A station that restarts knows nothing, uses the cold rules, and is told what it needs within one exchange. The other end notices nothing.
 - The two directions of a link are entirely separate. Each has its own estimate, margin and format.
 
@@ -217,7 +217,7 @@ A burst opens with silence, then training symbols, then the header, then the pay
   - The list that results is p. Coded bit k goes to position p[k].
   - To check an implementation: for E = 16, p is 9, 3, 10, 4, 5, 6, 7, 15, 11, 2, 1, 12, 13, 14, 0, 8.
 
-Test vectors for all of these, made with the prototype, are in `tests/M0LTE.OfdmFm.Tests/Vectors/`.
+Test vectors for all of these, made with the prototype, pin the code and are in `tests/M0LTE.OfdmFm.Tests/Vectors/`.
 
 ### The payload, the scrambler and the check
 
@@ -304,7 +304,7 @@ Nothing here reverses any of the nine choices above. Each line is a rule that th
 | A measurement more than 2 dB under the estimate replaces it outright, and the carriers it did not measure come down by as much. | A worse path is believed at once. | Simulation |
 | Every measurement is put on a common footing, and the carriers above a narrow burst's band are filled in. | A narrow first-contact burst has to be enough to recommend a full-band format. | Simulation |
 | A new neighbour's first three measurements count in full and may raise the recommendation at once. | The climb from cold was a staircase. | Bench |
-| The carriers a burst does not measure follow the ones it does up as well as down, and a neighbour not measured for 30 s is measured as a new one. | A link found again after a cut stayed on narrow formats, because nothing it was then sent measured the rest of the band. | Bench (packet-net/pdn-soundmodem#834) |
+| The carriers a burst does not measure follow the ones it does up as well as down, and a neighbour not measured for more than 30 s is measured as a new one. | A link found again after a cut stayed on narrow formats, because nothing it was then sent measured the rest of the band. | Bench (packet-net/pdn-soundmodem#834) |
 | Quality is measured through the peak limit; the opening of a failed burst too, with 3 dB taken off. | The limit's distortion was being read as the path's. | Bench; the failed burst's half from writing the rules down |
 | "Report wanted" is also set when two bursts have gone to a neighbour with nothing at all heard back. | A dead path is noticed in two bursts, and the rate can rise in one-way traffic. | Simulation; bench |
 | "Report wanted" is set whenever the report in hand is 30 s old or more, and after any silence until a report arrives. | The agreed version set it only where the sender had no report. | Building it |
@@ -323,6 +323,7 @@ Nothing here reverses any of the nine choices above. Each line is a rule that th
 | "One rung slower" never lands on something faster. | The 1 kHz band's lowest rungs are slower than the most robust format. | Writing the rules down |
 | Three openings, not two. | The lowest carriers need a longer opening. | Building it |
 | The identification burst is not optional: the modem sends it by itself on a clock while it is transmitting, with a Morse ident beside it, and the callsign is a required setting. The agreed version left identification to the layer above. | A compliance fallback that does not depend on the host. | Tom, 26 November 2026 |
+| The document was made exact in these places against the implemented rules. | Porting the rules line by line showed where the wording was looser than the behaviour. | The port |
 | The interleaver and the training symbols are defined in this document's own terms (a shuffle driven by the scrambler's generator; a fixed table), where the prototype drew both from a software library's random generator. The training values did not change; the interleaver's permutation did. | A wire format has to be reproducible from its description. | The port |
 
 ## What the bench has shown

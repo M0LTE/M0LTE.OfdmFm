@@ -6,7 +6,7 @@ Every burst names its own format in its header, so a receiver needs no setting t
 
 ## State
 
-The transmit side and the receive arithmetic are complete, and are pinned to a prototype by test vectors. There is no live streaming receiver yet: the receivers here take a finished capture of a burst, not a continuous audio stream. It has not been published to NuGet.
+The transmit side, the receive arithmetic and the adaptation rules (what a station remembers, recommends and chooses) are complete, and are pinned to a prototype by test vectors. There is no live streaming receiver yet: the receivers here take a finished capture of a burst, not a continuous audio stream. It has not been published to NuGet.
 
 Extracted from [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem); see [PROVENANCE.md](PROVENANCE.md).
 
@@ -17,6 +17,7 @@ Extracted from [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem); s
 | `PayloadReceiver`, `TrackedReceiver` | Receive a burst's payload; the tracked one also follows a far station's sample clock through the burst. |
 | `BurstHeader`, `BurstHeaderCodec`, `StandardFormats` | The header, its 51-bit form, and the format list. |
 | `PayloadCodec` | Packs datagrams into a payload and unpacks them. |
+| `LinkAdaptation`, `StandardFormats.Recommend` | What a station remembers about each station it hears, the format it recommends to each, and the format it chooses to send at; and which format a measured quality supports. A host drives it and passes the time in. |
 | `Interleaver`, `Constellation`, `Demapper` | The pieces of the chain, usable on their own. |
 
 ## Build and test

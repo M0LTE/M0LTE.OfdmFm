@@ -15,6 +15,7 @@
     <EmbeddedResource Include="Tables/link-ldpc-shifts.txt" LogicalName="link-ldpc-shifts.txt" />
     <EmbeddedResource Include="Tables/header-ldpc-bg2-set4.txt" LogicalName="header-ldpc-bg2-set4.txt" />
     <EmbeddedResource Include="Tables/link-training.txt" LogicalName="link-training.txt" />
+    <EmbeddedResource Include="Tables/link-gmi.txt" LogicalName="link-gmi.txt" />
   </ItemGroup>
 
   <ItemGroup>

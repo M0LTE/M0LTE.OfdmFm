@@ -86,6 +86,45 @@ internal sealed class StreamingBurstDetector
     /// <summary>Samples pushed so far; the clock of every index here.</summary>
     public long SamplesPushed => _pushed;
 
+    /// <summary>Samples that complete the frame being filled: pushing exactly this many runs one correlation frame, so a caller that pushes in pieces of at most this size sees every frame's candidates before it feeds the next.</summary>
+    public int SamplesToNextFrame => TransformSize - _fill;
+
+    /// <summary>Frames correlated so far.</summary>
+    public long FramesProcessed { get; private set; }
+
+    /// <summary>
+    /// An index below which no candidate not yet taken can lie: every peak under it has been seen and decided. The candidates already queued are not counted, so a caller drains the queue first.
+    /// It moves only when a frame is correlated, so it is the same whatever the block sizes.
+    /// </summary>
+    public long CandidateFloor
+    {
+        get
+        {
+            long floor = long.MaxValue;
+            foreach (Channel c in _channels)
+            {
+                floor = Math.Min(floor, c.Floor());
+            }
+
+            return floor;
+        }
+    }
+
+    /// <summary>How many more pause or resume marks can be written before the detector must read some.</summary>
+    public int FreeMarks
+    {
+        get
+        {
+            long oldest = long.MaxValue;
+            foreach (Channel c in _channels)
+            {
+                oldest = Math.Min(oldest, c.MarksRead);
+            }
+
+            return (int)(MarkCapacity - (_marksWritten - oldest));
+        }
+    }
+
     /// <summary>Candidates dropped because the queue was full.</summary>
     public long Lost { get; private set; }
 
@@ -204,6 +243,11 @@ internal sealed class StreamingBurstDetector
     private void ProcessFrame(bool final)
     {
         double[] frame = _frame;
+        if (!final)
+        {
+            FramesProcessed++;
+        }
+
         int valid = final ? _fill : TransformSize;
         long total = _frameStart + valid;
         bool any = false;
@@ -522,6 +566,22 @@ internal sealed class StreamingBurstDetector
                 _head = 0;
                 _count = 0;
             }
+        }
+
+        /// <summary>The index below which no candidate of this opening that has not been queued can lie.</summary>
+        public long Floor()
+        {
+            long floor = Horizon();
+            for (int p = _head; p < _count; p++)
+            {
+                if (_status[p] != Emitted)
+                {
+                    floor = Math.Min(floor, _index[p]);
+                    break;
+                }
+            }
+
+            return floor;
         }
 
         private void Judge(int q, long ip, double hp, ref bool covered, ref bool waiting)

@@ -320,8 +320,9 @@ namespace M0LTE.OfdmFm
     public sealed class Station
     {
         public const int SampleRate = 48000;
-        public Station(string callsign, int stationNumber, System.Random random) { }
+        public Station(string callsign, int stationNumber, System.Random random, bool runJobsInline = false) { }
         public string Callsign { get; }
+        public bool HasWork { get; }
         public long SampleCount { get; }
         public double Seconds { get; }
         public int StationNumber { get; }
@@ -337,10 +338,15 @@ namespace M0LTE.OfdmFm
         public event System.Action<M0LTE.OfdmFm.TransmitRequestEvent>? TransmitRequest;
         public event System.Action<M0LTE.OfdmFm.TransmittedEvent>? Transmitted;
         public event System.Action<M0LTE.OfdmFm.WithdrawRequestEvent>? WithdrawRequest;
+        public event System.Action? WorkAvailable;
+        public void DeliverResults() { }
         public void Push(System.ReadOnlySpan<float> samples) { }
+        public bool RunOne() { }
+        public int RunPending() { }
         public void Skip(int count) { }
         public void TransmitEnded(long id, long sampleIndex) { }
         public void TransmitStarted(long id, long sampleIndex) { }
+        public static M0LTE.OfdmFm.StationName PlaceholderName(int number) { }
     }
     public readonly struct StationName : System.IEquatable<M0LTE.OfdmFm.StationName>
     {

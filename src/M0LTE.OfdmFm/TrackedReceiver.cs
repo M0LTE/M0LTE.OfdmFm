@@ -122,6 +122,10 @@ public sealed class TrackedReceiver
     /// <summary>The decided symbols' imaginary parts from the last receive.</summary>
     internal ReadOnlySpan<double> DecidedImaginary => _receiver.DecidedImaginary;
 
+    /// <summary>The quality from a burst's opening alone, for a burst whose payload failed; see <see cref="PayloadReceiver.MeasureOpening(ReadOnlySpan{float}, int, in BurstHeader, ReadOnlySpan{byte}, Span{double})"/>. Does not disturb the last receive's results.</summary>
+    internal bool MeasureOpening(ReadOnlySpan<float> capture, int start, in BurstHeader header, ReadOnlySpan<byte> headerBits, Span<double> quality) =>
+        _receiver.MeasureOpening(capture, start, header, headerBits, quality);
+
     /// <summary>
     /// Receives the burst whose first training sample is <paramref name="start"/> in the capture, which must hold
     /// <see cref="PayloadReceiver.SamplesNeeded"/> samples from there (the burst's own; what lies before it and after it is read

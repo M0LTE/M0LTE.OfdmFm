@@ -2,6 +2,9 @@
 
   <PropertyGroup>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <!-- The tests that assert "allocates nothing" (BurstRenderer, HeaderCode, the station) failed now and then under load by a few kilobytes
+         with tiered compilation on, and not once in 25 runs under the same load with it off; so they run with it off. -->
+    <TieredCompilation>false</TieredCompilation>
   </PropertyGroup>
 
   <ItemGroup>

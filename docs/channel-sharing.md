@@ -1,6 +1,6 @@
 # Losing bursts, and what to do about it: a design
 
-Status: a proposal, second form, written 2026-11-27 after Tom's review of the first ("a little simplistic": it treated another station transmitting as the only alternative to a weaker path). Awaiting his agreement. Nothing here is built. It answers packet-net/pdn-soundmodem#914 and the access-rule faults #899, #901 and #902, with #892 folded in. Prompted in part by Perry M0PYL's observations that slowing down is the wrong answer to interference, that speeding up can be the right one, and that trying a faster rate now and then is worth doing.
+Status: agreed by Tom on 2026-11-27, including the query burst and its one-bit change to the protocol. Not yet built. This is the second form: the first treated another station transmitting as the only alternative to a weaker path, and Tom sent it back as too simple. It answers packet-net/pdn-soundmodem#914 and the access-rule faults #899, #901 and #902, with #892 folded in. Prompted in part by Perry M0PYL's observations that slowing down is the wrong answer to interference, that speeding up can be the right one, and that trying a faster rate now and then is worth doing.
 
 ## What the reading found
 
@@ -112,7 +112,7 @@ Changed:
 Every threshold here is a starting value, and the reading could not supply better ones. Three sources of real figures:
 
 1. **The trace** (#925) should say, for every lost burst, which row of the tables it was put in. A day on the air then gives the split nobody has published.
-2. **Listening.** A receiver left recording a busy 2 m packet frequency gives the impulse rate, how often and for how long others hold the channel, and how the noise floor moves through a day, with no transmitting at all.
+2. **Listening.** A receiver left on a busy 2 m packet frequency gives how often and for how long others hold the channel, how many bursts on it cannot be decoded, and how that moves through a day, with no transmitting at all. Tom's suggestion: a public web receiver, through the OpenWebRX client pdn-soundmodem already has. In England the 2 m packet frequencies are 144.925, 144.9375 and 144.950 MHz, with APRS on 144.800. A web receiver's audio has been through its own demodulator and compression, so it will say little about impulsive noise; that needs a receiver of our own.
 3. **The field trial** (#917), with its aircraft.
 
 In simulation the design is judged as before: eight seeds each, three stations and a hidden station, now with impulses and a fluttering path added to the simulated channel. The claims to test: a busy or noisy channel no longer drags links to the slowest format; a quiet two-station link is no slower than today; and a fluttering path settles at a rate it can hold.

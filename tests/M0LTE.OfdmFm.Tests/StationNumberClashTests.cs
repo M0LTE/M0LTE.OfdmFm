@@ -10,8 +10,8 @@ namespace M0LTE.OfdmFm.Tests;
 /// </summary>
 public class StationNumberClashTests
 {
-    /// <summary>Seeds 1 to 8 in the gated tier (SM_MASK_GATE=1), where the figures in the pull request come from, and 1 to 3 otherwise: each seed is minutes of simulated traffic.</summary>
-    private static readonly int[] Seeds = Hostile.Gated ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2, 3];
+    /// <summary>Seeds 1 to 8 in the gated tier (SM_MASK_GATE=1), where the figures in the pull request come from, and 1 and 2 otherwise: each seed is minutes of simulated traffic.</summary>
+    private static readonly int[] Seeds = Hostile.Gated ? [1, 2, 3, 4, 5, 6, 7, 8] : [1, 2];
 
     private static void Indicate(SimRig rig, bool indication)
     {

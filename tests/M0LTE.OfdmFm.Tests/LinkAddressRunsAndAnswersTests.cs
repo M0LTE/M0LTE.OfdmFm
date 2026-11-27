@@ -5,7 +5,7 @@ namespace M0LTE.OfdmFm.Tests;
 
 /// <summary>
 /// The From item as runs (a key, a protocol byte and a count), the protocol byte on every datagram, a reply to a key alone, the rate both ways in <see cref="LinkStateEvent"/>, and a station answering for its own addresses
-/// (a burst to everyone for one of them is answered with a lone report, from which the sender binds the address).
+/// (a burst to everyone for one of them is answered with an announcement, a data burst with no datagrams, from which everyone who hears it learns the address).
 /// </summary>
 public class LinkAddressRunsAndAnswersTests
 {
@@ -145,7 +145,6 @@ public class LinkAddressRunsAndAnswersTests
     [Theory]
     [InlineData("counts that add up to fewer datagrams")]
     [InlineData("counts that add up to more datagrams")]
-    [InlineData("a count of zero")]
     [InlineData("a length that is not whole runs")]
     [InlineData("no From item")]
     [InlineData("an empty From item")]
@@ -170,7 +169,6 @@ public class LinkAddressRunsAndAnswersTests
         {
             "counts that add up to fewer datagrams" => [new ExtensionItem(PayloadCodec.FromTag, Runs((1, false)))],
             "counts that add up to more datagrams" => [new ExtensionItem(PayloadCodec.FromTag, Runs((2, false), (1, false)))],
-            "a count of zero" => [new ExtensionItem(PayloadCodec.FromTag, Runs((0, false), (2, false)))],
             "a length that is not whole runs" => [new ExtensionItem(PayloadCodec.FromTag, new byte[7])],
             "an empty From item" => [new ExtensionItem(PayloadCodec.FromTag, Array.Empty<byte>())],
             _ => null,
@@ -256,7 +254,7 @@ public class LinkAddressRunsAndAnswersTests
     }
 
     [Fact]
-    public void A_Flood_For_An_Address_Whose_Host_Has_Sent_From_It_Is_Answered_At_Modem_Level_So_One_Way_Traffic_Becomes_Addressed_And_Climbs()
+    public void A_Flood_For_An_Address_Whose_Host_Has_Sent_From_It_Is_Answered_With_An_Announcement_So_One_Way_Traffic_Becomes_Addressed_And_Climbs()
     {
         SimRig rig = Nothing(2);
         SimNode a = rig.Nodes[0];
@@ -269,9 +267,9 @@ public class LinkAddressRunsAndAnswersTests
             rig.Run(10);
         }
 
-        // B's host never sent a datagram. The first burst went to everyone; B answered it with a lone report; A bound the address and every later burst was addressed.
+        // B's host never sent a datagram. The first burst went to everyone; B announced the address after the wait (a data burst with no datagrams); A learned it from that and every later burst was addressed.
         b.Transmitted.Should().BeEmpty();
-        b.ModemSent.Select(m => m.Kind).Should().StartWith([ModemSentKind.Report]);
+        b.ModemSent.Select(m => m.Kind).Should().StartWith([ModemSentKind.Announcement]).And.Subject.Count(k => k == ModemSentKind.Announcement).Should().Be(1, "one announcement; the lone reports after it are ordinary ones (A asks for them)");
         b.Received.Select(r => r.Addressing).Should().Equal([Addressing.ForAddressNotYetLocated, .. Enumerable.Repeat(Addressing.ToThisStation, 7)]);
         rig.Stations[0].LocatedNow(S(2)).Should().Be(2);
         a.LinkStates.Should().Contain(l => l.Located);
@@ -309,7 +307,7 @@ public class LinkAddressRunsAndAnswersTests
         rig.Send(1, 2, 20).Should().Be(SendResult.Accepted);
         rig.Run(14);
         b.Received.Last().Addressing.Should().Be(Addressing.ForAddressNotYetLocated);
-        rig.Stations[0].LocatedNow(S(2)).Should().Be(2, "B answered the flood with a report, and A bound the address from it");
+        rig.Stations[0].LocatedNow(S(2)).Should().Be(2, "B answered the flood with an announcement, and A learned the address from it");
         rig.Send(1, 2, 21).Should().Be(SendResult.Accepted);
         rig.Run(14);
         b.Received.Last().Addressing.Should().Be(Addressing.ToThisStation);
@@ -349,48 +347,117 @@ public class LinkAddressRunsAndAnswersTests
     }
 
     [Fact]
-    public void A_Lone_Report_Binds_The_Address_Of_The_One_Flood_Outstanding_And_Nothing_When_There_Is_None_Or_Two_Keys()
+    public void The_Announcement_Is_Covered_When_The_Far_Host_Replies_From_The_Address_Inside_The_Wait_And_The_Address_Is_Still_Learned_From_The_Reply()
     {
-        LinkAddress one = LinkAddress.FromAscii("FLOOD-1");
-        LinkAddress two = LinkAddress.FromAscii("FLOOD-2");
-        foreach ((string label, uint[] floods, int expectedAtOne) in new (string, uint[], int)[]
+        SimRig rig = Nothing(2);
+        SimNode a = rig.Nodes[0];
+        SimNode b = rig.Nodes[1];
+        OwnTheAddress(rig, 2);
+        rig.RunTo(6);
+        rig.Send(1, 2, 110).Should().Be(SendResult.Accepted);
+        while (b.Received.Count == 0)
         {
-            ("one flood outstanding", [one.Key], 6),
-            ("the same address flooded twice", [one.Key, one.Key], 6),
-            ("none outstanding", [], 0),
-            ("two different keys outstanding", [one.Key, two.Key], 0),
-        })
-        {
-            using var rig = new ReceiveRig(0);
-            foreach (uint key in floods)
-            {
-                rig.Station.NoteFlood(key, 0, long.MaxValue / 2);
-            }
-
-            var b = new StreamBuilder().Silence(1.2);
-            b.Add(TestBurst.Report(6, 1, 140, false, FormatOpening.Full));
-            b.Silence(2.5).Noise(0.01, 3);
-            rig.Push(b.ToArray(), () => 4800);
-            rig.Finish();
-
-            rig.Station.LocatedNow(one).Should().Be(expectedAtOne, label);
-            rig.Station.LocatedNow(two).Should().Be(0, label);
-            rig.Station.Adaptation.TryGetNeighbour(6, out LinkNeighbour? nb).Should().BeTrue(label);
-            nb!.ReportFormat.Should().Be(140, "the report is applied to the station whatever is learned from it: " + label);
+            rig.Run(0.1);
         }
+
+        // B's host answers at once, from the address named in For, as an acknowledgement would be: the reply goes in the first slot and carries the key in its From.
+        rig.Stations[1].Send(SimRig.Datagram(200, 30), S(1), S(2), LinkProtocol.NoLayer3, new HostTag(200), priority: SendPriority.Expedited).Should().Be(SendResult.Accepted);
+        rig.Run(20);
+        b.ModemSent.Should().BeEmpty("the reply carried the address, so no announcement was needed");
+        rig.Stations[1].ReportsCovered.Should().BeGreaterThan(0);
+        a.Received.Should().ContainSingle().Which.FromKey.Should().Be(S(2).Key);
+        rig.Stations[0].LocatedNow(S(2)).Should().Be(2, "learned from the reply's From, as from any burst");
+        rig.Stations[1].AnnouncementsOwed.Should().Be(0);
     }
 
     [Fact]
-    public void A_Flood_Whose_Answer_Wait_Has_Run_Out_Binds_Nothing()
+    public void A_Reply_From_A_Different_Address_Does_Not_Cover_The_Announcement()
     {
-        LinkAddress one = LinkAddress.FromAscii("FLOOD-1");
+        SimRig rig = Nothing(2);
+        SimNode a = rig.Nodes[0];
+        SimNode b = rig.Nodes[1];
+        OwnTheAddress(rig, 2);
+        LinkAddress other = LinkAddress.FromAscii("S2-OTHER");
+        rig.RunTo(6);
+        rig.Send(1, 2, 110).Should().Be(SendResult.Accepted);
+        while (b.Received.Count == 0)
+        {
+            rig.Run(0.1);
+        }
+
+        rig.Stations[1].Send(SimRig.Datagram(200, 30), S(1), other, LinkProtocol.NoLayer3, new HostTag(200), priority: SendPriority.Expedited).Should().Be(SendResult.Accepted);
+        rig.Run(20);
+        b.ModemSent.Select(m => m.Kind).Should().Equal(ModemSentKind.Announcement);
+        rig.Stations[0].LocatedNow(S(2)).Should().Be(2);
+        rig.Stations[0].LocatedNow(other).Should().Be(2);
+    }
+
+    [Fact]
+    public void A_Third_Station_That_Overhears_The_Announcement_Learns_The_Address_Too()
+    {
+        SimRig rig = Nothing(3);
+        OwnTheAddress(rig, 2);
+        rig.RunTo(6);
+        rig.Send(1, 2, 110).Should().Be(SendResult.Accepted);
+        rig.Run(20);
+        rig.Nodes[1].ModemSent.Select(m => m.Kind).Should().Equal(ModemSentKind.Announcement);
+        rig.Stations[2].LocatedNow(S(2)).Should().Be(2, "C decoded the announcement, which is a burst to A, and learned the address from its From as from any burst");
+        rig.Nodes[2].Received.Select(r => r.Addressing).Should().Equal(Addressing.ForAddressNotYetLocated);
+    }
+
+    [Fact]
+    public void A_Lone_Report_From_A_Third_Station_While_A_Flood_Is_Outstanding_Binds_Nothing()
+    {
+        // The fault found in the first form of the answer, which bound the address of an outstanding flood to whoever sent the next lone report. In miniature, from the path-cut scenario: A sends a flood for an address nobody owns (X) and a datagram
+        // to C that asks for a report; C's lone report reaches A while the flood is outstanding. X must not end up at C, and no datagram for X may go to C.
+        var rig = new SimRig(3, locates: (i, j) => i == 1 && j == 3);
+        LinkAddress x = LinkAddress.FromAscii("NOBODY-HAS-THIS");
+        SimNode a = rig.Nodes[0];
+        rig.RunTo(6);
+        rig.Stations[0].Send(SimRig.Datagram(1, 20), x, S(1), LinkProtocol.NoLayer3, new HostTag(1), priority: SendPriority.Expedited).Should().Be(SendResult.Accepted);
+        rig.Stations[0].Send(SimRig.Datagram(2, 20), S(3), S(1), LinkProtocol.NoLayer3, new HostTag(2), reportWanted: true).Should().Be(SendResult.Accepted);
+        rig.Stations[0].Send(SimRig.Datagram(3, 20), x, S(1), LinkProtocol.NoLayer3, new HostTag(3)).Should().Be(SendResult.Accepted);
+        rig.Run(40);
+        rig.Nodes[2].ModemSent.Should().Contain(m => m.Kind == ModemSentKind.Report, "C reported to A");
+        a.PathReports.Should().Contain(p => p.Address == S(3), "A heard it");
+        rig.Stations[0].LocatedNow(x).Should().Be(0, "a report cannot say what it answers");
+        a.BurstsSent.Where(b => b.Address == x).Should().OnlyContain(b => b.Dest == 0, "every datagram for X went to everyone");
+    }
+
+    [Fact]
+    public void A_Count_Of_Zero_Announces_An_Address_And_Is_Skipped_When_The_Burst_Has_Datagrams()
+    {
         using var rig = new ReceiveRig(0);
-        rig.Station.NoteFlood(one.Key, 0, 1000);
+        var got = new List<ReceivedEvent>();
+        rig.Station.Received += e => got.Add(e);
+        uint announced = LinkAddress.FromAscii("ANNOUNCED").Key;
+        uint real = LinkAddress.FromAscii("REAL").Key;
+        byte[] Runs(params (uint Key, byte Protocol, int Count)[] runs)
+        {
+            var bytes = new byte[runs.Length * PayloadCodec.RunBytes];
+            for (int i = 0; i < runs.Length; i++)
+            {
+                PayloadCodec.WriteRun(runs[i].Key, runs[i].Protocol, runs[i].Count, bytes.AsSpan(i * PayloadCodec.RunBytes));
+            }
+
+            return bytes;
+        }
+
         var b = new StreamBuilder().Silence(1.2);
-        b.Add(TestBurst.Report(6, 1, 140, false, FormatOpening.Full));
+
+        // An announcement: no datagrams, one run of count 0.
+        b.Add(TestBurst.Data(7, 1, 12, [], new PayloadPrelude(false, 77, false, null), 0, 12, noFrom: true, extra: [new ExtensionItem(PayloadCodec.FromTag, Runs((announced, 0, 0)))]));
+        b.Silence(1.0);
+
+        // A burst with datagrams and a run of count 0 in front of, and between, the runs that hold them: the datagrams are still attributed correctly.
+        b.Add(TestBurst.Data(8, 1, 12, [[1, 1], [2, 2], [3, 3]], new PayloadPrelude(false, 77, false, null), 1, 12, noFrom: true,
+            extra: [new ExtensionItem(PayloadCodec.FromTag, Runs((announced, 0, 0), (real, LinkProtocol.Ip, 2), (announced, 0, 0), (real, LinkProtocol.Arp, 1)))]));
         b.Silence(2.5).Noise(0.01, 3);
         rig.Push(b.ToArray(), () => 4800);
         rig.Finish();
-        rig.Station.LocatedNow(one).Should().Be(0);
+
+        got.Select(e => (e.Datagram.Span[0], e.FromKey, e.Protocol)).Should().Equal(((byte)1, real, LinkProtocol.Ip), ((byte)2, real, LinkProtocol.Ip), ((byte)3, real, LinkProtocol.Arp));
+        rig.Station.LocatedNow(LinkAddress.FromAscii("ANNOUNCED")).Should().Be(8, "learned from the first announcement at 7, then from the second burst's run at 8: the latest wins");
+        rig.Station.LocatedNow(LinkAddress.FromAscii("REAL")).Should().Be(8);
     }
 }

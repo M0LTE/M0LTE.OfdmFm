@@ -189,6 +189,9 @@ public enum ModemSentKind
 
     /// <summary>An identification burst.</summary>
     Identification = 1,
+
+    /// <summary>An announcement: a data burst with no datagrams that tells the stations hearing it where an address of this station's host lives (the answer to a burst to everyone for that address).</summary>
+    Announcement = 2,
 }
 
 /// <summary>What <see cref="Station.Send"/> did with a datagram.</summary>

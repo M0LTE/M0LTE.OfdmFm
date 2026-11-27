@@ -222,8 +222,8 @@ public class HostileLongTests
     public void The_Path_Cut_Control_Run_Without_The_Cut_Shows_What_The_Cut_Changed()
     {
         Hostile.Gate();
-        HostileScenarios.Cut cut = HostileScenarios.PathCut(HostileScenarios.Default, 3);
-        HostileScenarios.Cut control = HostileScenarios.PathCut(HostileScenarios.Default, 3, cutIt: false);
+        HostileScenarios.Cut cut = HostileScenarios.PathCut(HostileScenarios.Default, 1);
+        HostileScenarios.Cut control = HostileScenarios.PathCut(HostileScenarios.Default, 1, cutIt: false);
         Hostile.Say("control (no cut): " + HostileScenarios.Describe(control));
         control.MaxSilencesA.Should().BeLessThan(cut.MaxSilencesA);
         control.AToBCut.Split(',').Last().Should().NotBe(StandardFormats.FirstContact.ToString());

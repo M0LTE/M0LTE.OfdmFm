@@ -126,6 +126,9 @@ public class LinkAddressTests
         byte[] runs = [.. Run(from, LinkProtocol.Ip, 1), .. Run(other, LinkProtocol.NoLayer3, 1)];
         Packed(null, [new ExtensionItem(PayloadCodec.FromTag, runs)], hi, "OK"u8.ToArray()).Should().Be("0E" + "010C" + "6EEC7110CC01" + "B97C7FB1F001" + "0003486921" + "00024F4B");
         PayloadCodec.AddressBlockSize(2, false).Should().Be(1 + 2 + 12);
+
+        // An announcement of G9XYZ's address: a data burst to one station with a recommendation of 0x28 and no datagrams, whose From has one run with the protocol byte 0 and a count of 0.
+        Packed(new PayloadPrelude(false, 0x28, false, null), [new ExtensionItem(PayloadCodec.FromTag, Run(other, 0, 0))]).Should().Be("2828" + "08" + "0106" + "B97C7FB1" + "0000");
     }
 
     [Fact]

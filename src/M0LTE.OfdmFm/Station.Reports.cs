@@ -45,6 +45,9 @@ public sealed partial class Station
         public OwedKind Kind;
         public int Recommended;
         public long Since;
+
+        /// <summary>True when the burst is an announcement (a data burst with no datagrams), not a lone report.</summary>
+        public bool Announcement;
         public float[]? Audio;
         public int Length;
     }
@@ -71,6 +74,72 @@ public sealed partial class Station
 
     private void InitialiseReports() => _onAskedTimer = OnAskedTimer;
 
+    /// <summary>An announcement owed: the station that sent a burst to everyone for one of this station's own addresses, the key of that address, and when it goes alone if nothing carries it first.</summary>
+    private readonly record struct Announcement(int Station, uint Key, long Due);
+
+    private readonly List<Announcement> _announcements = [];
+
+    /// <summary>
+    /// A burst to everyone for one of this station's own addresses has been decoded (it ended at <paramref name="burstEnd"/>): owe its sender an announcement of where the address lives, a data burst with no datagrams and a From run of count 0.
+    /// It rides on data if it can: a data burst built for that station within <see cref="AskedReportWaitSamples"/> whose From runs include the key covers it. Otherwise it goes alone when that wait runs out. One is owed for each (station, key); a newer one replaces it.
+    /// </summary>
+    private void OweAnnouncement(int station, uint key, long burstEnd)
+    {
+        var owed = new Announcement(station, key, burstEnd + AskedReportWaitSamples);
+        for (int i = 0; i < _announcements.Count; i++)
+        {
+            if (_announcements[i].Station == station && _announcements[i].Key == key)
+            {
+                _announcements[i] = owed;
+                RequestReportCheck();
+                return;
+            }
+        }
+
+        _announcements.Add(owed);
+        RequestReportCheck();
+    }
+
+    /// <summary>A data burst is being built for station <paramref name="dest"/>: an announcement owed to it whose key is in the burst's From runs is covered and is not sent.</summary>
+    private void CoverAnnouncements(int dest)
+    {
+        for (int i = _announcements.Count - 1; i >= 0; i--)
+        {
+            if (_announcements[i].Station != dest)
+            {
+                continue;
+            }
+
+            foreach (Pending p in _burst.Items)
+            {
+                if (p.From == _announcements[i].Key)
+                {
+                    _announcements.RemoveAt(i);
+                    ReportsCovered++;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>The announcement that is due and has waited longest, or -1.</summary>
+    private int NextAnnouncement()
+    {
+        int best = -1;
+        for (int i = 0; i < _announcements.Count; i++)
+        {
+            if (_announcements[i].Due <= SampleCount && (best < 0 || _announcements[i].Due < _announcements[best].Due))
+            {
+                best = i;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>Announcements owed and not yet sent, for a test.</summary>
+    internal int AnnouncementsOwed => _announcements.Count;
+
     /// <summary>
     /// Reports owed to neighbours that have not yet gone on air (a failure or a drop; a requested report is not listed), by neighbour, the newest for each, the one built and waiting for the audio layer included.
     /// </summary>
@@ -88,7 +157,7 @@ public sealed partial class Station
                 }
             }
 
-            if (_report.Built && !_report.Started && _report.Kind != OwedKind.Asked)
+            if (_report.Built && !_report.Started && !_report.Announcement && _report.Kind != OwedKind.Asked)
             {
                 list.Add(new OwedReport(_report.Dest, new LinkReport(_report.Recommended, _report.Kind == OwedKind.Failed), _report.Since));
             }
@@ -248,7 +317,7 @@ public sealed partial class Station
     /// <summary>Keeps the one request that stands for the reports ready to go: made when one is ready and none is outstanding, taken away if none is left, and the timer for the next requested report set.</summary>
     private void EnsureReportRequest()
     {
-        bool ready = NextReady() >= 0;
+        bool ready = NextReady() >= 0 || NextAnnouncement() >= 0;
         ChannelAccess.Request? request = _reportRequest;
         if (request is null)
         {
@@ -281,6 +350,14 @@ public sealed partial class Station
             if (slot.Active && slot.Kind == OwedKind.Asked && slot.Due > SampleCount && slot.Due < due)
             {
                 due = slot.Due;
+            }
+        }
+
+        foreach (Announcement a in _announcements)
+        {
+            if (a.Due > SampleCount && a.Due < due)
+            {
+                due = a.Due;
             }
         }
 
@@ -331,7 +408,7 @@ public sealed partial class Station
             int dest = NextReady();
             if (dest < 0)
             {
-                return false;
+                return BuildAnnouncement(request);
             }
 
             if (_owedSlots[dest].Kind != OwedKind.Failed && HasQueuedAt(dest, expeditedOnly: true))
@@ -374,6 +451,7 @@ public sealed partial class Station
         _renderer.RenderReport(BurstHeader.Report(StationNumber, dest, format, slot.Kind == OwedKind.Failed), spec.Opening, spec.DriveDb, audio);
         _report.Built = true;
         _report.Started = false;
+        _report.Announcement = false;
         _report.Dest = dest;
         _report.Kind = slot.Kind;
         _report.Recommended = format;
@@ -383,6 +461,50 @@ public sealed partial class Station
         ReportsBuilt++;
         request.Samples = audio.AsMemory(0, total);
         request.Modem = new ModemSentEvent(ModemSentKind.Report, choice.Format);
+        return true;
+    }
+
+    /// <summary>
+    /// Builds the announcement that is due: a data burst to the station that asked, with the recommendation for it in the prelude if there is one, "report wanted" not set, a From item of one run with the address's key, a protocol byte of 0 and a count of 0,
+    /// and no datagrams, at the format the rules choose for that station. Returns false when none is due after all.
+    /// </summary>
+    private bool BuildAnnouncement(ChannelAccess.Request request)
+    {
+        int i = NextAnnouncement();
+        if (i < 0)
+        {
+            return false;
+        }
+
+        Announcement a = _announcements[i];
+        _announcements.RemoveAt(i);
+        double now = ClockSeconds(SampleCount);
+        int format = _link.Choose(a.Station, now).Format;
+        int? recommended = _link.ReportFor(a.Station);
+        PayloadCodec.WriteRun(a.Key, 0, 0, _fromValue);
+        _addressItems[0] = new ExtensionItem(PayloadCodec.FromTag, _fromValue.AsMemory(0, PayloadCodec.RunBytes));
+        int length = PayloadCodec.Pack(new PayloadPrelude(false, recommended, false, null), _addressItems.AsSpan(0, 1), default, _payload);
+        int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
+        int number = _burstNumber;
+        _burstNumber = (_burstNumber + 1) & 15;
+        _renderer ??= new BurstRenderer();
+        int total = _renderer.SamplesFor(format, symbols);
+        float[] audio = RentAudio(total);
+        _renderer.RenderData(BurstHeader.Data(StationNumber, a.Station, format, symbols, number), _payload.AsSpan(0, length), audio);
+        _report.Built = true;
+        _report.Started = false;
+        _report.Announcement = true;
+        _report.Dest = a.Station;
+        _report.Kind = OwedKind.Drop;
+        _report.Audio = audio;
+        _report.Length = total;
+        request.Samples = audio.AsMemory(0, total);
+        request.Modem = new ModemSentEvent(ModemSentKind.Announcement, format);
+        if (recommended is not null)
+        {
+            RaiseLinkState(a.Station, now);
+        }
+
         return true;
     }
 

@@ -384,13 +384,13 @@ internal static class HostileScenarios
 
     public sealed record Cut(
         double CutStart, double CutEnd, string AToBBefore, string AToBCut, string AToBAfter, string BToABefore, string BToACut, string BToAAfter, string AToCBefore, string AToCCut, string AToCAfter, string BToCCut,
-        int[] DeliveredByPeriod, int[] SentByPeriod, int SilencesAtCutEnd, int MaxSilencesA, int MaxSilencesB, int CRecommendsForABefore, int CRecommendsForAAfterCut, int? BurstsToRecover, double? SecondsToRecover, double PreCutRateKbit, int[] BurstsByPeriod, int[] CollidedByPeriod, int ToCSentInCut, int ToCDeliveredInCut, List<string> Log, List<string>? Trace = null);
+        int[] DeliveredByPeriod, int[] SentByPeriod, int SilencesAtCutEnd, int MaxSilencesA, int MaxSilencesB, int CRecommendsForABefore, int CRecommendsForAAfterCut, int? BurstsToRecover, double? SecondsToRecover, double PreCutRateKbit, int[] BurstsByPeriod, int[] CollidedByPeriod, int ToCSentInCut, int ToCDeliveredInCut, List<string> Log, List<string>? Trace = null, int Misaddressed = 0);
 
     /// <summary>
     /// Every <paramref name="spacing"/> seconds A sends B and C and B sends A and C, each datagram at a seeded moment within the round (C only answers). Warm-up for <paramref name="warm"/> rounds, then A and B cannot hear each other
     /// for <paramref name="cutRounds"/> rounds, then the path is restored for <paramref name="after"/> rounds.
     /// </summary>
-    public static Cut PathCut(CaptureModel? capture, int seed, int warm = 5, int cutRounds = 5, int after = 7, double spacing = 15, bool cutIt = true)
+    public static Cut PathCut(CaptureModel? capture, int seed, int warm = 5, int cutRounds = 8, int after = 12, double spacing = 15, bool cutIt = true)
     {
         SimRig rig = Make(3, seed, capture, false);
         Pair(rig, 1, 2, 1.0);
@@ -412,6 +412,8 @@ internal static class HostileScenarios
             }
         }
 
+        // C's host sends A one datagram at the start, so that C owns its address: a station answers for the addresses its host has sent from, and without that a burst for C lost to a collision early on can never be answered or relearned.
+        plan.Add(new Ledger.Plan(t0 + 20000, 3, 1, Ledger.DefaultLength));
         plan.Sort((x, y) => x.Clock.CompareTo(y.Clock));
         ledger.Schedule(plan);
         int maxA = 0;
@@ -491,7 +493,7 @@ internal static class HostileScenarios
             cutStart / 48000.0, cutEnd / 48000.0, Fmts(rig.Nodes[0], 2, 0, cutStart), Fmts(rig.Nodes[0], 2, cutStart, cutEnd), Fmts(rig.Nodes[0], 2, cutEnd, long.MaxValue),
             Fmts(rig.Nodes[1], 1, 0, cutStart), Fmts(rig.Nodes[1], 1, cutStart, cutEnd), Fmts(rig.Nodes[1], 1, cutEnd, long.MaxValue),
             Fmts(rig.Nodes[0], 3, 0, cutStart), Fmts(rig.Nodes[0], 3, cutStart, cutEnd), Fmts(rig.Nodes[0], 3, cutEnd, long.MaxValue), Fmts(rig.Nodes[1], 3, cutStart, cutEnd),
-            delivered, sent, silencesAtEnd, maxA, maxB, cRecBefore, cRecAfterCut, burstsToRecover, secondsToRecover, pre / 1000.0, bursts3, collided3, ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd), ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd && ledger.Delivered(i)), rig.Channel.Log, CutTrace(rig, cutStart, cutEnd));
+            delivered, sent, silencesAtEnd, maxA, maxB, cRecBefore, cRecAfterCut, burstsToRecover, secondsToRecover, pre / 1000.0, bursts3, collided3, ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd), ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd && ledger.Delivered(i)), rig.Channel.Log, CutTrace(rig, cutStart, cutEnd), rig.Nodes.Sum(n => n.BurstsSent.Count(b => b.Dest != 0 && b.Address != SimRig.Address(b.Dest))));
     }
 
     /// <summary>What each of A and B did towards the other inside the cut: every burst that went to the other station or to everyone (when, which, whether it asked for a report), and each silence counted.</summary>

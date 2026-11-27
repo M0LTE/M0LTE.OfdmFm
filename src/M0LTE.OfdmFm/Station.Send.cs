@@ -733,6 +733,11 @@ public sealed partial class Station
             Unqueue(q, p);
         }
 
+        if (dest != 0)
+        {
+            CoverAnnouncements(dest);
+        }
+
         // The block of items every data burst carries: From, the runs of datagrams in order (the address they were sent from, their protocol, how many), and For when the burst is for one address the station has not located.
         int written = 0;
         for (int i = 0; i < _burst.Items.Count;)
@@ -837,11 +842,6 @@ public sealed partial class Station
         {
             RememberBurst(_burst.Dest, _burst.Queue!.Address, sampleIndex);
         }
-        else if (!_burst.Queue!.Address.IsEveryone)
-        {
-            ForgetFloods(sampleIndex);
-            _floods.Add(new Flood(_burst.Queue.Key, sampleIndex, sampleIndex + AnswerWaitSamples(_burst.Length)));
-        }
 
         DataBurstSent?.Invoke(_burst.Dest, _burst.AskedReport, sampleIndex, _burst.Queue!.Address);
         double timeOut = ClockSeconds(sampleIndex);
@@ -870,18 +870,6 @@ public sealed partial class Station
         _burst.Built = false;
         _burst.Started = false;
         EnsureDataRequest();
-    }
-
-    /// <summary>Drops the floods whose answer wait ran out before <paramref name="before"/>.</summary>
-    private void ForgetFloods(long before)
-    {
-        for (int i = _floods.Count - 1; i >= 0; i--)
-        {
-            if (_floods[i].Due < before)
-            {
-                _floods.RemoveAt(i);
-            }
-        }
     }
 
     /// <summary>A data burst has ended on air: the station number it went to (0 for everyone), whether it asked for a report, the sample it ended at and the address its datagrams were for. For tests: no host sees it.</summary>

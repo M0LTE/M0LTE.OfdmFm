@@ -1098,7 +1098,7 @@ public sealed partial class Station
                 byte protocol = 0;
                 while (datagrams.TryNext(out ReadOnlySpan<byte> datagram))
                 {
-                    if (left == 0)
+                    while (left == 0)
                     {
                         fromKey = PayloadCodec.ReadKey(runs[(run * PayloadCodec.RunBytes)..]);
                         protocol = runs[(run * PayloadCodec.RunBytes) + PayloadCodec.KeyBytes];
@@ -1112,10 +1112,10 @@ public sealed partial class Station
                 }
             }
 
-            if (valid && everyone && forKey is uint asked && _ownKeys.Contains(asked) && _link.ReportFor(sender) is int told)
+            if (valid && everyone && forKey is uint asked && _ownKeys.Contains(asked) && Callsign is not null)
             {
-                // A burst to everyone for one of this station's own addresses: answer with the recommendation, as for a drop, so that the sender can bind the address to this station.
-                NoteVerdict(sender, r.End, new LinkReport(told, false), false, true);
+                // A burst to everyone for one of this station's own addresses: owe the sender an announcement of where the address lives (it rides on data going back, or goes alone after the requested-report wait).
+                OweAnnouncement(sender, asked, r.End);
             }
         }
 
@@ -1131,7 +1131,7 @@ public sealed partial class Station
     internal int HearingSender { get; private set; }
 
     /// <summary>
-    /// Reads the items of a decoded data burst's block. The From item's runs must be whole runs (6 bytes each, none with a count of 0) whose counts add up to the datagrams in the burst; if they do, each key lives at the sender from now (the latest
+    /// Reads the items of a decoded data burst's block. The From item's runs must be whole runs (6 bytes each; a count of 0 is an announcement of an address, which belongs to no datagram) whose counts add up to the datagrams in the burst; if they do, each key lives at the sender from now (the latest
     /// burst heard wins) and true is returned, with the runs and the For key if there is one. If they do not (no From, a length that is not whole runs, counts that do not add up), nothing is learned and false is returned. Items with other tags are skipped, as is a For item
     /// of the wrong length, and only the first From counts. Allocates nothing once the addresses are known.
     /// </summary>
@@ -1168,11 +1168,6 @@ public sealed partial class Station
         for (int i = 0; i < runs.Length; i += PayloadCodec.RunBytes)
         {
             int n = runs[i + PayloadCodec.KeyBytes + 1];
-            if (n == 0)
-            {
-                return false;
-            }
-
             total += n;
         }
 
@@ -1189,53 +1184,6 @@ public sealed partial class Station
         return true;
     }
 
-    /// <summary>A burst to everyone for an address not located, sent and not yet answered: the key it was for, the sample it ended at, and when the wait for an answer runs out.</summary>
-    private readonly record struct Flood(uint Key, long Ended, long Due);
-
-    private readonly List<Flood> _floods = [];
-
-    /// <summary>Notes a burst to everyone for the address with this key as sent and unanswered (for a test of the binding; a station notes its own at the end of a burst).</summary>
-    internal void NoteFlood(uint key, long ended, long due) => _floods.Add(new Flood(key, ended, due));
-
-    /// <summary>The floods outstanding, for a test.</summary>
-    internal int FloodsOutstanding => _floods.Count;
-
-    /// <summary>
-    /// A lone report for this station has begun at <paramref name="reportStart"/>, from station <paramref name="sender"/>. If exactly one address (one For key) has a burst to everyone outstanding (sent, with its answer wait not run out, counted from the burst's end),
-    /// that address lives at the sender: the station that owns it answered. With none outstanding, or two keys, nothing is learned. The report is then applied as any is.
-    /// </summary>
-    private void BindFloodedAddress(int sender, long reportStart, double now)
-    {
-        ForgetFloods(reportStart + 1);
-        uint? only = null;
-        foreach (Flood f in _floods)
-        {
-            if (f.Ended > reportStart)
-            {
-                continue;
-            }
-
-            if (only is { } k && k != f.Key)
-            {
-                return;
-            }
-
-            only = f.Key;
-        }
-
-        if (only is { } key)
-        {
-            _table.Learn(key, sender, now);
-            for (int i = _floods.Count - 1; i >= 0; i--)
-            {
-                if (_floods[i].Key == key)
-                {
-                    _floods.RemoveAt(i);
-                }
-            }
-        }
-    }
-
     private void ApplyReport(BurstRecord r)
     {
         BurstHeader h = r.Header;
@@ -1248,7 +1196,6 @@ public sealed partial class Station
         // After a lone report for this station, ordinary traffic leaves the channel clear for about a second from the report's last sample.
         _access.HoldOffOrdinaryUntil(r.End + ChannelAccess.ReportHoldOff);
         double now = ClockSeconds(r.End);
-        BindFloodedAddress(h.Sender, r.Start, now);
         _link.HeardReport(h.Sender, h.Format, h.Failed, now);
         AdaptationCalled?.Invoke(new AdaptationCall(true, h.Sender, h.Destination, h.Format, false, [], now, null, false, new LinkReport(h.Format, h.Failed), null, null));
         RaisePathReport(h.Sender, h.Format, h.Failed, now);

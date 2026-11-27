@@ -382,7 +382,7 @@ internal static class HostileScenarios
 
     public sealed record Cut(
         double CutStart, double CutEnd, string AToBBefore, string AToBCut, string AToBAfter, string BToABefore, string BToACut, string BToAAfter, string AToCBefore, string AToCCut, string AToCAfter, string BToCCut,
-        int[] DeliveredByPeriod, int[] SentByPeriod, int SilencesAtCutEnd, int MaxSilencesA, int MaxSilencesB, int CRecommendsForABefore, int CRecommendsForAAfterCut, int? BurstsToRecover, double? SecondsToRecover, double PreCutRateKbit, int[] BurstsByPeriod, int[] CollidedByPeriod, int ToCSentInCut, int ToCDeliveredInCut, List<string> Log, List<string>? Trace = null, int Misaddressed = 0);
+        int[] DeliveredByPeriod, int[] SentByPeriod, int SilencesAtCutEnd, int MaxSilencesA, int MaxSilencesB, int CRecommendsForABefore, int CRecommendsForAAfterCut, int? BurstsToRecover, int? BurstsToStay, double? SecondsToRecover, double PreCutRateKbit, int[] BurstsByPeriod, int[] CollidedByPeriod, int ToCSentInCut, int ToCDeliveredInCut, List<string> Log, List<string>? Trace = null, int Misaddressed = 0);
 
     /// <summary>
     /// Every <paramref name="spacing"/> seconds A sends B and C and B sends A and C, each datagram at a seeded moment within the round (C only answers). Warm-up for <paramref name="warm"/> rounds, then A and B cannot hear each other
@@ -473,6 +473,22 @@ internal static class HostileScenarios
         int bursts = 0;
         int? burstsToRecover = null;
         double? secondsToRecover = null;
+        // The second figure: the first burst after which A never sends below nine tenths of it again (null if the last burst is below). The first figure can score a burst that reached the rate and then fell back.
+        int? burstsToStay = null;
+        int afterBursts = 0;
+        foreach ((long _, TransmittedEvent e) in rig.Nodes[0].Transmitted.Where(t => t.Event.Address == SimRig.Address(2) && t.Clock >= cutEnd))
+        {
+            afterBursts++;
+            if (e.RateBitsPerSecond < 0.9 * pre)
+            {
+                burstsToStay = null;
+            }
+            else
+            {
+                burstsToStay ??= afterBursts;
+            }
+        }
+
         foreach ((long clock, TransmittedEvent e) in rig.Nodes[0].Transmitted.Where(t => t.Event.Address == SimRig.Address(2) && t.Clock >= cutEnd))
         {
             bursts++;
@@ -491,7 +507,7 @@ internal static class HostileScenarios
             cutStart / 48000.0, cutEnd / 48000.0, Fmts(rig.Nodes[0], 2, 0, cutStart), Fmts(rig.Nodes[0], 2, cutStart, cutEnd), Fmts(rig.Nodes[0], 2, cutEnd, long.MaxValue),
             Fmts(rig.Nodes[1], 1, 0, cutStart), Fmts(rig.Nodes[1], 1, cutStart, cutEnd), Fmts(rig.Nodes[1], 1, cutEnd, long.MaxValue),
             Fmts(rig.Nodes[0], 3, 0, cutStart), Fmts(rig.Nodes[0], 3, cutStart, cutEnd), Fmts(rig.Nodes[0], 3, cutEnd, long.MaxValue), Fmts(rig.Nodes[1], 3, cutStart, cutEnd),
-            delivered, sent, silencesAtEnd, maxA, maxB, cRecBefore, cRecAfterCut, burstsToRecover, secondsToRecover, pre / 1000.0, bursts3, collided3, ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd), ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd && ledger.Delivered(i)), rig.Channel.Log, CutTrace(rig, cutStart, cutEnd), rig.Nodes.Sum(n => n.BurstsSent.Count(b => b.Dest != 0 && b.Address != SimRig.Address(b.Dest))));
+            delivered, sent, silencesAtEnd, maxA, maxB, cRecBefore, cRecAfterCut, burstsToRecover, burstsToStay, secondsToRecover, pre / 1000.0, bursts3, collided3, ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd), ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd && ledger.Delivered(i)), rig.Channel.Log, CutTrace(rig, cutStart, cutEnd), rig.Nodes.Sum(n => n.BurstsSent.Count(b => b.Dest != 0 && b.Address != SimRig.Address(b.Dest))));
     }
 
     /// <summary>What each of A and B did towards the other inside the cut: every burst that went to the other station or to everyone (when, which, whether it asked for a report), and each silence counted.</summary>
@@ -520,7 +536,7 @@ internal static class HostileScenarios
         + $"A to C before [{r.AToCBefore}] during [{r.AToCCut}] after [{r.AToCAfter}]; B to C during [{r.BToCCut}]; delivered/sent by the period a datagram was sent in (warm-up, cut, after) {string.Join(" ", r.DeliveredByPeriod.Zip(r.SentByPeriod, (d, s) => $"{d}/{s}"))}; "
         + $"silences at A for B at the end of the cut {r.SilencesAtCutEnd}, most at A {r.MaxSilencesA} and at B {r.MaxSilencesB}; C's recommendation for A before the cut {r.CRecommendsForABefore} and after {r.CRecommendsForAAfterCut}; "
         + $"bursts by all stations in the three periods {string.Join("/", r.BurstsByPeriod)}, of which collided at C {string.Join("/", r.CollidedByPeriod)}; datagrams to C sent in the cut {r.ToCSentInCut}, delivered {r.ToCDeliveredInCut}; "
-        + $"A back at 90 percent of its pre-cut {Hostile.F(r.PreCutRateKbit)} kbit/s after {r.BurstsToRecover?.ToString(CultureInfo.InvariantCulture) ?? "never"} bursts and {(r.SecondsToRecover is { } sr ? Hostile.F(sr) : "-")} s";
+        + $"A back at 90 percent of its pre-cut {Hostile.F(r.PreCutRateKbit)} kbit/s after {r.BurstsToRecover?.ToString(CultureInfo.InvariantCulture) ?? "never"} bursts (stays there from burst {r.BurstsToStay?.ToString(CultureInfo.InvariantCulture) ?? "never"}) and {(r.SecondsToRecover is { } sr ? Hostile.F(sr) : "-")} s";
 
     // ---- 7. identification among three ----
 

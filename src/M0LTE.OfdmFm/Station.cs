@@ -77,6 +77,11 @@ internal enum TransmitState
 /// <b>Identification.</b> The callsign (given by the host with <see cref="SetIdentity"/>; the station does not transmit until it has one: 1 to 16 characters, upper-case letters, digits, '/' and '-') goes on the air, and the clock that decides when runs on the sample clock only while the station transmits:
 /// an identification is due when a transmission of the station's ends and either it has never identified or ten minutes have passed since its last identification started: at once after the first transmission of a quiet station, and after the first transmission to end past the ten-minute mark for a station that keeps transmitting. Transmissions sooner are covered by the last identification, and an idle station never keys to identify. See <c>docs/station-design.md</c>, "Step 7 as built".
 /// </para>
+/// <para>
+/// <b>Numbers.</b> The station's on-air number (1 to 63) and its station id (32 random bits) are its own business: it takes them, from its random source, the first time <see cref="SetIdentity"/> is accepted (a number not heard as a sender in the last ten minutes of the
+/// sample clock), carries the id in every identification burst, takes new ones when it reads a header with its own number that it did not send or decodes a Clash that names its number and id, and, as a third station, resets what it knew of a number whose id changed and sends a
+/// Clash for the later id when the earlier was heard inside ten minutes. No member of the host interface shows a number or an id. A burst built before a move is built again. See docs/station-numbers.md.
+/// </para>
 /// </summary>
 public sealed partial class Station
 {

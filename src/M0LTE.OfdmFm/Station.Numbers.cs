@@ -38,6 +38,7 @@ public sealed partial class Station
     private ChannelAccess.Request? _clashRequest;
     private bool _clashBuilt;
     private int _clashNumber;
+    private uint _clashId;
     private float[]? _clashAudio;
     private long _numberChanges;
     private long _clashesSent;
@@ -348,8 +349,6 @@ public sealed partial class Station
         EnsureDataRequest();
         EnsureReportRequest();
     }
-
-    private uint _clashId;
 
     /// <summary>A Clash is owed for <paramref name="number"/>: the station with <paramref name="id"/> is to move. Only a station with an identity can send one. One is owed for a number at a time, the newer id replacing the older.</summary>
     private void OweClash(int number, uint id)

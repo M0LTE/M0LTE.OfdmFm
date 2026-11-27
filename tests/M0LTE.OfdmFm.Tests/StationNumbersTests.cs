@@ -186,6 +186,38 @@ public class StationNumbersTests
         station.NumberChanges.Should().Be(1, "but once the tail is over a burst with its number is another station's");
     }
 
+    [Fact]
+    public void The_Same_Seed_Gives_The_Same_Numbers_Ids_And_Run_Down_To_Every_Event()
+    {
+        List<string> Run(int seed)
+        {
+            var rig = new SimRig(3, seed: seed, randomNumbers: true);
+            foreach (Station s in rig.Stations)
+            {
+                s.IdentificationSuspended = false;
+                s.IdentificationInterval = 20L * 48000;
+            }
+
+            rig.RunTo(6);
+            for (int round = 0; round < 3; round++)
+            {
+                for (int from = 1; from <= 3; from++)
+                {
+                    rig.Send(from, (from % 3) + 1, (round * 3) + from).Should().Be(SendResult.Accepted);
+                    rig.Run(7);
+                }
+            }
+
+            rig.Run(30);
+            return [.. rig.Channel.Log, .. rig.Stations.Select(s => $"{s.StationNumber}:{s.StationId:X8}")];
+        }
+
+        List<string> once = Run(4);
+        once.Should().Contain(l => l.Contains(" rx from ", StringComparison.Ordinal));
+        Run(4).Should().Equal(once);
+        Run(5).Should().NotEqual(once, "the seeds matter");
+    }
+
     // ---- the station id on the air ----
 
     [Fact]

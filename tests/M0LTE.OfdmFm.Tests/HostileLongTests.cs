@@ -97,7 +97,7 @@ public class HostileLongTests
     {
         Hostile.Gate();
         HostileScenarios.Soak r = HostileScenarios.Soaking(HostileScenarios.Default, seed, 240, 90, meanGap, indication, randomNumbers: true);
-        Hostile.Say($"random numbers, seed {seed}, mean gap {meanGap} s, {(indication ? "carrier indication" : "detection alone")}: " + HostileScenarios.Describe(r) + $"; dropped as link forgotten {r.LinkForgotten}");
+        Hostile.Say($"random numbers, seed {seed}, mean gap {meanGap} s, {(indication ? "carrier indication" : "detection alone")}: " + HostileScenarios.Describe(r) + $"; dropped as link forgotten {r.LinkForgotten}, stations moved {r.Moves} times, Clash bursts {r.Clashes}");
         CheckSoak(r, randomNumbers: true);
     }
 
@@ -107,7 +107,7 @@ public class HostileLongTests
     public void A_Short_Run_Of_Three_Stations_With_Random_Numbers_And_Ids_Keeps_Every_Invariant_The_Soak_Asserts(int seed)
     {
         HostileScenarios.Soak r = HostileScenarios.Soaking(HostileScenarios.Default, seed, 120, 60, 6, indication: seed == 2, randomNumbers: true);
-        Hostile.Say($"short random-number run, seed {seed}: " + HostileScenarios.Describe(r) + $"; dropped as link forgotten {r.LinkForgotten}");
+        Hostile.Say($"short random-number run, seed {seed}: " + HostileScenarios.Describe(r) + $"; dropped as link forgotten {r.LinkForgotten}, stations moved {r.Moves} times, Clash bursts {r.Clashes}");
         CheckSoak(r, randomNumbers: true);
     }
 

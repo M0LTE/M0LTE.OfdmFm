@@ -66,7 +66,7 @@ A host sends a datagram through a station (inline, so the example needs no worke
 
 ```csharp
 var station = new Station(new Random(1), runJobsInline: true);
-station.SetIdentity("M0LTE");                           // the callsign it identifies with; until it has one the station only listens
+station.SetIdentity("M0LTE");                           // the callsign it identifies with; until it has one the station only listens. It picks its own station number then: the host never sees one
 var peer = LinkAddress.FromAscii("G9XYZ");
 var me = LinkAddress.FromAscii("M0LTE-1");              // an address of the host's own: datagrams are sent from it, and the station learns from it where this host is
 

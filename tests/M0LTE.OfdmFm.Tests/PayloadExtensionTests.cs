@@ -166,14 +166,45 @@ public class PayloadExtensionTests
     }
 
     [Fact]
-    public void A_Burst_To_Everyone_Has_No_Block()
+    public void A_Burst_To_Everyone_Begins_With_Its_Own_Block()
     {
-        PayloadCodec.TryUnpack(Convert.FromHexString("0828" + "00" + "0001EE"), true, out _, out ExtensionReader ext, out DatagramReader reader).Should().BeTrue();
-        ext.TryNext(out _, out _).Should().BeFalse();
+        // An empty block is one length byte of 0; the datagrams follow it.
+        PayloadCodec.TryUnpack(Convert.FromHexString("00" + "0001EE"), true, out _, out ExtensionReader empty, out DatagramReader first).Should().BeTrue();
+        empty.TryNext(out _, out _).Should().BeFalse();
+        first.TryNext(out ReadOnlySpan<byte> g).Should().BeTrue();
+        Convert.ToHexString(g).Should().Be("EE");
+        PayloadCodec.Pack(null, [], Grams("01"), new byte[50]).Should().Be(4);
+
+        // With items: the length byte counts the items' bytes (6 and 6), not itself.
+        byte[] p = Packed(null, [Item(1, "AABBCCDD"), Item(2, "11223344")], Grams("EE"));
+        Convert.ToHexString(p).Should().Be("0C" + "0104AABBCCDD" + "020411223344" + "0001EE");
+        PayloadCodec.TryUnpack(p, true, out _, out ExtensionReader ext, out DatagramReader reader).Should().BeTrue();
+        var items = new List<(byte, string)>();
+        while (ext.TryNext(out byte tag, out ReadOnlySpan<byte> value))
+        {
+            items.Add((tag, Convert.ToHexString(value)));
+        }
+
+        items.Should().Equal((1, "AABBCCDD"), (2, "11223344"));
+        reader.TryNext(out g).Should().BeTrue();
+        Convert.ToHexString(g).Should().Be("EE");
+
+        // Nothing at all is not a payload to everyone.
+        PayloadCodec.TryUnpack([], true, out _, out _, out _).Should().BeFalse();
+        Action zero = () => PayloadCodec.Pack(null, [Item(0, "01")], Grams("01"), new byte[50]);
+        zero.Should().Throw<ArgumentException>();
+        PayloadCodec.Pack(null, [Item(1, "AABBCCDD")], Grams("01"), new byte[9]).Should().Be(-1);
+        PayloadCodec.Pack(null, [Item(1, "AABBCCDD")], Grams("01"), new byte[10]).Should().Be(10);
+    }
+
+    [Fact]
+    public void A_Leading_Block_That_Runs_Past_The_Payload_Leaves_No_Datagrams()
+    {
+        PayloadCodec.TryUnpack(Convert.FromHexString("FF" + "0104AABBCCDD" + "0001EE"), true, out _, out ExtensionReader ext, out DatagramReader reader).Should().BeTrue();
+        ext.TryNext(out byte tag, out ReadOnlySpan<byte> value).Should().BeTrue();
+        tag.Should().Be(1);
+        Convert.ToHexString(value).Should().Be("AABBCCDD");
         reader.TryNext(out _).Should().BeFalse();
-        Action a = () => PayloadCodec.Pack(null, [Item(1, "00")], Grams("01"), new byte[50]);
-        a.Should().Throw<ArgumentException>();
-        PayloadCodec.Pack(null, [], Grams("01"), new byte[50]).Should().Be(3);
     }
 
     [Fact]

@@ -44,7 +44,7 @@ public class ReadmeExampleTests
 
         var station = new Station(1, new Random(1), runJobsInline: true);
         station.SetIdentity("M0LTE");                           // the callsign it identifies with; until it has one the station only listens
-        var peer = StationName.FromAscii("G9XYZ");
+        var peer = LinkAddress.FromAscii("G9XYZ");
         station.Bind(peer, 2);                                  // the interim way a name gets an on-air number
 
         long id = 0;

@@ -68,7 +68,7 @@ public class StationExchangeTests
         rig.Stations[0].TransmitRequest += r => audio = r.Samples.ToArray();
         rig.RunTo(6);
         byte[] datagram = SimRig.Datagram(1, 30);
-        rig.Stations[0].Send(datagram, StationName.Everyone, new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
+        rig.Stations[0].Send(datagram, LinkAddress.Everyone, new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
         rig.Run(14);
 
         foreach (int listener in new[] { 1, 2 })
@@ -81,12 +81,12 @@ public class StationExchangeTests
         }
 
         TransmittedEvent sent = rig.Nodes[0].Transmitted.Should().ContainSingle().Subject.Event;
-        sent.Station.Should().Be(StationName.Everyone);
+        sent.Station.Should().Be(LinkAddress.Everyone);
         sent.Format.Should().Be(StandardFormats.FirstContact);
         rig.Stations[0].Adaptation.TryGetNeighbour(2, out LinkNeighbour? near).Should().BeFalse("nothing was asked of anyone, so nothing is awaited");
         near.Should().BeNull();
 
-        // Unpack the burst as it went on air: a header for everyone, and a payload that is the datagram behind its length, with no prelude in front.
+        // Unpack the burst as it went on air: a header for everyone, and a payload that is the leading block (empty, for now) and the datagram behind its length, with no prelude in front.
         audio.Should().NotBeNull();
         FormatOpening opening = StandardFormats.Describe(sent.Format).Opening;
         BurstCandidate found = BurstFinder.Find(audio, opening).Single();
@@ -100,9 +100,10 @@ public class StationExchangeTests
         byte[] payload = new byte[PayloadReceiver.PayloadRoom(header)];
         PayloadReceiveResult result = receiver.Receive(audio, found.Index, header, headerReader.Bits, payload);
         result.CheckPassed.Should().BeTrue();
-        payload[0].Should().Be(0);
-        payload[1].Should().Be(30, "the first thing in the payload is the datagram's length: nothing precedes it");
-        payload.AsSpan(2, 30).ToArray().Should().Equal(datagram);
+        payload[0].Should().Be(0, "the leading block is empty for now");
+        payload[1].Should().Be(0);
+        payload[2].Should().Be(30, "the first thing after the leading block is the datagram's length");
+        payload.AsSpan(3, 30).ToArray().Should().Equal(datagram);
     }
 
     [Fact]
@@ -191,7 +192,7 @@ public class StationExchangeTests
         rig.Run(8);
         rig.Send(1, 2, 3).Should().Be(SendResult.Accepted);
         rig.Send(1, 2, 4, priority: SendPriority.Expedited).Should().Be(SendResult.Accepted);
-        rig.Send(1, StationName.Everyone, 5).Should().Be(SendResult.Accepted);
+        rig.Send(1, LinkAddress.Everyone, 5).Should().Be(SendResult.Accepted);
         rig.Run(12);
         _ = noiseSeed;
         return rig.Channel.Log;

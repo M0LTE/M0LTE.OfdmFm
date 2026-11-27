@@ -54,7 +54,7 @@ internal sealed class SimRig
     public List<SimNode> Nodes { get; } = [];
 
     /// <summary>The name station <paramref name="number"/> is bound under at the others.</summary>
-    public static StationName Name(int number) => StationName.FromAscii($"S{number}");
+    public static LinkAddress Name(int number) => LinkAddress.FromAscii($"S{number}");
 
     /// <summary>Runs for <paramref name="seconds"/> more of simulated time.</summary>
     public void Run(double seconds) => Channel.Run(Channel.Clock + (long)(seconds * 48000));
@@ -70,6 +70,6 @@ internal sealed class SimRig
         Send(from, Name(to), tag, length, priority, reportWanted);
 
     /// <summary>Station <paramref name="from"/> sends datagram number <paramref name="tag"/> to a name (or everyone).</summary>
-    public SendResult Send(int from, StationName to, int tag, int length = 30, SendPriority priority = SendPriority.Ordinary, bool reportWanted = false) =>
+    public SendResult Send(int from, LinkAddress to, int tag, int length = 30, SendPriority priority = SendPriority.Ordinary, bool reportWanted = false) =>
         Stations[from - 1].Send(Datagram(tag, length), to, new HostTag(tag), reportWanted, priority);
 }

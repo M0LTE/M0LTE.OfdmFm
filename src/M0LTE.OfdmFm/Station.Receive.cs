@@ -50,7 +50,7 @@ public sealed partial class Station
     private readonly float[] _silence = new float[4096];
     private readonly StreamingBurstDetector _detector = new();
     private LinkAdaptation _link = null!;
-    private readonly StationName[] _placeholders = new StationName[64];
+    private readonly LinkAddress[] _placeholders = new LinkAddress[64];
     private readonly LinkShown[] _shown = new LinkShown[64];
     private readonly List<Candidate> _candidates = [];
     private readonly List<BurstRecord> _bursts = [];
@@ -296,11 +296,11 @@ public sealed partial class Station
     /// The name a station heard by its number alone is given until names can be bound: the ASCII text "#" and the number in decimal ("#7", "#42"). A later step's binding replaces the name in these events,
     /// not their type.
     /// </summary>
-    public static StationName PlaceholderName(int number)
+    public static LinkAddress PlaceholderName(int number)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(number, 0);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(number, 63);
-        return StationName.FromAscii("#" + number.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        return LinkAddress.FromAscii("#" + number.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>True when a job waits for <see cref="RunOne"/>: a header read, or a burst to receive. Always false for an inline station. Safe from any thread.</summary>
@@ -1098,7 +1098,7 @@ public sealed partial class Station
             }
 
             double db = MeanQualityDb(job.Quality, StandardFormats.Describe(h.Format).Carriers);
-            StationName? name = _bound[sender];
+            LinkAddress? name = _bound[sender];
             while (datagrams.TryNext(out ReadOnlySpan<byte> datagram))
             {
                 int offset = (int)Unsafe.ByteOffset(ref MemoryMarshal.GetReference(payload), ref MemoryMarshal.GetReference(datagram));
@@ -1156,12 +1156,12 @@ public sealed partial class Station
 
     // ---- what the station knows of each neighbour, for the host ----
 
-    private readonly StationName?[] _bound = new StationName?[64];
+    private readonly LinkAddress?[] _bound = new LinkAddress?[64];
 
     /// <summary>True for a number whose name the host gave with <see cref="Bind"/>: a name learned from an identification burst never replaces it.</summary>
     private readonly bool[] _hostBound = new bool[64];
 
-    private StationName NameFor(int number) => _bound[number] ?? _placeholders[number];
+    private LinkAddress NameFor(int number) => _bound[number] ?? _placeholders[number];
 
     /// <summary>The largest datagram one burst to a neighbour at this format carries: the longest burst's payload less the largest prelude and the datagram's length.</summary>
     private static int DatagramRoomFor(int format) => Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - DatagramOverhead);

@@ -38,6 +38,9 @@ public sealed partial class Station
     /// <summary>The prelude's largest size: two bytes and the capability word.</summary>
     private const int PreludeBytes = 4;
 
+    /// <summary>The length byte of the leading block a burst to everyone begins with, until it carries items.</summary>
+    private const int EmptyLeadingBlockBytes = 1;
+
     /// <summary>The length that precedes each datagram in a payload.</summary>
     private const int LengthBytes = 2;
 
@@ -127,12 +130,12 @@ public sealed partial class Station
     /// A name has one number and a number one name: binding a name already bound to another number moves it (the old number goes back to its placeholder), and binding a number that has another name replaces that name.
     /// Datagrams already queued stay where they are, queued by number. Bindings are never dropped, not when the link is forgotten after ten minutes of silence either. Audio thread, serialised with <see cref="Push"/>.
     /// </summary>
-    /// <param name="name">The host's name for the station: opaque bytes, not empty, not <see cref="StationName.Everyone"/>, and not a placeholder ("#" and a number).</param>
+    /// <param name="name">The host's name for the station: opaque bytes, not empty, not <see cref="LinkAddress.Everyone"/>, and not a placeholder ("#" and a number).</param>
     /// <param name="number">The station's on-air number, 1 to 63 and not this station's own.</param>
     /// <exception cref="ArgumentException">The name is empty, everyone, or looks like a placeholder.</exception>
     /// <exception cref="ArgumentOutOfRangeException">The number is outside 1 to 63 or is this station's.</exception>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    public void Bind(StationName name, int number)
+    public void Bind(LinkAddress name, int number)
     {
         EnsureNotAdvancing();
         if (name.IsEmpty || name.IsEveryone)
@@ -199,13 +202,13 @@ public sealed partial class Station
     /// </para>
     /// </summary>
     /// <param name="datagram">The datagram, 1 to 65535 bytes.</param>
-    /// <param name="destination">The station's bound name, or <see cref="StationName.Everyone"/>.</param>
+    /// <param name="destination">The station's bound name, or <see cref="LinkAddress.Everyone"/>.</param>
     /// <param name="tag">The host's tag, returned in <see cref="Transmitted"/> and <see cref="Dropped"/> and used by <see cref="Cancel(HostTag)"/>. Several datagrams may share one.</param>
     /// <param name="reportWanted">Ask the station to answer with a report on the path: set in the prelude of the burst this datagram goes in. For a host with no acknowledgements of its own.</param>
     /// <param name="priority">Expedited for an acknowledgement or response.</param>
     /// <exception cref="ArgumentException">The datagram is empty or over 65535 bytes.</exception>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    public SendResult Send(ReadOnlyMemory<byte> datagram, StationName destination, HostTag tag, bool reportWanted = false, SendPriority priority = SendPriority.Ordinary)
+    public SendResult Send(ReadOnlyMemory<byte> datagram, LinkAddress destination, HostTag tag, bool reportWanted = false, SendPriority priority = SendPriority.Ordinary)
     {
         EnsureNotAdvancing();
         if (datagram.IsEmpty || datagram.Length > 65535)
@@ -317,7 +320,7 @@ public sealed partial class Station
 
     /// <summary>As <see cref="Cancel(HostTag)"/> for everything queued for a station (or for everyone), in the order it would have gone; returns how many. A name that is not bound drops nothing.</summary>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    public int Cancel(StationName station)
+    public int Cancel(LinkAddress station)
     {
         EnsureNotAdvancing();
         int number = station.IsEveryone ? 0 : NumberOf(station);
@@ -388,7 +391,7 @@ public sealed partial class Station
 
     // ---- names ----
 
-    private int NumberOf(StationName name)
+    private int NumberOf(LinkAddress name)
     {
         for (int n = 1; n < _bound.Length; n++)
         {
@@ -401,7 +404,7 @@ public sealed partial class Station
         return 0;
     }
 
-    private StationName NameOfDestination(int number) => number == 0 ? StationName.Everyone : NameFor(number);
+    private LinkAddress NameOfDestination(int number) => number == 0 ? LinkAddress.Everyone : NameFor(number);
 
     /// <summary>Announces a station that has been heard under whatever name it has now (after a bind), once.</summary>
     private void AnnounceLink(int number)
@@ -417,7 +420,7 @@ public sealed partial class Station
     /// <summary>The format a burst to <paramref name="number"/> would go at now (everyone: first contact).</summary>
     private int FormatFor(int number, double now) => number == 0 ? StandardFormats.FirstContact : _link.Choose(number, now).Format;
 
-    private static int RoomFor(int format, bool everyone) => Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - LengthBytes - (everyone ? 0 : PreludeBytes));
+    private static int RoomFor(int format, bool everyone) => Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - LengthBytes - (everyone ? EmptyLeadingBlockBytes : PreludeBytes));
 
     private static double AirtimeOf(DestQueue q, int format) => q.Bits / (StandardFormats.Rate(format) * 1000.0);
 
@@ -607,7 +610,7 @@ public sealed partial class Station
         _renderer ??= new BurstRenderer();
         LinkChoice choice = everyone ? new LinkChoice(StandardFormats.FirstContact, false) : _link.Choose(dest, now);
         int format = choice.Format;
-        int overhead = everyone ? 0 : PreludeBytes;
+        int overhead = everyone ? EmptyLeadingBlockBytes : PreludeBytes;
 
         // A datagram accepted when the link was faster may not fit one burst now: it is dropped, and the host sees the new room in LinkState.
         int largest = PayloadCodec.Capacity(format, StandardFormats.MaxSymbols);
@@ -749,7 +752,7 @@ public sealed partial class Station
         double timeOut = ClockSeconds(sampleIndex);
         double airtime = (sampleIndex - _burst.StartedAt) / (double)SampleRate;
         double rate = StandardFormats.Rate(_burst.Format) * 1000.0;
-        StationName name = NameOfDestination(_burst.Dest);
+        LinkAddress name = NameOfDestination(_burst.Dest);
         foreach (Pending p in _burst.Items)
         {
             Transmitted?.Invoke(new TransmittedEvent(p.Tag, name, _burst.BurstNumber, _burst.Format, rate, airtime, timeOut));

@@ -62,7 +62,9 @@ public class PayloadReceiverTests
         foreach (Case c in Loaded.Value.Cases.Where(x => x.Check))
         {
             PayloadReceiveResult r = c.Run(receiver, payload);
-            PayloadCodec.TryUnpack(payload.AsSpan(0, r.PayloadBytes), c.Header.Destination == 0, out PayloadPrelude prelude, out DatagramReader reader).Should().BeTrue(c.Name);
+            // The prototype's payload to everyone has no leading block of link addresses: the empty one goes in front, and the datagrams that follow are the prototype's.
+            ReadOnlySpan<byte> received = payload.AsSpan(0, r.PayloadBytes);
+            PayloadCodec.TryUnpack(c.Header.Destination == 0 ? [0, .. received] : received, c.Header.Destination == 0, out PayloadPrelude prelude, out DatagramReader reader).Should().BeTrue(c.Name);
             prelude.Wanted.Should().Be(c.PreludeWanted, c.Name);
             prelude.Recommended.Should().Be(c.PreludeRecommended, c.Name);
             prelude.Capability.Should().Be(c.PreludeCapability, c.Name);

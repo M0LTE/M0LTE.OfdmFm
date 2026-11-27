@@ -161,7 +161,7 @@ internal sealed class Ledger
         long tag = TagOf(item.From, item.Seq, attempt);
         item.Tags.Add(tag);
         _byTag[tag] = item;
-        StationName to = item.To == 0 ? StationName.Everyone : SimRig.Name(item.To);
+        LinkAddress to = item.To == 0 ? LinkAddress.Everyone : SimRig.Name(item.To);
         SendResult r = _rig.Stations[item.From - 1].Send(Bytes(item.From, item.Seq, attempt, item.Length), to, new HostTag(tag), reportWanted, priority);
         if (r != SendResult.Accepted)
         {

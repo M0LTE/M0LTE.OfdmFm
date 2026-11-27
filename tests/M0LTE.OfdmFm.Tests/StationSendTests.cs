@@ -8,9 +8,9 @@ namespace M0LTE.OfdmFm.Tests;
 /// </summary>
 public class StationSendTests
 {
-    private static StationName B => SimRig.Name(2);
+    private static LinkAddress B => SimRig.Name(2);
 
-    private static StationName C => SimRig.Name(3);
+    private static LinkAddress C => SimRig.Name(3);
 
     private static SimRig Solo(int stations = 4) => new(stations, connect: false);
 
@@ -20,7 +20,7 @@ public class StationSendTests
     public void A_Name_That_Is_Not_Bound_Is_Refused()
     {
         var rig = new SimRig(2, connect: false);
-        rig.Stations[0].Send(new byte[] { 1 }, StationName.FromAscii("nobody"), new HostTag(1)).Should().Be(SendResult.NotBound);
+        rig.Stations[0].Send(new byte[] { 1 }, LinkAddress.FromAscii("nobody"), new HostTag(1)).Should().Be(SendResult.NotBound);
         rig.Stations[0].Send(new byte[] { 1 }, default, new HostTag(1)).Should().Be(SendResult.NotBound);
         rig.Stations[0].Send(new byte[] { 1 }, B, new HostTag(1)).Should().Be(SendResult.Accepted);
         rig.Stations[0].QueuedFor(2).Should().Be(1);
@@ -36,9 +36,9 @@ public class StationSendTests
         a.Send(new byte[342], B, new HostTag(1)).Should().Be(SendResult.Accepted);
         a.Send(new byte[343], B, new HostTag(2)).Should().Be(SendResult.TooLarge);
 
-        // For everyone there is no prelude, so two bytes more fit.
-        a.Send(new byte[346], StationName.Everyone, new HostTag(3)).Should().Be(SendResult.Accepted);
-        a.Send(new byte[347], StationName.Everyone, new HostTag(4)).Should().Be(SendResult.TooLarge);
+        // For everyone there is no prelude but the leading block's length byte (until it carries items), so three bytes more fit.
+        a.Send(new byte[345], LinkAddress.Everyone, new HostTag(3)).Should().Be(SendResult.Accepted);
+        a.Send(new byte[346], LinkAddress.Everyone, new HostTag(4)).Should().Be(SendResult.TooLarge);
     }
 
     [Fact]
@@ -80,11 +80,11 @@ public class StationSendTests
     {
         var rig = Solo(3);
         Station a = rig.Stations[0];
-        StationName x = StationName.FromAscii("X");
+        LinkAddress x = LinkAddress.FromAscii("X");
         Action ownNumber = () => a.Bind(x, 1);
         Action zero = () => a.Bind(x, 0);
         Action big = () => a.Bind(x, 64);
-        Action everyone = () => a.Bind(StationName.Everyone, 5);
+        Action everyone = () => a.Bind(LinkAddress.Everyone, 5);
         Action empty = () => a.Bind(default, 5);
         Action placeholder = () => a.Bind(Station.PlaceholderName(7), 5);
         ownNumber.Should().Throw<ArgumentOutOfRangeException>();
@@ -105,7 +105,7 @@ public class StationSendTests
         a.QueuedFor(6).Should().Be(1);
 
         // A number has one name: binding another name replaces it.
-        StationName y = StationName.FromAscii("Y");
+        LinkAddress y = LinkAddress.FromAscii("Y");
         a.Bind(y, 6);
         a.Send(new byte[] { 3 }, x, new HostTag(3)).Should().Be(SendResult.NotBound);
         a.Send(new byte[] { 3 }, y, new HostTag(3)).Should().Be(SendResult.Accepted);
@@ -132,11 +132,11 @@ public class StationSendTests
         SimNode n1 = channel.Add(s1, "S1");
         SimNode n4 = channel.Add(fresh, "S4");
         channel.Connect(n1, n4, 1.0, 0.004);
-        s1.Bind(StationName.FromAscii("S4"), 4);
+        s1.Bind(LinkAddress.FromAscii("S4"), 4);
         fresh.Received += heardBy2.Add;
         fresh.LinkState += links.Add;
         channel.Run(6 * 48000);
-        s1.Send(SimRig.Datagram(1, 30), StationName.FromAscii("S4"), new HostTag(1)).Should().Be(SendResult.Accepted);
+        s1.Send(SimRig.Datagram(1, 30), LinkAddress.FromAscii("S4"), new HostTag(1)).Should().Be(SendResult.Accepted);
         channel.Run(channel.Clock + (12 * 48000));
 
         heardBy2.Should().ContainSingle();
@@ -145,16 +145,16 @@ public class StationSendTests
         links[^1].Station.Should().Be(Station.PlaceholderName(1));
         int before = links.Count;
 
-        fresh.Bind(StationName.FromAscii("one"), 1);
+        fresh.Bind(LinkAddress.FromAscii("one"), 1);
         links.Count.Should().Be(before + 1, "a bind announces a station already heard once more");
-        links[^1].Station.Should().Be(StationName.FromAscii("one"));
+        links[^1].Station.Should().Be(LinkAddress.FromAscii("one"));
         links[^2].Station.Should().Be(Station.PlaceholderName(1), "events raised before the bind keep the placeholder");
 
         // After the bind the name is on received datagrams.
-        s1.Send(SimRig.Datagram(2, 30), StationName.FromAscii("S4"), new HostTag(2));
+        s1.Send(SimRig.Datagram(2, 30), LinkAddress.FromAscii("S4"), new HostTag(2));
         channel.Run(channel.Clock + (12 * 48000));
         heardBy2.Should().HaveCount(2);
-        heardBy2[1].Sender.Should().Be(StationName.FromAscii("one"));
+        heardBy2[1].Sender.Should().Be(LinkAddress.FromAscii("one"));
         _ = third;
     }
 
@@ -240,7 +240,7 @@ public class StationSendTests
 
         a.Cancel(B).Should().Be(2);
         node.Dropped.Skip(2).Select(d => d.Tag.Value).Should().Equal(1L, 4L);
-        a.Cancel(StationName.FromAscii("nobody")).Should().Be(0);
+        a.Cancel(LinkAddress.FromAscii("nobody")).Should().Be(0);
         a.Cancel(B).Should().Be(0);
         a.QueuedFor(2).Should().Be(0);
         a.QueuedFor(3).Should().Be(1);
@@ -320,7 +320,7 @@ public class StationSendTests
     {
         var rig = Solo(4);
         Station a = rig.Stations[0];
-        StationName d = SimRig.Name(4);
+        LinkAddress d = SimRig.Name(4);
         // 50 bytes: one to a burst at first contact (a burst holds 57), so each is a turn.
         a.Send(new byte[50], B, new HostTag(1));
         a.Send(new byte[50], B, new HostTag(2));
@@ -416,7 +416,7 @@ public class StationSendTests
         byte[] datagram = new byte[40];
         const int warmUp = 3;
         SendResult[] results = new SendResult[warmUp + AllocationMeasure.Attempts];
-        StationName b = B;
+        LinkAddress b = B;
         int next = 0;
         void Round()
         {

@@ -21,7 +21,7 @@ Extracted from [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem); s
 | `PayloadCodec` | Packs datagrams into a payload and unpacks them; packs and unpacks an identification burst's payload (callsign, capability word, items). |
 | `LinkAdaptation`, `StandardFormats.Recommend` | What a station remembers about each station it hears, the format it recommends to each, and the format it chooses to send at; and which format a measured quality supports. A host drives it and passes the time in. |
 | `Station` | The live station, one per radio channel: its sample clock, `Push` and `Skip`, reception (`RunOne`, `RunPending`, `DeliverResults`; events `Received`, `PathReport`, `LinkState`), the channel (`SetExternalBusy`, event `ChannelBusy`), the transmit request handshake with the audio layer, and the host's operations (`Send`, `Cancel`, `Bind`, `Snapshot`; events `Transmitted`, `Dropped`, `Congestion`), and identification (`IdentificationDue`, `ModemSent`, `Identified`). One audio thread plus any number of worker threads; the thread rules are in the class's documentation. |
-| `StationName`, `HostTag`, `SendPriority`, `SendResult`, `*Event` types | The host interface's argument, result and event types. |
+| `LinkAddress`, `HostTag`, `SendPriority`, `SendResult`, `*Event` types | The host interface's argument, result and event types. |
 | `Interleaver`, `Constellation`, `Demapper` | The pieces of the chain, usable on their own. |
 
 ## Build and test
@@ -67,7 +67,7 @@ A host sends a datagram through a station (inline, so the example needs no worke
 ```csharp
 var station = new Station(1, new Random(1), runJobsInline: true);
 station.SetIdentity("M0LTE");                           // the callsign it identifies with; until it has one the station only listens
-var peer = StationName.FromAscii("G9XYZ");
+var peer = LinkAddress.FromAscii("G9XYZ");
 station.Bind(peer, 2);                                  // the interim way a name gets an on-air number
 
 long id = 0;

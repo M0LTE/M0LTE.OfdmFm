@@ -1,50 +1,95 @@
 namespace M0LTE.OfdmFm;
 
 /// <summary>
-/// A station's name as the host gives it: opaque bytes that are compared and never interpreted (a host passes a callsign and SSID
-/// in whatever form it likes). Equal when the bytes are equal. The bytes are copied in, so the value never changes.
+/// A link address, as the host gives it: 1 to 32 opaque bytes that are compared and never interpreted (for AX.25, the bytes of a callsign and SSID in whatever form the host likes).
+/// Equal when the bytes are equal. The bytes are copied in, so the value never changes. On the air an address travels as its <see cref="Key"/>.
 /// </summary>
-public readonly struct StationName : IEquatable<StationName>
+public readonly struct LinkAddress : IEquatable<LinkAddress>
 {
+    /// <summary>The most bytes an address has.</summary>
+    public const int MaxBytes = 32;
+
     private readonly byte[]? _bytes;
     private readonly bool _everyone;
 
-    /// <summary>Makes a name from a copy of <paramref name="bytes"/>.</summary>
-    public StationName(ReadOnlySpan<byte> bytes) => _bytes = bytes.ToArray();
+    /// <summary>Makes an address from a copy of <paramref name="bytes"/>.</summary>
+    /// <exception cref="ArgumentException">There are no bytes, or more than <see cref="MaxBytes"/>.</exception>
+    public LinkAddress(ReadOnlySpan<byte> bytes)
+    {
+        if (bytes.Length is 0 or > MaxBytes)
+        {
+            throw new ArgumentException($"A link address is 1 to {MaxBytes} bytes.", nameof(bytes));
+        }
 
-    private StationName(bool everyone)
+        _bytes = bytes.ToArray();
+    }
+
+    private LinkAddress(bool everyone)
     {
         _everyone = everyone;
         _bytes = [];
     }
 
     /// <summary>
-    /// The reserved name of everyone: <see cref="Station.Send"/> to it goes out as a burst for every station, with no report, and events about it (<see cref="TransmittedEvent"/>, <see cref="CongestionEvent"/>)
-    /// carry it. It is not equal to any name made from bytes, the empty one included, and cannot be bound.
+    /// The reserved address of everyone: <see cref="Station.Send"/> to it goes out as a burst for every station, with no For and no report, and events about it (<see cref="TransmittedEvent"/>, <see cref="CongestionEvent"/>)
+    /// carry it. It is not equal to any address made from bytes, and has no key.
     /// </summary>
-    public static StationName Everyone { get; } = new(true);
+    public static LinkAddress Everyone { get; } = new(true);
 
     /// <summary>True for <see cref="Everyone"/>.</summary>
     public bool IsEveryone => _everyone;
 
-    /// <summary>True for a name made from no bytes at all, which is the value of <c>default</c>; it names nobody.</summary>
+    /// <summary>True for the value of <c>default</c>, which has no bytes and is no address; <see cref="Station.Send"/> refuses it.</summary>
     public bool IsEmpty => !_everyone && Bytes.IsEmpty;
 
-    /// <summary>The name's bytes (empty for a default value).</summary>
+    /// <summary>The address's bytes (empty for a default value or <see cref="Everyone"/>).</summary>
     public ReadOnlySpan<byte> Bytes => _bytes;
 
-    /// <summary>Makes a name from the ASCII bytes of <paramref name="text"/>. A convenience for tests and simple hosts; the library never reads a name as text.</summary>
-    public static StationName FromAscii(string text)
+    /// <summary>Makes an address from the ASCII bytes of <paramref name="text"/>. A convenience for tests and simple hosts; the library never reads an address as text.</summary>
+    public static LinkAddress FromAscii(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        return new StationName(System.Text.Encoding.ASCII.GetBytes(text));
+        return new LinkAddress(System.Text.Encoding.ASCII.GetBytes(text));
+    }
+
+    /// <summary>
+    /// The key the address travels as on the air: the payload's own CRC-32 (polynomial 0x04C11DB7, started at all ones, most significant bit first, nothing reflected or inverted) run over the address's bytes,
+    /// each byte most significant bit first. Sent most significant byte first. A host compares it with the For key of a <see cref="ReceivedEvent"/> to tell whether a datagram was meant for one of its addresses.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The address is <see cref="Everyone"/> or empty: they have no key.</exception>
+    public uint Key
+    {
+        get
+        {
+            if (_everyone || Bytes.IsEmpty)
+            {
+                throw new InvalidOperationException("Everyone and the empty address have no key.");
+            }
+
+            return KeyOf(Bytes);
+        }
+    }
+
+    /// <summary>The key of an address made of these bytes (see <see cref="Key"/>), without making the address. Allocates nothing.</summary>
+    public static uint KeyOf(ReadOnlySpan<byte> bytes)
+    {
+        Span<byte> bits = stackalloc byte[bytes.Length * 8];
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            for (int j = 0; j < 8; j++)
+            {
+                bits[(i * 8) + j] = (byte)((bytes[i] >> (7 - j)) & 1);
+            }
+        }
+
+        return BitCrc.Crc32(bits);
     }
 
     /// <inheritdoc />
-    public bool Equals(StationName other) => _everyone == other._everyone && Bytes.SequenceEqual(other.Bytes);
+    public bool Equals(LinkAddress other) => _everyone == other._everyone && Bytes.SequenceEqual(other.Bytes);
 
     /// <inheritdoc />
-    public override bool Equals(object? obj) => obj is StationName other && Equals(other);
+    public override bool Equals(object? obj) => obj is LinkAddress other && Equals(other);
 
     /// <inheritdoc />
     public override int GetHashCode()
@@ -59,10 +104,10 @@ public readonly struct StationName : IEquatable<StationName>
     public override string ToString() => _everyone ? "everyone" : Convert.ToHexString(Bytes);
 
     /// <summary>Equal when the bytes are equal.</summary>
-    public static bool operator ==(StationName left, StationName right) => left.Equals(right);
+    public static bool operator ==(LinkAddress left, LinkAddress right) => left.Equals(right);
 
     /// <summary>Not equal when the bytes differ.</summary>
-    public static bool operator !=(StationName left, StationName right) => !left.Equals(right);
+    public static bool operator !=(LinkAddress left, LinkAddress right) => !left.Equals(right);
 }
 
 /// <summary>An opaque tag the host puts on a datagram so that it can recognise the datagram in events and cancel it. The library compares it and never interprets it.</summary>

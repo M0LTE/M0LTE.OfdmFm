@@ -11,7 +11,7 @@ namespace M0LTE.OfdmFm;
 /// <param name="RateBitsPerSecond">That format's rate, bit/s.</param>
 /// <param name="AirtimeSeconds">How long the burst was on air.</param>
 /// <param name="TimeOutSeconds">When the burst left the audio device, on the sample clock.</param>
-public readonly record struct TransmittedEvent(HostTag Tag, StationName Station, int Burst, int Format, double RateBitsPerSecond, double AirtimeSeconds, double TimeOutSeconds);
+public readonly record struct TransmittedEvent(HostTag Tag, LinkAddress Station, int Burst, int Format, double RateBitsPerSecond, double AirtimeSeconds, double TimeOutSeconds);
 
 /// <summary>A datagram that will not go out.</summary>
 /// <param name="Tag">The host's tag on the datagram.</param>
@@ -24,18 +24,18 @@ public readonly record struct DroppedEvent(HostTag Tag, DropReason Reason);
 /// <param name="SenderNumber">The sender's on-air station number.</param>
 /// <param name="ToEveryone">True for a datagram addressed to everyone; false when it was for this station.</param>
 /// <param name="QualityDb">How well the burst was received, dB.</param>
-public readonly record struct ReceivedEvent(ReadOnlyMemory<byte> Datagram, StationName? Sender, int SenderNumber, bool ToEveryone, double QualityDb);
+public readonly record struct ReceivedEvent(ReadOnlyMemory<byte> Datagram, LinkAddress? Sender, int SenderNumber, bool ToEveryone, double QualityDb);
 
 /// <summary>A report came back about the path to a station.</summary>
 /// <param name="Station">The station that sent it.</param>
 /// <param name="RecommendedFormat">The format it recommends, or null if none.</param>
 /// <param name="Failed">True if it heard a burst from this station and could not decode it.</param>
-public readonly record struct PathReportEvent(StationName Station, int? RecommendedFormat, bool Failed);
+public readonly record struct PathReportEvent(LinkAddress Station, int? RecommendedFormat, bool Failed);
 
 /// <summary>A station heard a burst from this one and could not decode it. A hint: the library resends nothing.</summary>
 /// <param name="Station">The station that could not decode.</param>
 /// <param name="Tags">The tags of the datagrams in that burst.</param>
-public readonly record struct BurstNotDecodedEvent(StationName Station, IReadOnlyList<HostTag> Tags);
+public readonly record struct BurstNotDecodedEvent(LinkAddress Station, IReadOnlyList<HostTag> Tags);
 
 /// <summary>What the station knows of a link changed.</summary>
 /// <param name="Station">The other station.</param>
@@ -45,7 +45,7 @@ public readonly record struct BurstNotDecodedEvent(StationName Station, IReadOnl
 /// <param name="Knowledge">Where the format came from.</param>
 /// <param name="AgeSeconds">How old that knowledge is.</param>
 /// <param name="Gone">True when the station forgot the link after ten minutes of silence.</param>
-public readonly record struct LinkStateEvent(StationName Station, int? Format, double? RateBitsPerSecond, int DatagramRoom, LinkKnowledge Knowledge, double AgeSeconds, bool Gone);
+public readonly record struct LinkStateEvent(LinkAddress Station, int? Format, double? RateBitsPerSecond, int DatagramRoom, LinkKnowledge Knowledge, double AgeSeconds, bool Gone);
 
 /// <summary>The channel became busy or clear.</summary>
 /// <param name="Busy">True when busy.</param>
@@ -54,20 +54,20 @@ public readonly record struct ChannelBusyEvent(bool Busy);
 /// <summary>Push-back for a slow link.</summary>
 /// <param name="Station">The station the queue is for.</param>
 /// <param name="Writable">False when its queue is full and a send would be refused; true when it has drained.</param>
-public readonly record struct CongestionEvent(StationName Station, bool Writable);
+public readonly record struct CongestionEvent(LinkAddress Station, bool Writable);
 
 /// <summary>The station put a burst on air that the host did not ask for.</summary>
 /// <param name="Kind">What kind.</param>
 /// <param name="Station">The station it was for, or null for everyone.</param>
 /// <param name="Format">The format it went at.</param>
-public readonly record struct ModemSentEvent(ModemSentKind Kind, StationName? Station, int Format);
+public readonly record struct ModemSentEvent(ModemSentKind Kind, LinkAddress? Station, int Format);
 
 /// <summary>An identification burst from another station was decoded: that number says it is that callsign.</summary>
 /// <param name="StationNumber">The sender's on-air number.</param>
 /// <param name="Callsign">The callsign it sent, as it sent it.</param>
 /// <param name="Capability">The capability word it sent.</param>
 /// <param name="Name">The name events about that number carry from now on: the callsign as a name, or the host's own name for the number when the host bound one with <see cref="Station.Bind"/> (the host's name is never replaced).</param>
-public readonly record struct IdentifiedEvent(int StationNumber, string Callsign, int Capability, StationName Name);
+public readonly record struct IdentifiedEvent(int StationNumber, string Callsign, int Capability, LinkAddress Name);
 
 /// <summary>The identification interval has run out on the sample clock.</summary>
 /// <param name="Seconds">The sample clock when it came due.</param>

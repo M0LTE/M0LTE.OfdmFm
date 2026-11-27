@@ -74,7 +74,7 @@ public class StationIdentityTests
     public void Send_Before_An_Identity_Is_NoIdentity_Queues_Nothing_And_Raises_Neither_Dropped_Nor_Transmitted()
     {
         var station = new Station(1, new Random(1), runJobsInline: true);
-        var peer = StationName.FromAscii("G9XYZ");
+        var peer = LinkAddress.FromAscii("G9XYZ");
         station.Bind(peer, 2);
         int requests = 0;
         int dropped = 0;
@@ -84,8 +84,8 @@ public class StationIdentityTests
         station.Transmitted += _ => transmitted++;
 
         station.Send(new byte[20], peer, new HostTag(1)).Should().Be(SendResult.NoIdentity);
-        station.Send(new byte[20], StationName.Everyone, new HostTag(2)).Should().Be(SendResult.NoIdentity);
-        station.Send(new byte[20], StationName.FromAscii("NOBODY"), new HostTag(3)).Should().Be(SendResult.NoIdentity, "checked before the name is looked up");
+        station.Send(new byte[20], LinkAddress.Everyone, new HostTag(2)).Should().Be(SendResult.NoIdentity);
+        station.Send(new byte[20], LinkAddress.FromAscii("NOBODY"), new HostTag(3)).Should().Be(SendResult.NoIdentity, "checked before the name is looked up");
         station.Send(new byte[20], peer, new HostTag(4), reportWanted: true, priority: SendPriority.Expedited).Should().Be(SendResult.NoIdentity);
         station.QueuedFor(2).Should().Be(0);
         station.QueuedFor(0).Should().Be(0);
@@ -104,7 +104,7 @@ public class StationIdentityTests
     public void Send_Goes_Through_Once_The_Identity_Is_Set()
     {
         var station = new Station(1, new Random(1), runJobsInline: true);
-        var peer = StationName.FromAscii("G9XYZ");
+        var peer = LinkAddress.FromAscii("G9XYZ");
         station.Bind(peer, 2);
         int requests = 0;
         station.TransmitRequest += _ => requests++;

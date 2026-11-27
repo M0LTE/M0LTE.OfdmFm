@@ -92,7 +92,7 @@ internal sealed class ReceiveRig : IDisposable
     public List<Station.AdaptationCall> Calls { get; } = [];
 
     /// <summary>Bytes of an event's station name as text.</summary>
-    private static string Text(StationName name) => System.Text.Encoding.ASCII.GetString(name.Bytes);
+    private static string Text(LinkAddress name) => System.Text.Encoding.ASCII.GetString(name.Bytes);
 
     private static string Hash(double[] values)
     {

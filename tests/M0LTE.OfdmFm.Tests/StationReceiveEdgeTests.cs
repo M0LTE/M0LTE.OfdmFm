@@ -304,8 +304,8 @@ public class StationReceiveEdgeTests
 
         TestBurst burst = TestBurst.Data(7, 1, Format, [TestBurst.Datagram(9, 30)], new PayloadPrelude(false, 77, false, null), symbols: 12);
         var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
-        var names = new List<StationName>();
-        var senders = new List<StationName?>();
+        var names = new List<LinkAddress>();
+        var senders = new List<LinkAddress?>();
         station.PathReport += e => names.Add(e.Station);
         station.LinkState += e => names.Add(e.Station);
         station.Received += e => senders.Add(e.Sender);

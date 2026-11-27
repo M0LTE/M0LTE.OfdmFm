@@ -164,7 +164,7 @@ public class StationReportTests
         rig.Stations[1].ReportsOwedCount.Failed.Should().Be(1);
         a.PathReports.Count(p => p.Failed).Should().Be(1);
         a.PathReports[^1].Failed.Should().BeFalse("the next report, if any, says nothing failed");
-        (long Clock, StationName Station, long[] Tags) hint = a.NotDecoded.Should().ContainSingle().Subject;
+        (long Clock, LinkAddress Station, long[] Tags) hint = a.NotDecoded.Should().ContainSingle().Subject;
         hint.Tags.Should().Equal(300L);
         hint.Station.Should().Be(SimRig.Name(2));
         hint.Clock.Should().BeGreaterThan(EndOfLast(a) - 8 * 48000 * 3, "raised soon after the burst");
@@ -406,13 +406,13 @@ public class StationReportTests
         {
             rig.Send(1, 3, 100 + i).Should().Be(SendResult.Accepted);
             rig.Run(8);
-            rig.Send(1, StationName.Everyone, 200 + i).Should().Be(SendResult.Accepted);
+            rig.Send(1, LinkAddress.Everyone, 200 + i).Should().Be(SendResult.Accepted);
             rig.Run(8);
         }
 
         rig.Stations[1].Adaptation.TryGetNeighbour(1, out LinkNeighbour? atB).Should().BeTrue();
         atB!.Measures.Should().BeGreaterThan(0, "B heard A and measured it");
-        Console.WriteLine($"third station: B measured A {atB.Measures} times, owed {rig.Stations[1].ReportsOwedCount}, sent {Count(b)} reports; C sent {Count(c)}; A sent {a.Transmitted.Count} bursts at formats {string.Join(",", a.Transmitted.Where(t => t.Event.Station != StationName.Everyone).Select(t => t.Event.Format))}");
+        Console.WriteLine($"third station: B measured A {atB.Measures} times, owed {rig.Stations[1].ReportsOwedCount}, sent {Count(b)} reports; C sent {Count(c)}; A sent {a.Transmitted.Count} bursts at formats {string.Join(",", a.Transmitted.Where(t => t.Event.Station != LinkAddress.Everyone).Select(t => t.Event.Format))}");
         rig.Stations[1].ReportsOwedCount.Should().Be((0L, 0L, 0L));
         Count(b).Should().Be(0);
         b.Transmissions.Should().BeEmpty();
@@ -531,7 +531,7 @@ public class StationReportTests
     private static Station Make(StreamDriver? _ = null)
     {
         var station = (new Station(1, new Random(1), runJobsInline: true) { IdentificationSuspended = true }).WithIdentity("M0LTE");
-        station.Bind(StationName.FromAscii("S4"), 4);
+        station.Bind(LinkAddress.FromAscii("S4"), 4);
         return station;
     }
 
@@ -560,8 +560,8 @@ public class StationReportTests
         var driver = new StreamDriver(station, builder.ToArray(), autoPlay: true, playLength: playLength);
         var events = new List<string>();
         station.PathReport += e => events.Add("path " + e.Failed);
-        station.BurstNotDecoded += e => events.Add("hint " + string.Join(",", e.Tags.Select(t => t.Value)) + " " + (e.Station == StationName.FromAscii("S4")));
-        driver.At(txStart, () => station.Send(SimRig.Datagram(9, 30), StationName.FromAscii("S4"), new HostTag(9), priority: SendPriority.Expedited).Should().Be(SendResult.Accepted));
+        station.BurstNotDecoded += e => events.Add("hint " + string.Join(",", e.Tags.Select(t => t.Value)) + " " + (e.Station == LinkAddress.FromAscii("S4")));
+        driver.At(txStart, () => station.Send(SimRig.Datagram(9, 30), LinkAddress.FromAscii("S4"), new HostTag(9), priority: SendPriority.Expedited).Should().Be(SendResult.Accepted));
         driver.PushTo(builder.Count, () => 4800);
         driver.Requests.Should().ContainSingle();
         driver.Requests[0].Request.EarliestSample.Should().Be(txStart);
@@ -588,8 +588,8 @@ public class StationReportTests
         var driver = new StreamDriver(station, builder.ToArray(), autoPlay: true, playLength: playLength);
         var hints = new List<(long Clock, string Tags)>();
         station.BurstNotDecoded += e => hints.Add((station.SampleCount, string.Join(",", e.Tags.Select(t => t.Value))));
-        driver.At(txStart, () => station.Send(SimRig.Datagram(9, 30), StationName.FromAscii("S4"), new HostTag(9), priority: SendPriority.Expedited));
-        driver.At(r1 + 3000, () => station.Send(SimRig.Datagram(10, 30), StationName.FromAscii("S4"), new HostTag(10), priority: SendPriority.Expedited));
+        driver.At(txStart, () => station.Send(SimRig.Datagram(9, 30), LinkAddress.FromAscii("S4"), new HostTag(9), priority: SendPriority.Expedited));
+        driver.At(r1 + 3000, () => station.Send(SimRig.Datagram(10, 30), LinkAddress.FromAscii("S4"), new HostTag(10), priority: SendPriority.Expedited));
         driver.PushTo(builder.Count, () => 4800);
 
         // Tag 10's burst ended at r1 + 6000, after the first report began: that report is not about it, and the station does not say it was. The second report began after it: it is.

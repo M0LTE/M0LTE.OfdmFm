@@ -71,7 +71,7 @@ internal sealed class SimNode
     public List<PathReportEvent> PathReports { get; } = [];
 
     /// <summary>Every <see cref="Station.BurstNotDecoded"/> event: the clock, the station and the tags.</summary>
-    public List<(long Clock, StationName Station, long[] Tags)> NotDecoded { get; } = [];
+    public List<(long Clock, LinkAddress Station, long[] Tags)> NotDecoded { get; } = [];
 
     /// <summary>Every <see cref="Station.LinkState"/> event.</summary>
     public List<LinkStateEvent> LinkStates { get; } = [];

@@ -687,7 +687,7 @@ internal static class HostileScenarios
         int wrongHints = 0;
         foreach (SimNode n in rig.Nodes)
         {
-            foreach ((long _, StationName who, long[] tags) in n.NotDecoded)
+            foreach ((long _, LinkAddress who, long[] tags) in n.NotDecoded)
             {
                 int number = Enumerable.Range(1, 3).First(k => SimRig.Name(k) == who);
                 foreach (long tag in tags)

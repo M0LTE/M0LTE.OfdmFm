@@ -7,9 +7,9 @@ namespace M0LTE.OfdmFm.Tests;
 public class StationIdentificationExchangeTests
 {
     private const long Interval = 15L * 48000;
-    private static readonly StationName HostB = StationName.FromAscii("HOSTB");
+    private static readonly LinkAddress HostB = LinkAddress.FromAscii("HOSTB");
 
-    private static StationName Name(string text) => StationName.FromAscii(text);
+    private static LinkAddress Name(string text) => LinkAddress.FromAscii(text);
 
     /// <summary>A ("M0AAA", number 1) and B ("M0BBB", number 2) on one channel, connected, with the identification interval shortened. A knows B by the host's name "HOSTB"; B knows nobody.</summary>
     private static (SimChannel Channel, SimNode A, SimNode B) Pair(int seed)

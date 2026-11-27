@@ -157,10 +157,10 @@ public sealed partial class Station
 
         // The name: the host's own binding always stands. Otherwise the callsign becomes the number's name, and the latest identification wins (a callsign learned at another number moves here, as Bind moves a name);
         // a callsign the host bound to another number is the host's, and is not taken from it. A callsign that is this station's own is nobody else's name.
-        var name = new StationName(callsign);
+        var name = new LinkAddress(callsign);
         string text = System.Text.Encoding.ASCII.GetString(callsign);
         bool renamed = false;
-        if (!_hostBound[sender] && !(Callsign is not null && name.Equals(StationName.FromAscii(Callsign))))
+        if (!_hostBound[sender] && !(Callsign is not null && name.Equals(LinkAddress.FromAscii(Callsign))))
         {
             int holder = NumberOf(name);
             if ((holder == 0 || !_hostBound[holder]) && (_bound[sender] is not { } current || current != name))

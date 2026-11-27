@@ -57,7 +57,7 @@ internal enum TransmitState
 /// <para>
 /// <b>Threads.</b> A station has no threads of its own. Two groups of members exist.
 /// The <i>audio-thread</i> members are <see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/>, <see cref="SetExternalBusy"/>, the host's operations
-/// <see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Cancel(StationName)"/>, <see cref="Bind"/> and <see cref="Snapshot"/>, the internal <c>Enqueue</c> and the properties
+/// <see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Cancel(LinkAddress)"/>, <see cref="Bind"/> and <see cref="Snapshot"/>, the internal <c>Enqueue</c> and the properties
 /// <see cref="SampleCount"/> and <see cref="Seconds"/>; the caller must serialise every call to them on one station (one thread, or a lock: a host that sends from other threads takes the lock its audio thread takes around <see cref="Push"/>), events are raised on the thread that made the call that
 /// caused them, and an event handler must not call any of these members (they throw <see cref="InvalidOperationException"/>, as they do from a timer action).
 /// The <i>worker</i> members are <see cref="RunOne"/>, <see cref="RunPending"/> and <see cref="HasWork"/>; they may be called from any number of threads at the same time, and from the audio thread too when it is not inside a call of its own (a single-threaded host can run its own jobs between pushes),
@@ -189,7 +189,7 @@ public sealed partial class Station
     public event Action<TransmittedEvent>? Transmitted;
 
     /// <summary>
-    /// Raised for a datagram that will not go out: cancelled by the host (<see cref="Cancel(HostTag)"/>, <see cref="Cancel(StationName)"/>), or no longer fitting one burst after the link's format fell. On the thread that made the call that caused it.
+    /// Raised for a datagram that will not go out: cancelled by the host (<see cref="Cancel(HostTag)"/>, <see cref="Cancel(LinkAddress)"/>), or no longer fitting one burst after the link's format fell. On the thread that made the call that caused it.
     /// A datagram never vanishes silently: each accepted one gets exactly one <see cref="Transmitted"/> or one <see cref="Dropped"/>.
     /// </summary>
     public event Action<DroppedEvent>? Dropped;

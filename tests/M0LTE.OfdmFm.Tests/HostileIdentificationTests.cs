@@ -50,8 +50,8 @@ public class HostileIdentificationTests
 
         // A and B know each other by host names, which stand; C is learned by callsign at both.
         r.NamesAt[0].Where((_, i) => r.HeardAt[0][i].EndsWith("@2", StringComparison.Ordinal)).Distinct().Should().Equal(SimRig.Name(2).ToString());
-        r.NamesAt[0].Where((_, i) => r.HeardAt[0][i].EndsWith("@3", StringComparison.Ordinal)).Distinct().Should().Equal(StationName.FromAscii("M0S3").ToString());
-        r.NamesAt[1].Where((_, i) => r.HeardAt[1][i].EndsWith("@3", StringComparison.Ordinal)).Distinct().Should().Equal(StationName.FromAscii("M0S3").ToString());
+        r.NamesAt[0].Where((_, i) => r.HeardAt[0][i].EndsWith("@3", StringComparison.Ordinal)).Distinct().Should().Equal(LinkAddress.FromAscii("M0S3").ToString());
+        r.NamesAt[1].Where((_, i) => r.HeardAt[1][i].EndsWith("@3", StringComparison.Ordinal)).Distinct().Should().Equal(LinkAddress.FromAscii("M0S3").ToString());
     }
 
     [Fact]

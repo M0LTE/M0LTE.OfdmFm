@@ -67,21 +67,26 @@ public class StationUnlikeRadioTests
     // What a run of 40 datagrams each way gave, measured on 2026-11-26 (build 0.1.0, step 5; step 6 added the last three figures and left every other one as it was, the mute after a station's own transmission having been shortened by then),
     // and again on 27 November 2026 with link addresses: every burst is a few bytes longer (its block of items), which moved which bursts were lost and a few other figures. What did not move: the same bursts go at the same ceilings of formats,
     // each loss is reported at once and named in a hint, nothing arrives twice, and the control loses nothing. "Lost" is the index, in the order sent, of each burst whose datagram never arrived.
+    // 27 November 2026, packet-net/pdn-soundmodem#918: the rules were given a placeholder above each burst's band as if it were a measurement, which held every estimate down above 1.5 kHz after any narrow burst. With NaN there instead
+    // every row moved, and the old figures are kept beside each new one below ("was"). The same invariants hold on every row: each loss is reported at once and named in a hint (lost bursts equal hints), nothing arrives twice, the control loses nothing.
     public static TheoryData<double, double, Outcome> Cases => new()
     {
         // A good path: the narrow station is sent formats up to 6.5 and 8 kHz wide for 37 of 40 bursts and loses four of them (seven before link addresses), spread right through the run, and each is reported at once and named in a hint (four failed reports from the narrow
         // station, one other, and the wide station's one); reports change nothing about which formats it is sent. It hears the wide station's fast formats well enough to settle on 28
         // (48.5 kbit/s, band 0) and 61 and 62 (band 1) for it, and 70 kbit/s the other way, where nothing is lost. Its estimate of the path from the wide station falls from 40 dB at 2 kHz to 19 dB at 6 kHz (39 and 17 before link addresses): it does know.
-        { 1.0, 3000, new Outcome(40, "7,17,31,39", 37, 28, 40, "", 38, 31, 40, 19, 1, 5, 4) },
+        // Now 6 lost of 40 one way (was 4: "7,17,31,39"), 39 of 40 above 3 kHz (was 37), the narrow station sending 9 reports (was 5) and 6 hints (was 4); the wide station is sent above 3 kHz 40 of 40 times (was 38).
+        { 1.0, 3000, new Outcome(40, "2,4,10,17,33,39", 39, 28, 40, "", 40, 31, 40, 19, 1, 9, 6) },
 
         // A weaker path (20 dB down): the same pattern, four lost of 40 one way (five before link addresses) and one the other.
-        { 0.1, 3000, new Outcome(40, "12,17,22,39", 37, 28, 40, "25", 38, 30, 35, 18, 2, 7, 4) },
+        // Now 5 lost of 40 one way (was 4: "12,17,22,39"), above 3 kHz 39 (was 37) and 40 the other way (was 38), 5 hints (was 4).
+        { 0.1, 3000, new Outcome(40, "3,13,17,22,39", 39, 28, 40, "25", 40, 30, 35, 18, 2, 7, 5) },
 
-        // A path 30 dB down: the narrow station's estimate shows nothing above 3 kHz (the carriers there measured too weak to count), the wide station settles on the 3 kHz band (format 158, 22.4 kbit/s), and nothing is lost.
-        { 0.03, 3000, new Outcome(40, "", 0, 158, 40, "", 20, 26, 24, -4, 1, 1, 0) },
+        // A path 30 dB down. Now the narrow station is sent formats above 3 kHz 39 times of 40, settling at 25 (was: its estimate showed nothing above 3 kHz, -4 dB at 6 kHz, and the wide station settled on the 3 kHz band, format 158, 22.4 kbit/s, losing nothing), loses 2 of 40 (bursts 8 and 13), each named in a hint, and its estimate at 6 kHz is 13 dB. The old figure came from the placeholder above each narrow burst's band, not from the path.
+        { 0.03, 3000, new Outcome(40, "8,13", 39, 25, 40, "", 40, 26, 24, 13, 1, 3, 2) },
 
         // The control: no cut, a good path: nothing lost either way, and the same ceiling of formats.
-        { 1.0, 0, new Outcome(40, "", 38, 31, 40, "", 39, 31, 54, 46, 1, 1, 0) },
+        // Was 38 and 39 above 3 kHz.
+        { 1.0, 0, new Outcome(40, "", 39, 31, 40, "", 40, 31, 54, 46, 1, 1, 0) },
     };
 
     [Theory]
@@ -90,6 +95,7 @@ public class StationUnlikeRadioTests
     {
         Gate();
         Outcome o = Run(gain, cutHz == 0 ? null : cutHz, 40);
+        Hostile.Say($"unlike radios, gain {gain}, cut {cutHz}: {o}");
         o.Should().Be(expected, "this records what the rules do today; if a change moves it on purpose, re-read it and update the numbers");
     }
 }

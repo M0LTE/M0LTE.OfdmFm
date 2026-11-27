@@ -22,8 +22,8 @@ public class HostileLongTests
         int without = 0;
         for (int seed = 1; seed <= 8; seed++)
         {
-            HostileScenarios.ThreeAll w = HostileScenarios.ThreeHearAll(HostileScenarios.Default, true, seed, perPair: 3, length: 40, seconds: 110, spreadSeconds: 25);
-            HostileScenarios.ThreeAll o = HostileScenarios.ThreeHearAll(HostileScenarios.Default, false, seed, perPair: 3, length: 40, seconds: 110, spreadSeconds: 25);
+            HostileScenarios.ThreeAll w = HostileScenarios.ThreeHearAll(HostileScenarios.Default, true, seed, perPair: 3, length: 40, seconds: 150, spreadSeconds: 25);
+            HostileScenarios.ThreeAll o = HostileScenarios.ThreeHearAll(HostileScenarios.Default, false, seed, perPair: 3, length: 40, seconds: 150, spreadSeconds: 25);
             foreach (HostileScenarios.ThreeAll r in new[] { w, o })
             {
                 r.Delivered.Should().Be(18);

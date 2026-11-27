@@ -62,7 +62,8 @@ public class HostilePathCutTests
 
         // Restored: they find each other and climb back to where they were.
         r.BurstsToRecover.Should().NotBeNull("A is back at 90 percent of its pre-cut rate");
-        // How many bursts it takes is recorded per seed, not bounded: over seeds 1 to 8 it is 2 to 8 (docs/station-design.md), and the climb is the adaptation rules' own staircase.
+        // How many bursts it takes is recorded per seed (docs/station-design.md): over seeds 1 to 8 it is 1 to 3 since packet-net/pdn-soundmodem#918 (2 to 8 before, when every narrow burst took the estimate above its band down), on every seed.
+        r.BurstsToRecover.Should().BeLessThanOrEqualTo(3, "the first-contact burst after the cut no longer takes the estimate above its band down, so the climb is a few bursts on every seed");
         r.AToBAfter.Split(',').Select(int.Parse).Select(StandardFormats.Rate).Max().Should().BeGreaterThan(StandardFormats.Rate(StandardFormats.FirstContact) * 50);
     }
 

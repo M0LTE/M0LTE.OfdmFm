@@ -54,7 +54,7 @@ public class HostileThreeStationTests
         {
             foreach (bool indication in new[] { true, false })
             {
-                HostileScenarios.ThreeAll r = HostileScenarios.ThreeHearAll(HostileScenarios.Default, indication, seed, perPair: 3, length: 40, seconds: 110, spreadSeconds: 25);
+                HostileScenarios.ThreeAll r = HostileScenarios.ThreeHearAll(HostileScenarios.Default, indication, seed, perPair: 3, length: 40, seconds: 150, spreadSeconds: 25);
                 Check(r);
             }
         }

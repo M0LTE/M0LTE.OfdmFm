@@ -39,11 +39,11 @@ internal sealed class TraceTap
 internal static class TraceScenarios
 {
     /// <summary>Two stations that know each other's addresses. S1 sends two datagrams (the burst at first contact carries one, so two bursts go), S2 answers with one of its own, and S1 sends again once it has been told what the path supports.</summary>
-    public static (TraceTap S1, TraceTap S2) TwoStations()
+    public static (TraceTap S1, TraceTap S2) TwoStations(TraceLevel level = TraceLevel.Flow)
     {
         var rig = new SimRig(2);
-        var s1 = new TraceTap(rig.Stations[0]);
-        var s2 = new TraceTap(rig.Stations[1]);
+        var s1 = new TraceTap(rig.Stations[0], level);
+        var s2 = new TraceTap(rig.Stations[1], level);
         rig.RunTo(2);
         rig.Send(1, 2, 1);
         rig.Send(1, 2, 2);
@@ -77,5 +77,35 @@ internal static class TraceScenarios
         rig.Send(1, LinkAddress.Everyone, 4);
         rig.RunTo(55);
         return (s1, s2, s3);
+    }
+
+    /// <summary>Two stations out of each other's hearing: S1 sends to S2 four times, each time after the last has met its silence.</summary>
+    public static (SimRig Rig, TraceTap S1, TraceTap S2) Silence()
+    {
+        var rig = new SimRig(2, connect: false);
+        var s1 = new TraceTap(rig.Stations[0], TraceLevel.Detail);
+        var s2 = new TraceTap(rig.Stations[1]);
+        rig.RunTo(2);
+        for (int i = 0; i < 4; i++)
+        {
+            rig.Send(1, 2, 10 + i);
+            rig.Run(25);
+        }
+
+        return (rig, s1, s2);
+    }
+
+    /// <summary>The existing interference scenario (a third station keys over the middle of a long burst from S1 to S2), with every station traced at Detail.</summary>
+    public static (TraceTap S1, TraceTap S2, TraceTap S3) Interference()
+    {
+        TraceTap[] taps = new TraceTap[3];
+        HostileScenarios.Interfered(HostileScenarios.Default, 0.5, 6, 1, onRig: rig =>
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                taps[i] = new TraceTap(rig.Stations[i], TraceLevel.Detail);
+            }
+        });
+        return (taps[0], taps[1], taps[2]);
     }
 }

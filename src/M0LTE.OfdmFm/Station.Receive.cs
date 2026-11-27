@@ -1465,7 +1465,7 @@ public sealed partial class Station
             {
                 ForgetWhy.Silence => "no answer three times running",
                 ForgetWhy.Unheard => "not heard for 10 minutes",
-                _ => "its station number changed hands",
+                _ => "its number is now someone else",
             }));
         }
 

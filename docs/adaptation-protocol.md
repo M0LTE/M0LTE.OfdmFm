@@ -264,6 +264,8 @@ A burst to everyone carries datagrams for one For, or for none. The From item of
 | 0xCF | NET/ROM |
 | 0xF0 | no layer 3 protocol |
 
+For protocol 0x00 a station's link address is its AX.25 address as ASCII text, upper case, `CALL-SSID`, with SSID 0 written without a suffix (`G4ABC`, `G4ABC-1`). Every AX.25 host must spell addresses the same way, because the key on the air is made from the bytes.
+
 The values are borrowed from AX.25's PID field, with 0x00 added. The modem does nothing with the byte but carry it: no filtering, and no registry beyond these names. A host ignores datagrams of a protocol it does not speak; any other value is the host's to use.
 
 **A data burst to everyone begins with its own block**, before the datagrams, in the form of the extension block: one length byte N, then N bytes of items. It is always there (N is 0 when there are no items, which only a test sends). The datagrams begin N bytes after the length byte whatever the items say, and the rest of the rules for the extension block hold: an item with a tag a station does not know is skipped, a block that ends part-way through an item is ignored from that point, and a block that runs past the end of the payload leaves no datagrams. An identification burst is laid out like a data burst to everyone and does **not** have this block: its payload begins with the callsign's length (see "The identification payload").

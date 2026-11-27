@@ -62,17 +62,52 @@ public sealed partial class Station
     internal int AccessWaiting => _access.WaitingCount;
 
     /// <summary>
-    /// The host's carrier indication (squelch, signal strength) changed: the channel is busy while it is set and for 100 ms after it drops. The first call, set or not, tells the station the host supplies one,
-    /// so that its slot for the random wait becomes 100 ms and not the detection latency (see the class's documentation). Audio thread, serialised with <see cref="Push"/>; the change takes effect at the clock's present sample.
+    /// The host's carrier indication (a radio's squelch or busy line) changed: the channel is busy while it is set and for 100 ms after it drops. The first call with a value, set or clear, tells the station the host supplies one,
+    /// so that its slot for the random wait becomes 100 ms and not the detection latency (see the class's documentation). Null says the indication is no longer available (the radio stopped answering): the station forgets it had one,
+    /// the channel is no longer held busy by it (it counts as busy up to this moment, no further), and the slot is the detection latency again until a value arrives. Audio thread, serialised with <see cref="Push"/>; the change takes effect at the clock's present sample.
     /// </summary>
+    /// <param name="busy">True: carrier present. False: none. Null: no indication available.</param>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    public void SetExternalBusy(bool busy)
+    public void SetExternalBusy(bool? busy)
     {
         EnsureNotAdvancing();
         _advancing = true;
         try
         {
             _access.SetExternal(busy);
+        }
+        finally
+        {
+            _advancing = false;
+        }
+    }
+
+    /// <summary>
+    /// The audio layer will not transmit request <paramref name="id"/>, which it was handed by <see cref="TransmitRequest"/> and has not keyed (a failed key-up, a dead sound device, the transmitter given to something else in the gap).
+    /// The station keeps what it built, exactly as after its own <see cref="WithdrawRequest"/> (no event is raised: the layer already knows), and the request goes back to waiting. The refusal counts as the channel having been busy up to now,
+    /// so the request is handed over again, unchanged, only after the usual clear time for its class and slots: a layer that keeps refusing is asked once for each wait, not in a loop.
+    /// An id that is not the request outstanding is ignored and changes nothing: one never issued or already forgotten, one that has started or ended, one the station has withdrawn or that was refused already, and one handed over
+    /// again since (an older id of the same burst). A request refused and then keyed anyway is treated as a withdrawn one that started (the tolerated race). Audio thread, serialised with <see cref="Push"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
+    public void TransmitRefused(long id)
+    {
+        EnsureNotAdvancing();
+        if (!_requests.TryGetValue(id, out Request? handshake) || handshake.State != TransmitState.Requested)
+        {
+            return;
+        }
+
+        if (!_byHandshake.TryGetValue(id, out ChannelAccess.Request? request) || request.HandshakeId != id || !ReferenceEquals(_access.Active, request))
+        {
+            return;
+        }
+
+        handshake.State = TransmitState.Withdrawn;
+        _advancing = true;
+        try
+        {
+            _access.Refused(request);
         }
         finally
         {

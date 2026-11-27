@@ -320,11 +320,24 @@ internal sealed class ChannelAccess
         Update();
     }
 
-    /// <summary>The host's carrier indication changed. Busy while set and for <see cref="ExternalHold"/> after; the first call, either way, says the host supplies one.</summary>
-    public void SetExternal(bool busy)
+    /// <summary>
+    /// The host's carrier indication changed. Busy while set and for <see cref="ExternalHold"/> after; the first call with a value, either way, says the host supplies one.
+    /// Null says there is none (any more): the station forgets it had one, the channel is not held busy by it from now, and the slot goes back to the detection latency until a value arrives again.
+    /// The channel counts as having been busy by the indication up to this moment, so that a wait counted from it is not cut short.
+    /// </summary>
+    public void SetExternal(bool? busy)
     {
+        if (busy is null)
+        {
+            _externalUntil = _externalSet ? _clock.Now : Math.Min(_externalUntil, _clock.Now);
+            _externalSet = false;
+            _externalSupplied = false;
+            Update();
+            return;
+        }
+
         _externalSupplied = true;
-        if (busy)
+        if (busy.Value)
         {
             _externalSet = true;
         }
@@ -369,6 +382,25 @@ internal sealed class ChannelAccess
         request.State = RequestState.Waiting;
         Insert(request);
         _withdraw(request);
+        _raise?.Invoke(new AccessEvent(request.Id, AccessStage.Withdrawn, _clock.Now));
+        Update();
+    }
+
+    /// <summary>
+    /// The audio layer says it will not play <paramref name="request"/>, which it was handed and has not keyed: it goes back to waiting, as after a withdrawal (its samples are kept), and the channel counts as having been busy up to now,
+    /// so that it is handed over again only after the clear time of its class and slots. Nothing happens for a request that is not granted.
+    /// </summary>
+    public void Refused(Request request)
+    {
+        if (request.State != RequestState.Granted || !ReferenceEquals(_active, request))
+        {
+            return;
+        }
+
+        _holdUntil = Math.Max(_holdUntil, _clock.Now);
+        _active = null;
+        request.State = RequestState.Waiting;
+        Insert(request);
         _raise?.Invoke(new AccessEvent(request.Id, AccessStage.Withdrawn, _clock.Now));
         Update();
     }

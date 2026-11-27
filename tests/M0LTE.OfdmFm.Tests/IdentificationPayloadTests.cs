@@ -95,14 +95,14 @@ public class IdentificationPayloadTests
     [InlineData("M0LTE_1")]
     [InlineData("M0LTEé")]
     [InlineData("12345678901234567")]
-    public void A_Callsign_That_Cannot_Go_On_The_Air_Is_Refused_By_The_Packer_And_The_Station(string callsign)
+    public void A_Callsign_That_Cannot_Go_On_The_Air_Is_Refused_By_The_Packer_And_SetIdentity(string callsign)
     {
         PayloadCodec.IsValidCallsign(callsign).Should().BeFalse();
         var buffer = new byte[100];
         ((Action)(() => PayloadCodec.PackIdentification(Encoding.UTF8.GetBytes(callsign), 0, default, buffer))).Should().Throw<ArgumentException>();
         if (callsign.Length > 0)
         {
-            ((Action)(() => new Station(callsign, 1, new Random(1)))).Should().Throw<ArgumentException>();
+            new Station(1, new Random(1)).SetIdentity(callsign).Should().Be(IdentityResult.Invalid);
         }
     }
 

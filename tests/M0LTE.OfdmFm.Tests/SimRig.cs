@@ -2,18 +2,23 @@ using M0LTE.OfdmFm;
 
 namespace M0LTE.OfdmFm.Tests;
 
-/// <summary>Several inline stations, numbered 1 up and named "S1", "S2" and so on, on one <see cref="SimChannel"/>, each bound to every other (or as <c>binds</c> says: station i binds station j when it returns true), all pairs connected.</summary>
+/// <summary>Several inline stations, numbered 1 up and named "S1", "S2" and so on, on one <see cref="SimChannel"/>, each bound to every other (or as <c>binds</c> says: station i binds station j when it returns true), all pairs connected. Each is given its identity unless <c>identified</c> says false for its number.</summary>
 internal sealed class SimRig
 {
     /// <summary>The first-contact format's rate, bit/s.</summary>
     public static readonly double FirstContactRate = StandardFormats.Rate(StandardFormats.FirstContact) * 1000.0;
 
-    public SimRig(int stations, int block = 4800, int seed = 1, double noise = 0.004, double gain = 1.0, bool connect = true, Func<int, int, bool>? binds = null)
+    public SimRig(int stations, int block = 4800, int seed = 1, double noise = 0.004, double gain = 1.0, bool connect = true, Func<int, int, bool>? binds = null, Func<int, bool>? identified = null)
     {
         Channel = new SimChannel(block, seed);
         for (int i = 1; i <= stations; i++)
         {
-            Station s = new($"M0S{i}", i, new Random((seed * 100) + i), runJobsInline: true);
+            Station s = new(i, new Random((seed * 100) + i), runJobsInline: true);
+            if (identified?.Invoke(i) ?? true)
+            {
+                s.WithIdentity($"M0S{i}");
+            }
+
             s.IdentificationSuspended = true; // identification has its own tests; the others see only what they are about (a test of it sets this back)
             Stations.Add(s);
             Nodes.Add(Channel.Add(s, $"S{i}"));

@@ -123,7 +123,7 @@ public class StationReceiveEdgeTests
         b.Silence(2.5).Noise(0.01, 8);
 
         // A queued station that is pushed far faster than anything runs the jobs: no worker runs until the first burst has been pushed out of the ring.
-        var station = new Station("M0LTE", 1, new Random(1));
+        var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
         var datagrams = new List<byte[]>();
         station.Received += e => datagrams.Add(e.Datagram.ToArray());
         float[] samples = b.ToArray();
@@ -165,7 +165,7 @@ public class StationReceiveEdgeTests
     {
         // A defence that real audio cannot reach (a header is read from the ring, so its start was in it, and the next piece of audio waits for the result to be taken in): a burst whose start is older than the
         // ring is counted, resolved without a result, and does not hold up what comes after it.
-        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
         var datagrams = new List<byte[]>();
         station.Received += e => datagrams.Add(e.Datagram.ToArray());
         station.Push(new float[Station.RingSamples + 100_000]);
@@ -208,7 +208,7 @@ public class StationReceiveEdgeTests
     {
         // The longest burst throws a hundred candidates or more; with no worker to read any of them, the station keeps only the newest it is allowed (here 30, for the test).
         TestBurst burst = TestBurst.Data(6, 1, 96, [TestBurst.Datagram(8, 100)], symbols: 252);
-        var station = new Station("M0LTE", 1, new Random(1)) { CandidateLimit = 30 };
+        var station = (new Station(1, new Random(1)) { CandidateLimit = 30 }).WithIdentity("M0LTE");
         float[] samples = OneBurst(burst, noise: 0.005);
         for (int at = 0; at < samples.Length; at += 4800)
         {
@@ -234,7 +234,7 @@ public class StationReceiveEdgeTests
     [Fact]
     public void A_Header_Of_A_Version_Or_Type_This_Step_Does_Not_Know_Is_Noted_And_Nothing_More_Is_Done_With_It()
     {
-        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
         byte[] bits = new byte[BurstHeaderCodec.HeaderBits];
         station.TakeInHeader(1000, FormatOpening.Full, new BurstHeader(1, BurstKind.Data, 0, 0, 0, 0, 0), bits);
         station.TakeInHeader(2000, FormatOpening.UpTo3000Hz, new BurstHeader(0, (BurstKind)6, 3, 0, 192, 12, 0), bits);
@@ -303,7 +303,7 @@ public class StationReceiveEdgeTests
         ((Action)(() => Station.PlaceholderName(64))).Should().Throw<ArgumentOutOfRangeException>();
 
         TestBurst burst = TestBurst.Data(7, 1, Format, [TestBurst.Datagram(9, 30)], new PayloadPrelude(false, 77, false, null), symbols: 12);
-        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
         var names = new List<StationName>();
         var senders = new List<StationName?>();
         station.PathReport += e => names.Add(e.Station);
@@ -330,7 +330,7 @@ public class StationReceiveEdgeTests
         b.Silence(1.5).Noise(0.01, 31);
 
         // Every worker is busy for the whole stream: the test runs the header reads and nothing else, so each burst's receive waits in the queue.
-        var station = new Station("M0LTE", 1, new Random(1));
+        var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
         var datagrams = new List<byte[]>();
         var events = 0;
         station.Received += e => datagrams.Add(e.Datagram.ToArray());
@@ -366,7 +366,7 @@ public class StationReceiveEdgeTests
     public void A_Queued_Station_Delivers_Nothing_Until_Its_Jobs_Are_Run_And_Then_On_The_Next_Delivery()
     {
         TestBurst burst = TestBurst.Data(3, 1, Format, [TestBurst.Datagram(30, 40)], symbols: 12);
-        var station = new Station("M0LTE", 1, new Random(1));
+        var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
         var datagrams = new List<byte[]>();
         int signals = 0;
         station.Received += e => datagrams.Add(e.Datagram.ToArray());
@@ -394,7 +394,7 @@ public class StationReceiveEdgeTests
     [Fact]
     public void An_Inline_Station_Has_No_Work_For_Workers()
     {
-        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
         station.Push(OneBurst(TestBurst.Data(3, 1, Format, [TestBurst.Datagram(31, 40)], symbols: 12)));
         station.HasWork.Should().BeFalse();
         station.RunOne().Should().BeFalse();
@@ -403,7 +403,7 @@ public class StationReceiveEdgeTests
     [Fact]
     public void Events_Cannot_Call_Back_Into_The_Station()
     {
-        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
         Exception? caught = null;
         station.Received += _ =>
         {
@@ -455,7 +455,7 @@ public class StationReceiveEdgeTests
     public void Receiving_A_Burst_Allocates_Nothing_In_Steady_State_On_Either_Side_Of_The_Job_Queue()
     {
         // The test is its own worker on one thread, so one count covers both sides. The first burst of a shape builds what the shape needs (codes, pooled buffers, a neighbour's record); each later one reuses it.
-        var station = new Station("M0LTE", 1, new Random(1));
+        var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
         int received = 0;
         station.Received += _ => received++;
         station.PathReport += _ => { };

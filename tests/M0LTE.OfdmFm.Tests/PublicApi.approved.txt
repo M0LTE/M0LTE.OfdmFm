@@ -170,6 +170,12 @@ namespace M0LTE.OfdmFm
         public M0LTE.OfdmFm.StationName Name { get; init; }
         public int StationNumber { get; init; }
     }
+    public enum IdentityResult
+    {
+        Accepted = 0,
+        Invalid = 1,
+        Different = 2,
+    }
     public sealed class Interleaver
     {
         public Interleaver() { }
@@ -338,6 +344,7 @@ namespace M0LTE.OfdmFm
         NotBound = 1,
         TooLarge = 2,
         QueueFull = 3,
+        NoIdentity = 4,
     }
     public static class StandardFormats
     {
@@ -357,8 +364,8 @@ namespace M0LTE.OfdmFm
     public sealed class Station
     {
         public const int SampleRate = 48000;
-        public Station(string callsign, int stationNumber, System.Random random, bool runJobsInline = false) { }
-        public string Callsign { get; }
+        public Station(int stationNumber, System.Random random, bool runJobsInline = false) { }
+        public string? Callsign { get; }
         public bool HasWork { get; }
         public long SampleCount { get; }
         public double Seconds { get; }
@@ -386,6 +393,7 @@ namespace M0LTE.OfdmFm
         public int RunPending() { }
         public M0LTE.OfdmFm.SendResult Send(System.ReadOnlyMemory<byte> datagram, M0LTE.OfdmFm.StationName destination, M0LTE.OfdmFm.HostTag tag, bool reportWanted = false, M0LTE.OfdmFm.SendPriority priority = 0) { }
         public void SetExternalBusy(bool busy) { }
+        public M0LTE.OfdmFm.IdentityResult SetIdentity(string callsign) { }
         public void Skip(int count) { }
         public System.Collections.Generic.IReadOnlyList<M0LTE.OfdmFm.LinkStateEvent> Snapshot() { }
         public void TransmitEnded(long id, long sampleIndex) { }

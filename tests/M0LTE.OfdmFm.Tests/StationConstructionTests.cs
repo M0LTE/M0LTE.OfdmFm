@@ -6,20 +6,12 @@ namespace M0LTE.OfdmFm.Tests;
 public class StationConstructionTests
 {
     [Fact]
-    public void A_station_keeps_its_settings()
+    public void A_station_keeps_its_settings_and_has_no_identity_until_given_one()
     {
-        var station = new Station("M0LTE", 63, new Random(1));
-        station.Callsign.Should().Be("M0LTE");
+        var station = new Station(63, new Random(1));
+        station.Callsign.Should().BeNull();
         station.StationNumber.Should().Be(63);
-        new Station("G4XYZ-1", 1, new Random(1)).StationNumber.Should().Be(1);
-    }
-
-    [Fact]
-    public void A_missing_callsign_is_refused()
-    {
-        ((Action)(() => new Station(null!, 1, new Random(1)))).Should().Throw<ArgumentNullException>();
-        ((Action)(() => new Station("", 1, new Random(1)))).Should().Throw<ArgumentException>();
-        ((Action)(() => new Station("  ", 1, new Random(1)))).Should().Throw<ArgumentException>();
+        new Station(1, new Random(1)).StationNumber.Should().Be(1);
     }
 
     [Theory]
@@ -29,13 +21,13 @@ public class StationConstructionTests
     [InlineData(1000)]
     public void A_station_number_out_of_range_is_refused(int number)
     {
-        ((Action)(() => new Station("M0LTE", number, new Random(1)))).Should().Throw<ArgumentOutOfRangeException>();
+        ((Action)(() => new Station(number, new Random(1)))).Should().Throw<ArgumentOutOfRangeException>();
     }
 
     [Fact]
     public void A_missing_random_source_is_refused()
     {
-        ((Action)(() => new Station("M0LTE", 1, null!))).Should().Throw<ArgumentNullException>();
+        ((Action)(() => new Station(1, null!))).Should().Throw<ArgumentNullException>();
     }
 
     [Fact]

@@ -35,7 +35,8 @@ public readonly struct PayloadReceiveResult
 /// Receives the payload of a burst whose position and header are known, and measures the path it came over: the receive
 /// side of the payload of the adaptive OFDM-FM modem, pinned to the prototype's <c>modem.receive(aligned, design, None)</c>
 /// as the station calls it (<c>passes=1</c>, <c>guard=2.0</c>, <c>dd=0</c>, <c>prior=None</c>, <c>track=True</c>,
-/// <c>gain=False</c>; the design is <c>formats.from_header</c>'s), with <c>modem.opening_quality</c> and <c>modem.sudden</c>.
+/// <c>gain=False</c>; the design is <c>formats.from_header</c>'s), with <c>modem.opening_quality</c>. The judgement that a burst's
+/// quality collapsed part-way (<see cref="Sudden"/>) is this library's own, not the prototype's <c>modem.sudden</c>.
 /// </summary>
 /// <remarks>
 /// <para>The burst's symbols are taken one at a time as the header reader takes the opening's (bins 9 to 341 of the 2048-point
@@ -238,11 +239,20 @@ public sealed class PayloadReceiver
     public bool Sudden => _valid && IsSudden(_miss.AsSpan(0, _known + _payloadSymbols), _known);
 
     /// <summary>
-    /// Whether a burst's quality collapsed part-way, as the prototype's <c>modem.sudden</c>: something else came on the
-    /// channel. <paramref name="miss"/> is each symbol's miss (<see cref="Miss"/>), <paramref name="known"/> the symbols its
-    /// opening has. True when some point splits the payload's symbols into a part that was decoding cleanly and a later part
-    /// whose median miss is at least three times worse. A path that is simply too poor is bad from the start.
+    /// Whether a burst's quality collapsed part-way: something else came on the channel. <paramref name="miss"/> is each
+    /// symbol's miss (<see cref="Miss"/>), <paramref name="known"/> the symbols its opening has. True when some point splits the
+    /// payload's symbols into an earlier part of at least two symbols and a later part of at least three whose median miss is
+    /// more than three times the largest of: the earlier part's worst symbol, the opening's median miss, and 0.5. A path that is
+    /// simply too poor is bad from the start; a clean burst's symbols scatter, but its later symbols are not all worse than the
+    /// worst of its earlier ones.
     /// </summary>
+    /// <remarks>
+    /// Not the prototype's <c>modem.sudden</c>, which compared the earlier part's median with the opening's (under 1.5 times it
+    /// plus 0.5) and the later part's median with three times the earlier part's. On a path quieter than the sender's own peak
+    /// limit, a symbol's miss measures how hard the limit hit that symbol, which depends on its bits and scatters widely at the
+    /// robust formats (+6 dB drive); that test then judged clean bursts sudden and missed real collisions
+    /// (packet-net/pdn-soundmodem#898; docs/station-design.md, "The sudden judgement, as fixed").
+    /// </remarks>
     internal static bool IsSudden(ReadOnlySpan<double> miss, int known)
     {
         if (known < 0 || known > miss.Length)
@@ -257,15 +267,16 @@ public sealed class PayloadReceiver
         }
 
         Span<double> scratch = miss.Length <= 512 ? stackalloc double[miss.Length] : new double[miss.Length];
-        double reference = known != 0 ? Median(miss[..known], scratch) : Median(m[..2], scratch);
-        for (int cut = 2; cut < m.Length - 1; cut++)
+        double floor = Math.Max(known != 0 ? Median(miss[..known], scratch) : 0.0, 0.5);
+        double worst = Math.Max(m[0], m[1]);
+        for (int cut = 2; cut <= m.Length - 3; cut++)
         {
-            double before = Median(m[..cut], scratch);
-            double after = Median(m[cut..], scratch);
-            if (before < (1.5 * reference) + 0.5 && after > 3.0 * Math.Max(before, 0.5))
+            if (Median(m[cut..], scratch) > 3.0 * Math.Max(worst, floor))
             {
                 return true;
             }
+
+            worst = Math.Max(worst, m[cut]);
         }
 
         return false;

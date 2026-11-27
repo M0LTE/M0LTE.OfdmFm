@@ -50,13 +50,12 @@ public class StationReportTests
         rig.RunTo(6);
         for (int i = 0; i < 12; i++)
         {
-            // #898: datagrams 110 to 121 (originally 100 to 111); with the originals the receiver judged the first clean first-contact burst sudden and the climb took a burst longer.
-            rig.Send(1, 2, 110 + i).Should().Be(SendResult.Accepted);
+            rig.Send(1, 2, 100 + i).Should().Be(SendResult.Accepted);
             rig.Run(10);
         }
 
         // Every datagram, once, in order.
-        b.Received.Select(r => r.Data).Should().BeEquivalentTo(Enumerable.Range(110, 12).Select(i => SimRig.Datagram(i, 30)), o => o.WithStrictOrdering());
+        b.Received.Select(r => r.Data).Should().BeEquivalentTo(Enumerable.Range(100, 12).Select(i => SimRig.Datagram(i, 30)), o => o.WithStrictOrdering());
 
         // The first burst is at first contact; the sender is at a format within a rung or so of the receiver's own recommendation, at over 200 times the rate, by the 11th burst.
         a.Transmitted[0].Event.RateBitsPerSecond.Should().Be(SimRig.FirstContactRate);
@@ -89,15 +88,13 @@ public class StationReportTests
     public void Two_Way_Traffic_Settles_Each_Direction_With_The_Recommendations_Riding_In_Preludes()
     {
         // Each datagram is answered at once by an expedited one, as an acknowledgement would be. The recommendation rides in the preludes: the first burst each way is at first contact and from the fourth the rate is at the top.
-        // Datagrams 110 to 117: at first contact the receiver sometimes judges a clean burst sudden and takes no measurement from it (packet-net/pdn-soundmodem#898), which depends on the burst's bits; 100 to 107 did with the block of link addresses in place.
         var rig = new SimRig(2);
         SimNode a = rig.Nodes[0];
         SimNode b = rig.Nodes[1];
         rig.RunTo(6);
         for (int i = 0; i < 8; i++)
         {
-            // #898: datagrams 110 to 117 (originally 100 to 107); with the originals the receiver judged the first clean first-contact burst sudden and B's first reply went at first contact.
-            rig.Send(1, 2, 110 + i).Should().Be(SendResult.Accepted);
+            rig.Send(1, 2, 100 + i).Should().Be(SendResult.Accepted);
             RunUntil(rig, () => b.Received.Count == i + 1);
             rig.Send(2, 1, 200 + i, priority: SendPriority.Expedited).Should().Be(SendResult.Accepted);
             RunUntil(rig, () => a.Received.Count == i + 1);

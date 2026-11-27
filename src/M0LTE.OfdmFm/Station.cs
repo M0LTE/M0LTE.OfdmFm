@@ -160,6 +160,11 @@ public sealed partial class Station
         if (Callsign is null)
         {
             Callsign = callsign;
+            if (WantsFlow())
+            {
+                Flow(TraceText.CallsignSet(callsign));
+            }
+
             TakeFirstNumber();
             return IdentityResult.Accepted;
         }

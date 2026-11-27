@@ -412,6 +412,7 @@ namespace M0LTE.OfdmFm
         public bool HasWork { get; }
         public long SampleCount { get; }
         public double Seconds { get; }
+        public M0LTE.OfdmFm.TraceLevel TraceLevel { get; set; }
         public event System.Action<M0LTE.OfdmFm.BurstNotDecodedEvent>? BurstNotDecoded;
         public event System.Action<M0LTE.OfdmFm.ChannelBusyEvent>? ChannelBusy;
         public event System.Action<M0LTE.OfdmFm.CongestionEvent>? Congestion;
@@ -422,6 +423,7 @@ namespace M0LTE.OfdmFm
         public event System.Action<M0LTE.OfdmFm.ModemSentEvent>? ModemSent;
         public event System.Action<M0LTE.OfdmFm.PathReportEvent>? PathReport;
         public event System.Action<M0LTE.OfdmFm.ReceivedEvent>? Received;
+        public event System.Action<M0LTE.OfdmFm.TraceEvent>? Trace;
         public event System.Action<M0LTE.OfdmFm.TransmitRequestEvent>? TransmitRequest;
         public event System.Action<M0LTE.OfdmFm.TransmittedEvent>? Transmitted;
         public event System.Action<M0LTE.OfdmFm.WithdrawRequestEvent>? WithdrawRequest;
@@ -440,6 +442,19 @@ namespace M0LTE.OfdmFm
         public void TransmitEnded(long id, long sampleIndex) { }
         public void TransmitRefused(long id) { }
         public void TransmitStarted(long id, long sampleIndex) { }
+    }
+    public readonly struct TraceEvent : System.IEquatable<M0LTE.OfdmFm.TraceEvent>
+    {
+        public TraceEvent(double Seconds, M0LTE.OfdmFm.TraceLevel Level, string Text) { }
+        public M0LTE.OfdmFm.TraceLevel Level { get; init; }
+        public double Seconds { get; init; }
+        public string Text { get; init; }
+        public override string ToString() { }
+    }
+    public enum TraceLevel
+    {
+        Flow = 0,
+        Detail = 1,
     }
     public sealed class TrackedReceiver
     {

@@ -96,6 +96,10 @@ public sealed partial class Station
         }
 
         _link.Number = _number;
+        if (WantsFlow())
+        {
+            Flow(TraceText.TookNumber(_number));
+        }
     }
 
     private uint NewId() => unchecked((uint)_random.NextInt64(0x1_0000_0000L));
@@ -136,12 +140,18 @@ public sealed partial class Station
     /// The station takes a new number and a new id, at once, and deals with what it had built under the old one. Called when another station is found to hold the number (a header read, a Clash naming this station).
     /// What the station knows of other stations is untouched.
     /// </summary>
-    private void MoveToNewNumber()
+    private void MoveToNewNumber(bool told)
     {
+        int was = _number;
         _number = PickNumber();
         _stationId = NewId();
         _link.Number = _number;
         _numberChanges++;
+        if (WantsFlow())
+        {
+            Flow(told ? TraceText.NumberChangedTold(was, _number) : TraceText.NumberChangedInUse(was, _number));
+        }
+
         DiscardBuiltBursts();
     }
 
@@ -152,12 +162,22 @@ public sealed partial class Station
     {
         if (_burst.Built && !_burst.Started)
         {
+            if (WantsDetail())
+            {
+                Detail(TraceText.BuiltDiscarded("burst"));
+            }
+
             RestoreBurstToQueue();
             EnsureDataRequest();
         }
 
         if (_report.Built && !_report.Started)
         {
+            if (WantsDetail())
+            {
+                Detail(TraceText.BuiltDiscarded(_report.Announcement ? "announcement" : "report"));
+            }
+
             if (_report.Announcement)
             {
                 _announcements.Add(new Announcement(_report.Dest, _report.AnnounceKey, SampleCount));
@@ -187,6 +207,11 @@ public sealed partial class Station
 
         if (_identBuilt && _identRequest is { State: not ChannelAccess.RequestState.Started } ident)
         {
+            if (WantsDetail())
+            {
+                Detail(TraceText.BuiltDiscarded("identification"));
+            }
+
             if (_identAudio is { } audio)
             {
                 _freeAudio.Push(audio);
@@ -199,6 +224,11 @@ public sealed partial class Station
 
         if (_clashBuilt && _clashRequest is { State: not ChannelAccess.RequestState.Started } clash)
         {
+            if (WantsDetail())
+            {
+                Detail(TraceText.BuiltDiscarded("notice"));
+            }
+
             // The Clash names the number, not this station: it is built again as it was.
             _clashesOwed.Insert(0, (_clashNumber, _clashId, SampleCount));
             DiscardClash();
@@ -274,7 +304,7 @@ public sealed partial class Station
             return;
         }
 
-        MoveToNewNumber();
+        MoveToNewNumber(told: false);
         _senderHeardAt[sender] = SampleCount;
     }
 
@@ -289,6 +319,13 @@ public sealed partial class Station
         if (_idKnown[number] && _idValue[number] != id)
         {
             bool clash = at - _idAt[number] <= NumberWindowSamples;
+            if (WantsFlow())
+            {
+                Flow(clash
+                    ? (Callsign is null ? TraceText.NumberClashListening(number) : TraceText.NumberClash(number))
+                    : TraceText.NumberChangedHands(number));
+            }
+
             ForgetNumber(number, now);
             if (clash)
             {
@@ -312,7 +349,7 @@ public sealed partial class Station
             restored = true;
         }
 
-        ForgetAddressesAt(who, now);
+        ForgetAddressesAt(who, now, ForgetWhy.ChangedHands);
         _link.Forget(who);
         _stationShown[who] = default;
         _owedSlots[who] = default;
@@ -386,6 +423,10 @@ public sealed partial class Station
     {
         // Said by somebody: the id record for the number is cleared (the next identification heard there is only recorded).
         _idKnown[number] = false;
+        if (WantsFlow())
+        {
+            Flow(TraceText.HeardMoveNotice(number));
+        }
 
         // A station about to send a Clash for the number does not send its own.
         bool cancelled = false;
@@ -407,13 +448,18 @@ public sealed partial class Station
 
         if (cancelled)
         {
+            if (WantsDetail())
+            {
+                Detail(TraceText.NoticeCancelled(number));
+            }
+
             EnsureClashRequest();
         }
 
         // One that names this station's number and id: this station moves. One that names its number and another id is for the other station.
         if (_number != 0 && number == _number && id == _stationId)
         {
-            MoveToNewNumber();
+            MoveToNewNumber(told: true);
         }
     }
 
@@ -520,6 +566,10 @@ public sealed partial class Station
     private void OnClashBurstStarted()
     {
         _clashesSent++;
+        if (WantsFlow())
+        {
+            Flow(TraceText.ToldToMove(_clashNumber));
+        }
 
         // The Clash has been said: what was remembered as the last id heard on the number is cleared, so that the next identification heard there is only recorded.
         _idKnown[_clashNumber] = false;

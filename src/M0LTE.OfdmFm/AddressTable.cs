@@ -15,8 +15,16 @@ internal sealed class AddressTable
     /// <summary>How many addresses are located.</summary>
     public int Count => _entries.Count;
 
-    /// <summary>Records that the address with this key lives at station <paramref name="number"/>, heard at <paramref name="now"/>. Replaces whatever was known: the latest burst wins.</summary>
-    public void Learn(uint key, int number, double now) => _entries[key] = new Entry(number, now);
+    /// <summary>Every address located, for the station's trace.</summary>
+    public IReadOnlyDictionary<uint, Entry> Entries => _entries;
+
+    /// <summary>Records that the address with this key lives at station <paramref name="number"/>, heard at <paramref name="now"/>. Replaces whatever was known: the latest burst wins. Returns the station it lived at before, or 0 when it was not located.</summary>
+    public int Learn(uint key, int number, double now)
+    {
+        int before = _entries.TryGetValue(key, out Entry old) ? old.Number : 0;
+        _entries[key] = new Entry(number, now);
+        return before;
+    }
 
     /// <summary>The station an address lives at, or false when it is not located.</summary>
     public bool TryGet(uint key, out Entry entry) => _entries.TryGetValue(key, out entry);

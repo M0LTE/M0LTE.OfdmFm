@@ -117,6 +117,11 @@ public sealed partial class Station
             {
                 if (p.From == _announcements[i].Key)
                 {
+                    if (WantsDetail())
+                    {
+                        Detail(TraceText.AnnouncementCovered(AddressText(_announcements[i].Key), StationName(dest)));
+                    }
+
                     _announcements.RemoveAt(i);
                     ReportsCovered++;
                     break;
@@ -233,6 +238,10 @@ public sealed partial class Station
             }
 
             Put(sender, report.Failed ? OwedKind.Failed : OwedKind.Drop, report.Format, burstEnd, burstEnd);
+            if (WantsDetail())
+            {
+                Detail(TraceText.OwingReport(StationName(sender), report.Failed ? "its burst was not decoded" : "the path from it got worse"));
+            }
         }
         else if (asked && _link.TryGetNeighbour(sender, out LinkNeighbour? nb) && nb?.Recommended is not null)
         {
@@ -243,6 +252,10 @@ public sealed partial class Station
             }
 
             Put(sender, OwedKind.Asked, null, burstEnd, burstEnd + AskedReportWaitSamples);
+            if (WantsDetail())
+            {
+                Detail(TraceText.OwingReport(StationName(sender), "it asked for one"));
+            }
         }
         else
         {
@@ -296,6 +309,10 @@ public sealed partial class Station
         {
             _owedSlots[dest].Active = false;
             ReportsCovered++;
+            if (WantsDetail())
+            {
+                Detail(TraceText.ReportCovered(StationName(dest)));
+            }
         }
     }
 
@@ -418,6 +435,11 @@ public sealed partial class Station
             {
                 _owedSlots[dest].Active = false;
                 ReportsCovered++;
+                if (WantsDetail())
+                {
+                    Detail(TraceText.ReportCovered(StationName(dest)));
+                }
+
                 continue;
             }
 
@@ -446,6 +468,10 @@ public sealed partial class Station
         }
 
         RaiseLinkState(dest, now); // what this station has told them may have changed
+        if (WantsFlow())
+        {
+            Flow(TraceText.Told(StationName(dest), StandardFormats.Rate(format), slot.Kind == OwedKind.Failed));
+        }
 
         FormatSpec spec = StandardFormats.Describe(choice.Format);
         _renderer ??= new BurstRenderer();
@@ -509,6 +535,11 @@ public sealed partial class Station
             RaiseLinkState(a.Station, now);
         }
 
+        if (WantsFlow())
+        {
+            Flow(TraceText.ToldHere(StationName(a.Station), AddressText(a.Key)));
+        }
+
         return true;
     }
 
@@ -532,6 +563,11 @@ public sealed partial class Station
         _report.Started = false;
         if (HasQueuedAt(dest, expeditedOnly: false) && !AwaitingAnswerFrom(dest))
         {
+            if (WantsDetail())
+            {
+                Detail(TraceText.GoingStraightOn(StationName(dest)));
+            }
+
             _access.GoStraightOn();
         }
 
@@ -582,5 +618,9 @@ public sealed partial class Station
         HostTag[] tags = [.. record.Tags];
         record.Tags.Clear();
         BurstNotDecoded?.Invoke(new BurstNotDecodedEvent(record.Address, tags));
+        if (WantsDetail())
+        {
+            Detail(TraceText.HostToldNotDecoded(DestText(record.Address), tags.Length));
+        }
     }
 }

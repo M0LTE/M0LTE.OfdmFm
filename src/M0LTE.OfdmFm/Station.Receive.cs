@@ -715,6 +715,10 @@ public sealed partial class Station
         }
 
         _noted.Add(new NotedHeader(c.Index, c.Opening, header, reason));
+        if (WantsDetail())
+        {
+            Detail(TraceText.HeaderNotUsed(SafeKind(reason)));
+        }
     }
 
     /// <summary>
@@ -752,6 +756,11 @@ public sealed partial class Station
             {
                 r.State = BurstState.Lost;
                 _burstsLost++;
+                if (WantsFlow())
+                {
+                    Flow(TraceText.LostBurst(StationName(r.Header.Sender)));
+                }
+
                 continue;
             }
 
@@ -765,6 +774,7 @@ public sealed partial class Station
             job.Sudden = false;
             job.HasQuality = false;
             r.Job = job;
+            int droppedSender = 0;
             lock (_gate)
             {
                 r.State = BurstState.Queued;
@@ -775,9 +785,15 @@ public sealed partial class Station
                     _jobQueue.RemoveAt(0);
                     oldestQueued.State = BurstState.Dropped;
                     _burstsDropped++;
+                    droppedSender = oldestQueued.Header.Sender;
                     ReturnJob(oldestQueued.Job!);
                     oldestQueued.Job = null;
                 }
+            }
+
+            if (droppedSender != 0 && WantsFlow())
+            {
+                Flow(TraceText.DroppedBurst(StationName(droppedSender)));
             }
 
             _notify = true;
@@ -1097,12 +1113,30 @@ public sealed partial class Station
             }
         }
 
+        NeighbourBefore before = Trace is not null ? CaptureNeighbour(sender) : default;
         LinkReport? owed = _link.HeardData(sender, h.Destination, h.Format, decoded, quality, now, footing, job.Sudden, their, capability);
         AdaptationCalled?.Invoke(new AdaptationCall(false, sender, h.Destination, h.Format, decoded, quality.ToArray(), now, footing, job.Sudden, their, capability, owed));
+        bool valid = false;
+        uint? forKey = null;
+        ReadOnlySpan<byte> runs = default;
+        int datagramCount = 0;
         if (unpacked)
         {
             // The block's From runs must add up to the datagrams: a burst whose do not (or that has none) is treated as malformed, and nothing is learned from it or delivered from it.
-            bool valid = ReadAddressItems(items, datagrams, sender, now, out uint? forKey, out ReadOnlySpan<byte> runs);
+            valid = ReadAddressItems(items, datagrams, sender, now, out forKey, out runs, out datagramCount);
+        }
+
+        if (Trace is not null)
+        {
+            TraceHeardData(h, job, decoded, unpacked && valid, datagramCount, forKey, before);
+            if (unpacked && mine && prelude.Recommended is int toldFormat && WantsFlow())
+            {
+                Flow(TraceText.ToldBy(StationName(sender), StandardFormats.Rate(toldFormat), prelude.Failed));
+            }
+        }
+
+        if (unpacked)
+        {
             if (mine && prelude.Recommended is int recommended)
             {
                 RaisePathReport(sender, recommended, prelude.Failed, now);
@@ -1156,10 +1190,11 @@ public sealed partial class Station
     /// burst heard wins) and true is returned, with the runs and the For key if there is one. If they do not (no From, a length that is not whole runs, counts that do not add up), nothing is learned and false is returned. Items with other tags are skipped, as is a For item
     /// of the wrong length, and only the first From counts. Allocates nothing once the addresses are known.
     /// </summary>
-    private bool ReadAddressItems(ExtensionReader items, DatagramReader datagrams, int sender, double now, out uint? forKey, out ReadOnlySpan<byte> runs)
+    private bool ReadAddressItems(ExtensionReader items, DatagramReader datagrams, int sender, double now, out uint? forKey, out ReadOnlySpan<byte> runs, out int count)
     {
         forKey = null;
         runs = default;
+        count = 0;
         bool haveFrom = false;
         while (items.TryNext(out byte tag, out ReadOnlySpan<byte> value))
         {
@@ -1174,7 +1209,6 @@ public sealed partial class Station
             }
         }
 
-        int count = 0;
         while (datagrams.TryNext(out _))
         {
             count++;
@@ -1199,7 +1233,12 @@ public sealed partial class Station
 
         for (int i = 0; i < runs.Length; i += PayloadCodec.RunBytes)
         {
-            _table.Learn(PayloadCodec.ReadKey(runs[i..]), sender, now);
+            uint key = PayloadCodec.ReadKey(runs[i..]);
+            int was = _table.Learn(key, sender, now);
+            if (was != sender)
+            {
+                TraceFound(key, sender, was);
+            }
         }
 
         return true;
@@ -1217,6 +1256,16 @@ public sealed partial class Station
         // After a lone report for this station, ordinary traffic leaves the channel clear for about a second from the report's last sample.
         _access.HoldOffOrdinaryUntil(r.End + ChannelAccess.ReportHoldOff);
         double now = ClockSeconds(r.End);
+        if (WantsFlow())
+        {
+            Flow(TraceText.ToldBy(StationName(h.Sender), StandardFormats.Rate(h.Format), h.Failed));
+        }
+
+        if (WantsDetail())
+        {
+            Detail(TraceText.HoldingOrdinary(StationName(h.Sender), ClockSeconds(r.End + ChannelAccess.ReportHoldOff)));
+        }
+
         _link.HeardReport(h.Sender, h.Format, h.Failed, now);
         AdaptationCalled?.Invoke(new AdaptationCall(true, h.Sender, h.Destination, h.Format, false, [], now, null, false, new LinkReport(h.Format, h.Failed), null, null));
         RaisePathReport(h.Sender, h.Format, h.Failed, now);
@@ -1357,6 +1406,19 @@ public sealed partial class Station
         }
     }
 
+    /// <summary>Why a station's addresses were forgotten, for the trace.</summary>
+    private enum ForgetWhy
+    {
+        /// <summary>Three bursts running met silence.</summary>
+        Silence,
+
+        /// <summary>Ten minutes without a word.</summary>
+        Unheard,
+
+        /// <summary>Its number now belongs to another station.</summary>
+        ChangedHands,
+    }
+
     /// <summary>Raises <see cref="PathReport"/> for each address the host has sent to that lives at station <paramref name="who"/>.</summary>
     private void RaisePathReport(int who, int? recommended, bool failed, double now)
     {
@@ -1374,7 +1436,7 @@ public sealed partial class Station
     /// Forgets where every address at station <paramref name="who"/> lives: the station was unheard for ten minutes, or three bursts running to it met silence. Each address the host has sent to
     /// that lived there is told with <see cref="LinkState"/> (not located, <see cref="LinkStateEvent.Gone"/>); a datagram waiting for it goes to everyone from now on. The same for the silence case and for a number whose id changed.
     /// </summary>
-    private void ForgetAddressesAt(int who, double now)
+    private void ForgetAddressesAt(int who, double now, ForgetWhy why)
     {
         _affected.Clear();
         for (int i = 0; i < _queueList.Count; i++)
@@ -1384,7 +1446,27 @@ public sealed partial class Station
             {
                 q.Forgotten = true;
                 _affected.Add(q);
+                if (WantsFlow())
+                {
+                    string address = DestText(q.Address);
+                    Flow(why switch
+                    {
+                        ForgetWhy.Silence => TraceText.LostAfterSilence(address),
+                        ForgetWhy.Unheard => TraceText.LostUnheard(address),
+                        _ => TraceText.LostChangedHands(address, who),
+                    });
+                }
             }
+        }
+
+        if (_affected.Count == 0 && WantsDetail())
+        {
+            Detail(TraceText.ForgotStation(who, why switch
+            {
+                ForgetWhy.Silence => "no answer three times running",
+                ForgetWhy.Unheard => "not heard for 10 minutes",
+                _ => "its station number changed hands",
+            }));
         }
 
         _table.ForgetStation(who);
@@ -1403,7 +1485,7 @@ public sealed partial class Station
                 && seconds - heard > LinkAdaptation.ForgetSeconds)
             {
                 _stationShown[who] = _stationShown[who] with { Gone = true };
-                ForgetAddressesAt(who, seconds);
+                ForgetAddressesAt(who, seconds, ForgetWhy.Unheard);
             }
         }
     }

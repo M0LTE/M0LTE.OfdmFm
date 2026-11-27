@@ -6,9 +6,29 @@ Every burst names its own format in its header, so a receiver needs no setting t
 
 The design of the live station, and what has been built of it so far, is in [docs/station-design.md](docs/station-design.md).
 
+## Install
+
+```sh
+dotnet add package M0LTE.OfdmFm
+```
+
 ## State
 
-The transmit side, the receive arithmetic and the adaptation rules (what a station remembers, recommends and chooses) are complete, and are pinned to a prototype by test vectors. The receivers (`HeaderReader`, `PayloadReceiver`, `TrackedReceiver`) take a finished capture of one burst. The live `Station` (all eight steps of the design) takes a continuous audio stream: it keeps a 16 s ring, finds bursts with a streaming detector, reads headers and receives payloads as jobs that the caller runs inline or on its own worker threads, and delivers datagrams, path reports and link state, driving the adaptation rules in the order the bursts began and on the sample clock, whatever the decode speed. It knows when the channel is busy (a burst it has found, a candidate it cannot read, its own transmission, the host's carrier indication) and when it may transmit, and takes transmission requests that it grants or withdraws by those rules. And it sends: the host gives it datagrams (`Send`, `Cancel`, `Snapshot`), each for a link address, from one and with a protocol byte, it queues them for each address, looks up where the address lives (it learns that from the `From` of every burst it hears, and sends to everyone while it does not know), chooses a format by the adaptation rules once the channel is free, packs and renders a burst, and tells the host when each datagram has gone (`Transmitted`). Two stations in one test process exchange datagrams through a simulated channel (in the test project). The stations tell each other what the path supports: a station that could not decode a burst addressed to it says so at once in a lone report, one whose recommendation for a sender has dropped says so in the first slot, one that was asked for a report sends it with the next data or alone after 1.5 s, and the host is told (`BurstNotDecoded`) which datagrams were in a burst that was heard and not decoded. One-way traffic therefore climbs, and a 10 dB drop costs one burst. It identifies itself after a transmission, at most every ten minutes of its clock (never when idle), and tells the host the callsigns of the stations it hears (step 7). Step 8 put it on a simulated channel that behaves like FM when signals overlap (the stronger takes the receiver, the weaker is left as noise; the margin is an assumed figure), with three stations that all hear each other, a hidden station, interference part-way through a burst, a station that overhears, a burst for everyone, a path cut and restored, and a soak of several minutes: nothing is delivered twice, nothing is lost without a report or a trace in the books, no station is stuck and nothing grows. What is proven is simulated: the station's logic under a stated model, with a seeded source and the sample clock, in this implementation. It has not been run on radios, and nothing about the capture effect has been measured on one (packet-net/pdn-soundmodem#835 is where that is done). The poor behaviours that step 8 found, and left alone because they are the adaptation rules' and the access rules' fixed values, are in the "Step 8 as built" section of [docs/station-design.md](docs/station-design.md). It has not been published to NuGet.
+0.1.0 is the first release. While the version is 0.x the API will still change ([docs/versioning.md](docs/versioning.md)).
+
+What is here:
+
+- **The waveform.** Render and receive bursts in any of the 256 formats, pinned to a prototype by test vectors.
+- **The rate rules.** What a station measures, what it recommends to a sender, and what it chooses to send at.
+- **A live station** (`Station`). It takes a continuous audio stream and a host's datagrams and does the rest: finds and decodes bursts, decides when it may transmit, picks the rate for each neighbour, tells other stations what their path supports and hears the same back, identifies itself, picks its own on-air number, and learns where the host's link addresses live. It has no threads, no clock and no I/O of its own: a host pushes audio in and is called back.
+
+How far it has been tried:
+
+- The waveform and the rate rules ran between two real radios as a prototype, from a strong signal down to about -124 dBm.
+- The live station has run only in simulation: two and three stations on a simulated FM channel, with a hidden station, interference part-way through a burst, a path cut and restored, and soaks of several minutes. Nothing is delivered twice, nothing is lost without the host being told, and no station gets stuck.
+- Nothing has been measured on air with this library yet, and the simulated channel's model of what an FM receiver does when signals overlap is an assumption, not a measurement.
+
+The design, and what each step found, is in [docs/station-design.md](docs/station-design.md); addressing is in [docs/station-numbers.md](docs/station-numbers.md).
 
 Extracted from [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem); see [PROVENANCE.md](PROVENANCE.md).
 

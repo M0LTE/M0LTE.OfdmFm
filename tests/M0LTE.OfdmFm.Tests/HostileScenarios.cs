@@ -631,7 +631,7 @@ internal static class HostileScenarios
 
     public sealed record Soak(
         int Offered, int Refused, int Accepted, int Transmitted, int Dropped, int StillQueued, int Delivered, int Lost, int LostOverlapped, int LostByPath, int Duplicates, int DeliveredWithoutEvent, int Bursts, int CollidedBursts, int[] BytesBySender,
-        double MaxWaitSeconds, int MaxBurstsInFlight, int MaxCandidatesWaiting, int MaxTimers, int MaxQueued, int ReceivedByB, string FormatsFromA, int Hints, int WrongHints, int MisattributedReports, int Congestions, int Reordered, int ClocksBackwards, int Cancelled, int NoLongerFit, int LinkForgotten, int Moves, int Clashes, List<string> Log);
+        double MaxWaitSeconds, int MaxBurstsInFlight, int MaxCandidatesWaiting, int MaxTimers, int MaxQueued, int ReceivedByB, string FormatsFromA, int Hints, int WrongHints, int MisattributedReports, int Congestions, int Reordered, int ClocksBackwards, int Cancelled, int NoLongerFit, int Moves, int Clashes, List<string> Log);
 
     /// <summary>
     /// Three stations, mixed traffic (to one station or to everyone, short and long, ordinary and expedited) at seeded moments for <paramref name="seconds"/>, with the path between A and B fading in steps (0, -20, -40, -20, 0 dB, then cut
@@ -770,7 +770,7 @@ internal static class HostileScenarios
         int stillQueued = Enumerable.Range(0, 3).Sum(i => rig.Stations[i].QueuedTotal);
         return new Soak(
             ledger.Items.Count, ledger.Refused.Count, accepted, transmitted, ledger.DroppedCount(), stillQueued, delivered, lost, lostOverlap, lost - lostOverlap, ledger.Duplicates().Count, ledger.DeliveredWithoutTransmittedEvent(),
-            rig.Nodes.Sum(n => n.Transmissions.Count), cb, bytes, maxWait, maxFlight, maxCand, maxTimers, maxQueued, rig.Nodes[1].Received.Count, Formats(rig.Nodes[0], 40), rig.Nodes.Sum(n => n.NotDecoded.Count), wrongHints, misattributed, rig.Nodes.Sum(n => n.Congestion.Count), ledger.Reordered(), Ledger.ClocksGoingBackwards(rig.Channel.Log), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.Cancelled)), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.NoLongerFits)), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.LinkForgotten)), rig.Stations.Sum(st => (int)st.NumberChanges), rig.Stations.Sum(st => (int)st.ClashesSent), rig.Channel.Log);
+            rig.Nodes.Sum(n => n.Transmissions.Count), cb, bytes, maxWait, maxFlight, maxCand, maxTimers, maxQueued, rig.Nodes[1].Received.Count, Formats(rig.Nodes[0], 40), rig.Nodes.Sum(n => n.NotDecoded.Count), wrongHints, misattributed, rig.Nodes.Sum(n => n.Congestion.Count), ledger.Reordered(), Ledger.ClocksGoingBackwards(rig.Channel.Log), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.Cancelled)), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.NoLongerFits)), rig.Stations.Sum(st => (int)st.NumberChanges), rig.Stations.Sum(st => (int)st.ClashesSent), rig.Channel.Log);
     }
 
     public static string Describe(Soak r) =>

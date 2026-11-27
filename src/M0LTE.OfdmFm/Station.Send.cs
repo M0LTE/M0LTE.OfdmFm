@@ -479,7 +479,7 @@ public sealed partial class Station
     }
 
     /// <summary>Drops what matches (a tag, or everything when <paramref name="all"/> is set), expedited first, raising <see cref="Dropped"/> for each. Returns how many.</summary>
-    private int CancelWhere(AddressQueue q, HostTag tag, bool? all, DropReason reason = DropReason.Cancelled)
+    private int CancelWhere(AddressQueue q, HostTag tag, bool? all)
     {
         int count = 0;
         for (int pass = 0; pass < 2; pass++)
@@ -492,7 +492,7 @@ public sealed partial class Station
                 {
                     list.RemoveAt(i);
                     Unqueue(q, p);
-                    Dropped?.Invoke(new DroppedEvent(p.Tag, reason));
+                    Dropped?.Invoke(new DroppedEvent(p.Tag, DropReason.Cancelled));
                     Release(p);
                     count++;
                 }

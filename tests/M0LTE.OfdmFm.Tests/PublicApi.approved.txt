@@ -106,8 +106,7 @@ namespace M0LTE.OfdmFm
     {
         Cancelled = 0,
         Expired = 1,
-        LinkForgotten = 2,
-        NoLongerFits = 3,
+        NoLongerFits = 2,
     }
     public readonly struct DroppedEvent : System.IEquatable<M0LTE.OfdmFm.DroppedEvent>
     {

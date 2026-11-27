@@ -541,7 +541,7 @@ public class StationNumbersTests
         {
             // Without the other Clash it goes out, once.
             Lone alone = OwingAClash(seed, held: false);
-            alone.Run(10);
+            alone.Run(25);
             alone.Layer.Requests.Should().HaveCount(1, $"seed {seed}: the Clash was built");
             alone.Play(0);
             alone.Station.ClashesSent.Should().Be(1);
@@ -553,18 +553,18 @@ public class StationNumbersTests
             owed.Hear(Ident(9, 0x9999CCCC, (5, 0x2222BBBB)), 1);
             owed.Station.ClashesPending.Should().Be(0, "somebody else said it");
             owed.Station.SetExternalBusy(false);
-            owed.Run(10);
+            owed.Run(25);
             owed.Layer.Requests.Should().BeEmpty();
             owed.Station.ClashesSent.Should().Be(0);
 
             // Built and handed to the audio layer, not keyed: taken back.
             Lone built = OwingAClash(seed, held: false);
-            built.Run(10);
+            built.Run(25);
             built.Layer.Requests.Should().HaveCount(1);
             built.Hear(Ident(9, 0x9999CCCC, (5, 0x2222BBBB)), 1);
             built.Station.ClashesPending.Should().Be(0);
             built.Layer.Withdrawals.Should().Equal([built.Layer.Requests[0].Id]);
-            built.Run(10);
+            built.Run(25);
             built.Layer.Requests.Should().HaveCount(1, "no new request");
             built.Station.ClashesSent.Should().Be(0);
 
@@ -588,7 +588,7 @@ public class StationNumbersTests
         lone.Run(6);
         lone.Hear(Ident(5, 0x1111AAAA), 1);
         lone.Hear(Ident(5, 0x2222BBBB), 1);
-        lone.Run(10);
+        lone.Run(25);
         lone.Layer.Requests.Should().HaveCount(1);
         lone.Play(0);
         lone.Run(1);
@@ -663,5 +663,90 @@ public class StationNumbersTests
         lone.Hear(TestBurst.Identification(5, "M0OTH", 0, 3, [new ExtensionItem(PayloadCodec.StationIdTag, new byte[3])]), 1);
         lone.Station.ClashesOwedCount.Should().Be(0);
         lone.Station.IdHeardOn(5).Should().Be(0x1111AAAAu);
+    }
+
+    [Fact]
+    public void The_Id_Record_For_A_Number_Is_Cleared_When_A_Clash_Is_Sent_Or_Heard_So_The_Next_Identification_Is_Only_Recorded()
+    {
+        // Sent: after the station's own Clash for number 5, the next id heard there is recorded and owes nothing.
+        foreach (int seed in Seeds)
+        {
+            Lone sent = OwingAClash(seed, held: false);
+            sent.Station.IdHeardOn(5).Should().Be(0x2222BBBBu);
+            sent.Run(25);
+            sent.Play(0);
+            sent.Station.IdHeardOn(5).Should().BeNull();
+            sent.Run(1);
+            sent.Hear(Ident(5, 0x1111AAAA, burstNumber: 2), 1);
+            sent.Station.IdHeardOn(5).Should().Be(0x1111AAAAu);
+            sent.Station.ClashesOwedCount.Should().Be(1, $"seed {seed}: the survivor's identification owes nothing");
+
+            // Heard: somebody else's Clash clears it too.
+            var heard = new Lone(20, 0x22222222u, seed);
+            heard.Run(6);
+            heard.Hear(Ident(5, 0x1111AAAA), 1);
+            heard.Hear(Ident(9, 0x9999CCCC, (5, 0x2222BBBB)), 1);
+            heard.Station.IdHeardOn(5).Should().BeNull();
+            heard.Hear(Ident(5, 0x1111AAAA, burstNumber: 1), 1);
+            heard.Station.ClashesOwedCount.Should().Be(0);
+        }
+    }
+
+    [Fact]
+    public void A_Clash_Waits_Up_To_Ten_Seconds_Before_It_Asks_For_The_Channel()
+    {
+        var delays = new List<double>();
+        foreach (int seed in Seeds)
+        {
+            Lone lone = OwingAClash(seed, held: false);
+            long owed = lone.Station.SampleCount;
+            for (int i = 0; i < 400 && lone.Layer.Requests.Count == 0; i++)
+            {
+                lone.Run(0.1);
+            }
+
+            lone.Layer.Requests.Should().HaveCount(1);
+            double waited = (lone.Station.SampleCount - owed) / 48000.0;
+            delays.Add(waited);
+            waited.Should().BeLessThan(10 + 0.8 + 0.3 + 3, "at most the drawn 10 s, the clear time, the slots and the owing burst's own end");
+        }
+
+        Hostile.Say("a Clash waited (s, from just after the identification that owed it to the request) with seeds 1 to 8: " + string.Join(", ", delays.Select(d => d.ToString("F1", System.Globalization.CultureInfo.InvariantCulture))));
+        delays.Max().Should().BeGreaterThan(delays.Min() + 1, "the delay is drawn, not fixed");
+    }
+
+    [Fact]
+    public void Datagrams_Queued_For_An_Address_At_A_Number_Whose_Id_Changes_Stay_Queued_And_Go_To_Everyone()
+    {
+        foreach (int seed in Seeds)
+        {
+            var lone = new Lone(20, 0x22222222u, seed);
+            var address = LinkAddress.FromAscii("G9XYZ");
+            var sent = new List<TransmittedEvent>();
+            var states = new List<LinkStateEvent>();
+            lone.Station.Transmitted += sent.Add;
+            lone.Station.LinkState += states.Add;
+            lone.Run(6);
+            lone.Hear(Ident(5, 0x1111AAAA), 1);
+            lone.Station.Locate(address, 5);
+            lone.Station.SetExternalBusy(true);
+            lone.Station.Send(TestBurst.Datagram(1, 20), address, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
+            lone.Station.LocatedNow(address).Should().Be(5);
+
+            lone.Hear(Ident(5, 0x2222BBBB), 1);
+            lone.Station.LocatedNow(address).Should().Be(0, "the address is no longer located");
+            lone.Station.QueuedFor(address).Should().Be(1, "and what waited for it stays queued");
+            lone.Dropped.Should().BeEmpty();
+            states.Should().Contain(l => l.Address == address && !l.Located && l.Gone, "the host is told it has gone, as after three silences");
+
+            lone.Station.SetExternalBusy(false);
+            lone.Run(25);
+            lone.Layer.Requests.Should().NotBeEmpty();
+            float[] audio = lone.Layer.Requests[0].Samples.ToArray();
+            lone.Play(0);
+            sent.Should().ContainSingle().Which.Address.Should().Be(address);
+            (_, List<byte[]> datagrams, _) = Listen(audio);
+            datagrams.Should().ContainSingle().Which.Should().Equal(TestBurst.Datagram(1, 20), $"seed {seed}: it went as a burst to everyone");
+        }
     }
 }

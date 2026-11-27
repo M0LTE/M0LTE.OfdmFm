@@ -199,14 +199,14 @@ public class StationNumberClashTests
     // ---- two stations with one number, hidden from each other ----
 
     private sealed record Hidden(
-        int Seed, bool Indication, int Observers, int ClashesSent, int[] ClashesByObserver, bool ClashNamedLaterId, int AMoves, int CMoves, int ANumber, int CNumber, bool ResetNeighbour, bool AddressesForgotten, bool DroppedForgotten, bool GoneTold,
+        int Seed, bool Indication, int Observers, int ClashesSent, int[] ClashesByObserver, bool ClashNamedLaterId, int AMoves, int CMoves, int ANumber, int CNumber, bool ResetNeighbour, bool AddressesForgotten, bool QueuedFollowed, bool GoneTold, bool Settled,
         int ClashesOwed, int Offered, int Delivered, int Duplicates, int Accepted, int Transmitted, int Dropped, int Queued);
 
     /// <summary>
     /// A (1) and C (3) hold number 5 and cannot hear each other; B (2), and with <paramref name="observers"/> 2 also D (4), hear both. A sends B something, then C does, and B has a datagram queued for A's address when C's identification is heard.
     /// After the Clash the hosts at all four exchange datagrams.
     /// </summary>
-    private static Hidden HiddenClash(int seed, bool indication, int observers, bool afterwards = true)
+    private static Hidden HiddenClash(int seed, bool indication, int observers, bool afterwards = true, bool settle = false)
     {
         int stations = 2 + observers;
         int[] numbers = observers == 1 ? [5, 9, 5] : [5, 9, 5, 10];
@@ -224,6 +224,12 @@ public class StationNumberClashTests
 
         rig.Stations[0].IdentificationSuspended = false;
         rig.Stations[2].IdentificationSuspended = false;
+        if (settle)
+        {
+            rig.Stations[0].IdentificationInterval = 100L * 48000;
+            rig.Stations[2].IdentificationInterval = 100L * 48000;
+        }
+
         var clashPayloads = new List<byte[]>();
         for (int o = 0; o < observers; o++)
         {
@@ -262,7 +268,7 @@ public class StationNumberClashTests
 
         bool reset = b.Adaptation.TryGetNeighbour(5, out LinkNeighbour? after) && !ReferenceEquals(before, after);
         bool forgotten = !b.LearnedAddresses.TryGet(SimRig.Address(1).Key, out _) || !b.LearnedAddresses.TryGet(SimRig.Address(3).Key, out _);
-        bool dropped = rig.Nodes[1].Dropped.Any(d => d.Reason == DropReason.LinkForgotten);
+        bool followed = rig.Nodes[0].Received.Any(r => r.Data.AsSpan().SequenceEqual(SimRig.Datagram(3, 30)));
         bool gone = rig.Nodes[1].LinkStates.Any(l => l.Address == SimRig.Address(1) && l.Gone);
         bool laterId = clashPayloads.Count > 0 && clashPayloads.All(p =>
         {
@@ -295,8 +301,23 @@ public class StationNumberClashTests
         }
 
         ledger.RunWithHost(afterwards ? 20 + (when * 3) + 40 : 1, 0.5, plan);
+        if (settle)
+        {
+            // Both A and C now identify again, more than their (shortened) interval after the first: a Clash that was lost is owed again by the same rule.
+            for (int round = 0; round < 3; round++)
+            {
+                rig.RunTo(130 + (round * 80));
+                rig.Send(1, 2, 20 + round).Should().Be(SendResult.Accepted);
+                rig.Run(40);
+                rig.Send(3, 2, 30 + round).Should().Be(SendResult.Accepted);
+            }
+
+            rig.Run(60);
+        }
+
+        bool settled = rig.Stations[0].StationNumber != rig.Stations[2].StationNumber;
         return new Hidden(
-            seed, indication, observers, byObserver.Sum(), byObserver, laterId, (int)rig.Stations[0].NumberChanges, (int)rig.Stations[2].NumberChanges, rig.Stations[0].StationNumber, rig.Stations[2].StationNumber, reset, forgotten, dropped, gone,
+            seed, indication, observers, byObserver.Sum(), byObserver, laterId, (int)rig.Stations[0].NumberChanges, (int)rig.Stations[2].NumberChanges, rig.Stations[0].StationNumber, rig.Stations[2].StationNumber, reset, forgotten, followed, gone, settled,
             (int)(rig.Stations[1].ClashesOwedCount + (observers == 2 ? rig.Stations[3].ClashesOwedCount : 0)), ledger.Items.Count, ledger.Items.Count(ledger.Delivered), ledger.Duplicates().Count, acc.Accepted, acc.Transmitted, acc.Dropped, acc.Queued);
     }
 
@@ -308,7 +329,7 @@ public class StationNumberClashTests
         var results = Seeds.Select(seed => HiddenClash(seed, indication, 1)).ToList();
         foreach (Hidden r in results)
         {
-            Hostile.Say($"hidden clash, {Mode(indication)}, seed {r.Seed}: Clash bursts {r.ClashesSent}, naming the later id {r.ClashNamedLaterId}; A moved {r.AMoves}x (now {r.ANumber}), C moved {r.CMoves}x (now {r.CNumber}); B reset what it knew of 5 {r.ResetNeighbour}, forgot an address {r.AddressesForgotten}, dropped a datagram as forgotten {r.DroppedForgotten}, told the host {r.GoneTold}; afterwards delivered {r.Delivered}/{r.Offered}, duplicates {r.Duplicates}, accepted {r.Accepted} = transmitted {r.Transmitted} + dropped {r.Dropped} + queued {r.Queued}");
+            Hostile.Say($"hidden clash, {Mode(indication)}, seed {r.Seed}: Clash bursts {r.ClashesSent}, naming the later id {r.ClashNamedLaterId}; A moved {r.AMoves}x (now {r.ANumber}), C moved {r.CMoves}x (now {r.CNumber}); B reset what it knew of 5 {r.ResetNeighbour}, forgot an address {r.AddressesForgotten}, the datagram queued for it went on as a burst to everyone {r.QueuedFollowed}, told the host {r.GoneTold}; afterwards delivered {r.Delivered}/{r.Offered}, duplicates {r.Duplicates}, accepted {r.Accepted} = transmitted {r.Transmitted} + dropped {r.Dropped} + queued {r.Queued}");
             r.ClashesSent.Should().Be(1, $"seed {r.Seed}: B sends one Clash");
             r.ClashNamedLaterId.Should().BeTrue("it names number 5 and the id heard more recently, C's");
             r.AMoves.Should().Be(0, "A was not named");
@@ -319,13 +340,9 @@ public class StationNumberClashTests
             r.Duplicates.Should().Be(0);
             (r.Transmitted + r.Dropped + r.Queued).Should().Be(r.Accepted);
             r.Queued.Should().Be(0);
-            if (indication)
-            {
-                // With a carrier indication B cannot start the queued datagram before C's identification has been heard.
-                r.DroppedForgotten.Should().BeTrue($"seed {r.Seed}: what was queued for the forgotten address was dropped with its reason");
-                r.GoneTold.Should().BeTrue("and the host was told the address has gone");
-                r.Dropped.Should().BeGreaterThanOrEqualTo(1);
-            }
+            r.Dropped.Should().Be(0, "nothing is dropped because a number changed hands: what was queued for the forgotten address follows it, to everyone");
+            r.GoneTold.Should().BeTrue("the host was told the address has gone");
+            r.QueuedFollowed.Should().BeTrue($"seed {r.Seed}: A received the datagram that was queued for its address, sent to everyone");
         }
 
         Hostile.Say($"hidden clash, {Mode(indication)}: delivered {results.Sum(r => r.Delivered)} of {results.Sum(r => r.Offered)} afterwards over seeds {string.Join(",", Seeds)} (B and each of the two reach each other; A and C cannot hear each other and are not offered anything)");
@@ -337,28 +354,27 @@ public class StationNumberClashTests
     [InlineData(false)]
     public void Two_Observers_Of_One_Clash_Send_One_Between_Them_Or_Say_How_Often_They_Send_Two(bool indication)
     {
-        var results = Seeds.Select(seed => HiddenClash(seed, indication, 2, afterwards: false)).ToList();
+        var results = Seeds.Select(seed => HiddenClash(seed, indication, 2, afterwards: false, settle: true)).ToList();
         foreach (Hidden r in results)
         {
-            Hostile.Say($"two observers, {Mode(indication)}, seed {r.Seed}: Clashes owed {r.ClashesOwed}, sent {r.ClashesSent} (by B {r.ClashesByObserver[0]}, by D {r.ClashesByObserver[1]}); C moved {r.CMoves}x (now {r.CNumber}), A moved {r.AMoves}x");
-            r.ClashesOwed.Should().Be(2, "both observers heard the second id");
-            r.ClashesSent.Should().BeInRange(1, 2, $"seed {r.Seed}: at least one goes, and no more than the observers");
-            r.AMoves.Should().Be(0);
+            Hostile.Say($"two observers, {Mode(indication)}, seed {r.Seed}: Clashes owed {r.ClashesOwed}, sent {r.ClashesSent} (by B {r.ClashesByObserver[0]}, by D {r.ClashesByObserver[1]}); C moved {r.CMoves}x (now {r.CNumber}), A moved {r.AMoves}x (now {r.ANumber}); settled by the end {r.Settled}");
+            r.ClashesOwed.Should().BeGreaterThanOrEqualTo(2, "both observers heard the second id");
+            r.ClashesSent.Should().BeGreaterThanOrEqualTo(1);
+            (r.AMoves + r.CMoves).Should().BeLessThanOrEqualTo(r.ClashesSent, $"seed {r.Seed}: a station moves once for a Clash that names it, never more often than Clashes went out");
+            r.Settled.Should().BeTrue($"seed {r.Seed}: A and C end on different numbers, by the Clash or by the retry");
             r.Duplicates.Should().Be(0);
-            r.ClashNamedLaterId.Should().BeTrue();
         }
 
-        int two = results.Count(r => r.ClashesSent == 2);
-        int moved = results.Count(r => r.CMoves >= 1);
-        Hostile.Say($"two observers, {Mode(indication)}: over seeds {string.Join(",", Seeds)}, two Clash bursts went out in {two} of {results.Count} and one in {results.Count - two}; C heard one and moved in {moved} of {results.Count} (when both go at once they overlap on the air and neither is decoded)");
+        // How often both observers' first Clash went out can be told from the first two bursts only; the counts below are of all Clash bursts in the run, retries included.
+        int two = results.Count(r => r.ClashesSent >= 2);
+        Hostile.Say($"two observers, {Mode(indication)}: over seeds {string.Join(",", Seeds)}, {two} of {results.Count} runs sent two or more Clash bursts in all (retries included), the rest one; C moved in {results.Count(r => r.CMoves >= 1)} and A in {results.Count(r => r.AMoves >= 1)}");
     }
 
     /// <summary>
-    /// A finding, recorded as built and not worked round (docs/station-design.md, "Station numbers as built"): after a Clash the stations that heard it still hold the moved station's id as the last one heard on the number, so the id of the station that stayed,
-    /// at its next identification (at least ten minutes after its last, so always inside ten minutes of the moved station's), looks like a change and is named in a Clash of its own. The identification interval is shortened here (a seam) so that the run is minutes of the sample clock; the ten minutes of the rule are not.
+    /// A finding, a station that heard a Clash cleared the id it had on record for the number, so the identification of the station that stayed, at its next identification (inside ten minutes of the moved station's), is only recorded and it is not told to move. The identification interval is shortened here (a seam) so that the run is minutes of the sample clock; the ten minutes of the rule are not.
     /// </summary>
     [Fact]
-    public void A_Station_Left_On_A_Number_After_A_Clash_Is_Told_To_Move_At_Its_Next_Identification()
+    public void A_Station_Left_On_A_Number_After_A_Clash_Is_Not_Told_To_Move_At_Its_Next_Identification()
     {
         var rig = new SimRig(3, seed: 1, connect: false, numbers: [5, 9, 5], ids: [0xA1A1A1A1, 0xB2B2B2B2, 0xC3C3C3C3], locates: (_, _) => false);
         Indicate(rig, true);
@@ -383,7 +399,48 @@ public class StationNumberClashTests
         rig.Send(1, 2, 3).Should().Be(SendResult.Accepted);
         rig.RunTo(180);
         rig.Stations[0].IdentificationsSent.Should().Be(2, "A identified again, more than its interval after the first");
-        rig.Stations[1].ClashesSent.Should().Be(2, "B heard A's id on a number whose last id was C's, heard 90 s before");
-        rig.Stations[0].NumberChanges.Should().Be(1, "A, which was never in the way once C had gone, is told to move too");
+        rig.Stations[1].ClashesSent.Should().Be(1, "B cleared its record of the number when it sent the Clash, so A's id is only recorded");
+        rig.Stations[0].NumberChanges.Should().Be(0, "A, which was never in the way once C had gone, stays");
+    }
+
+    /// <summary>
+    /// The Clash is lost: C cannot hear B, so it never decodes it and stays on number 5. B cleared its record when it sent. A's next identification is recorded, C's next one differs from it inside ten minutes, and a new Clash is owed by the same rule: that is the retry.
+    /// </summary>
+    [Fact]
+    public void A_Clash_The_Named_Station_Never_Heard_Is_Settled_By_The_Retry_At_The_Next_Identifications()
+    {
+        foreach (int seed in new[] { 1, 2, 3 })
+        {
+            var rig = new SimRig(3, seed: seed, connect: false, numbers: [5, 9, 5], ids: [0xA1A1A1A1, 0xB2B2B2B2, 0xC3C3C3C3], locates: (_, _) => false);
+            Indicate(rig, true);
+            HostileScenarios.Pair(rig, 1, 2, 1.0);
+            HostileScenarios.Pair(rig, 3, 2, 1.0);
+            rig.Channel.Link(rig.Nodes[1], rig.Nodes[2]).Gain = 0; // B to C is cut: C hears nothing B sends
+            foreach (int i in new[] { 0, 2 })
+            {
+                rig.Stations[i].IdentificationSuspended = false;
+                rig.Stations[i].IdentificationInterval = 100L * 48000;
+            }
+
+            rig.RunTo(6);
+            rig.Send(1, 2, 1).Should().Be(SendResult.Accepted);
+            rig.RunTo(40);
+            rig.Send(3, 2, 2).Should().Be(SendResult.Accepted);
+            rig.RunTo(100);
+            rig.Stations[1].ClashesSent.Should().Be(1, $"seed {seed}");
+            rig.Stations[2].NumberChanges.Should().Be(0, "C heard nothing");
+            rig.Stations[0].NumberChanges.Should().Be(0);
+            rig.Channel.Link(rig.Nodes[1], rig.Nodes[2]).Gain = 1.0; // B to C is back
+
+            rig.RunTo(130);
+            rig.Send(1, 2, 3).Should().Be(SendResult.Accepted);
+            rig.RunTo(175);
+            rig.Send(3, 2, 4).Should().Be(SendResult.Accepted);
+            rig.RunTo(260);
+            rig.Stations[1].ClashesSent.Should().Be(2, $"seed {seed}: owed again by the same rule");
+            rig.Stations[2].NumberChanges.Should().Be(1, "C heard the second Clash and moved");
+            rig.Stations[0].NumberChanges.Should().Be(0);
+            rig.Stations[2].StationNumber.Should().NotBe(rig.Stations[0].StationNumber);
+        }
     }
 }

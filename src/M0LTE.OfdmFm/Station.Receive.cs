@@ -1369,9 +1369,9 @@ public sealed partial class Station
 
     /// <summary>
     /// Forgets where every address at station <paramref name="who"/> lives: the station was unheard for ten minutes, or three bursts running to it met silence. Each address the host has sent to
-    /// that lived there is told with <see cref="LinkState"/> (not located, <see cref="LinkStateEvent.Gone"/>); a datagram waiting for it goes to everyone from now on, or, when <paramref name="dropQueued"/> is set (the number changed hands), is dropped with <see cref="DropReason.LinkForgotten"/>.
+    /// that lived there is told with <see cref="LinkState"/> (not located, <see cref="LinkStateEvent.Gone"/>); a datagram waiting for it goes to everyone from now on. The same for the silence case and for a number whose id changed.
     /// </summary>
-    private void ForgetAddressesAt(int who, double now, bool dropQueued = false)
+    private void ForgetAddressesAt(int who, double now)
     {
         _affected.Clear();
         for (int i = 0; i < _queueList.Count; i++)
@@ -1387,19 +1387,7 @@ public sealed partial class Station
         _table.ForgetStation(who);
         foreach (AddressQueue q in _affected)
         {
-            if (dropQueued && q.Count > 0)
-            {
-                // The number changed hands: what waited for the address was for a station that is not there. It is dropped, and the host told with the reason.
-                CancelWhere(q, default, true, DropReason.LinkForgotten);
-                AfterRemoval(q);
-            }
-
             RefreshAddress(q, now);
-        }
-
-        if (dropQueued)
-        {
-            EnsureDataRequest();
         }
     }
 

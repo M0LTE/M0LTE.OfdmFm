@@ -6,8 +6,8 @@ namespace M0LTE.OfdmFm;
 //   bits for its station id. If it has heard all 63 it takes the one unheard longest. It does not listen first. A station with no identity has neither, and no burst is for it.
 //   In hearing of each other. A station that reads a burst header whose sender is its own number, when it is not transmitting and not inside its own mute tail, takes a new number and a new id at once. Nothing is announced.
 //   One rule for the rest. Every identification burst carries the sender's station id. For each number a station remembers the id last heard there and when. A different id on a known number means the number has changed hands or is held
-//   by two stations: what the station measured for it, the addresses it had there and anything queued for it are forgotten (queued datagrams are dropped, LinkForgotten, and the host told the addresses have gone), and, if the earlier id was heard
-//   inside ten minutes, a Clash is owed: an identification burst that names the number and the id heard more recently. The station named takes a new number. The Clash goes by the ordinary access rules and does not move the identification clock.
+//   by two stations: what the station measured for it and the addresses it had there are forgotten exactly as three silences forget a station (the host is told the addresses have gone, and datagrams queued for them stay queued and go to everyone with For), and, if the earlier id was heard
+//   inside ten minutes, a Clash is owed: an identification burst that names the number and the id heard more recently. The station named takes a new number. The Clash waits a random 0 to 10 s, then goes by the ordinary access rules, and does not move the identification clock. When a station sends a Clash, or decodes one, it forgets the id it had on record for the number.
 //
 // A burst the station had built and not yet put on air (handed to the audio layer and not keyed, or taken back and waiting) carries the old number in its header and its scrambler seed. It is not patched: it is discarded, what it held goes
 // back where it came from (datagrams to the front of their queue, an owed report or announcement to what is owed), and the burst is built again, with the new number, when the rules grant the request again.
@@ -34,7 +34,8 @@ public sealed partial class Station
     private readonly ExtensionItem[] _identItems = new ExtensionItem[2];
 
     // Clashes owed: the number and the id that is to move. One goes in each burst.
-    private readonly List<(int Number, uint Id)> _clashesOwed = [];
+    private readonly List<(int Number, uint Id, long ReadyAt)> _clashesOwed = [];
+    private Action _onClashReady = null!;
     private ChannelAccess.Request? _clashRequest;
     private bool _clashBuilt;
     private int _clashNumber;
@@ -151,27 +152,7 @@ public sealed partial class Station
     {
         if (_burst.Built && !_burst.Started)
         {
-            AddressQueue q = _burst.Queue!;
-            for (int i = _burst.Items.Count - 1; i >= 0; i--)
-            {
-                Pending p = _burst.Items[i];
-                (p.Expedited ? q.Expedited : q.Ordinary).Insert(0, p);
-                q.Bits += (p.Length + LengthBytes) * 8L;
-                _queuedCount++;
-                if (p.Expedited)
-                {
-                    _expeditedCount++;
-                }
-            }
-
-            _burst.Items.Clear();
-            FreeBurstAudio();
-            _burst.Built = false;
-            if (_data is { } data)
-            {
-                _access.TakeBack(data);
-            }
-
+            RestoreBurstToQueue();
             EnsureDataRequest();
         }
 
@@ -219,10 +200,35 @@ public sealed partial class Station
         if (_clashBuilt && _clashRequest is { State: not ChannelAccess.RequestState.Started } clash)
         {
             // The Clash names the number, not this station: it is built again as it was.
-            _clashesOwed.Insert(0, (_clashNumber, _clashId));
+            _clashesOwed.Insert(0, (_clashNumber, _clashId, SampleCount));
             DiscardClash();
             _access.TakeBack(clash);
             EnsureClashRequest();
+        }
+    }
+
+    /// <summary>Takes a built burst that is not on the air back: its datagrams go to the front of their queue in order, its audio is freed and its request is taken back from the audio layer.</summary>
+    private void RestoreBurstToQueue(bool takeBack = true)
+    {
+        AddressQueue q = _burst.Queue!;
+        for (int i = _burst.Items.Count - 1; i >= 0; i--)
+        {
+            Pending p = _burst.Items[i];
+            (p.Expedited ? q.Expedited : q.Ordinary).Insert(0, p);
+            q.Bits += (p.Length + LengthBytes) * 8L;
+            _queuedCount++;
+            if (p.Expedited)
+            {
+                _expeditedCount++;
+            }
+        }
+
+        _burst.Items.Clear();
+        FreeBurstAudio();
+        _burst.Built = false;
+        if (takeBack && _data is { } data)
+        {
+            _access.TakeBack(data);
         }
     }
 
@@ -295,28 +301,18 @@ public sealed partial class Station
         _idAt[number] = at;
     }
 
-    /// <summary>What the station measured for a number, the addresses it had there and anything queued for it, and what it owed that station, are forgotten. The host is told the addresses have gone.</summary>
+    /// <summary>What the station measured for a number, the addresses it had there and what it owed that station are forgotten, as when three silences forget a station. The host is told the addresses have gone (<see cref="LinkStateEvent.Gone"/>); what was queued for them stays queued and goes to everyone with For.</summary>
     private void ForgetNumber(int who, double now)
     {
+        bool restored = false;
         if (_burst.Built && !_burst.Started && _burst.Dest == who)
         {
-            // A burst for the station that is no longer there: its datagrams are dropped, as the rest of what waited for it.
-            foreach (Pending p in _burst.Items)
-            {
-                Dropped?.Invoke(new DroppedEvent(p.Tag, DropReason.LinkForgotten));
-                Release(p);
-            }
-
-            _burst.Items.Clear();
-            FreeBurstAudio();
-            _burst.Built = false;
-            if (_data is { } data)
-            {
-                _access.TakeBack(data);
-            }
+            // A burst for the station that is no longer there: its datagrams go back to their queue and follow the address, to everyone.
+            RestoreBurstToQueue(takeBack: false); // taken back below, once the address is forgotten, so that it is built again for everyone
+            restored = true;
         }
 
-        ForgetAddressesAt(who, now, dropQueued: true);
+        ForgetAddressesAt(who, now);
         _link.Forget(who);
         _stationShown[who] = default;
         _owedSlots[who] = default;
@@ -346,6 +342,11 @@ public sealed partial class Station
             }
         }
 
+        if (restored && _data is { } data)
+        {
+            _access.TakeBack(data);
+        }
+
         EnsureDataRequest();
         EnsureReportRequest();
     }
@@ -367,19 +368,25 @@ public sealed partial class Station
         {
             if (_clashesOwed[i].Number == number)
             {
-                _clashesOwed[i] = (number, id);
+                _clashesOwed[i] = (number, id, _clashesOwed[i].ReadyAt);
                 return;
             }
         }
 
-        _clashesOwed.Add((number, id));
+        // A Clash is not urgent: it asks for the channel only after a delay drawn from 0 to 10 s, so that two stations that owe the same one do not go together.
+        long readyAt = SampleCount + _random.NextInt64((10L * SampleRate) + 1);
+        _clashesOwed.Add((number, id, readyAt));
         _clashesOwedCount++;
+        ScheduleAt(readyAt, _onClashReady);
         EnsureClashRequest();
     }
 
     /// <summary>A Clash for <paramref name="number"/> and <paramref name="id"/> was decoded, from whoever sent it.</summary>
     private void HeardClash(int number, uint id)
     {
+        // Said by somebody: the id record for the number is cleared (the next identification heard there is only recorded).
+        _idKnown[number] = false;
+
         // A station about to send a Clash for the number does not send its own.
         bool cancelled = false;
         for (int i = _clashesOwed.Count - 1; i >= 0; i--)
@@ -425,7 +432,7 @@ public sealed partial class Station
     private void EnsureClashRequest()
     {
         ChannelAccess.Request? request = _clashRequest;
-        bool owed = _clashesOwed.Count > 0;
+        bool owed = HasClashReady();
         if (request is null)
         {
             if (owed)
@@ -458,13 +465,22 @@ public sealed partial class Station
             return true;
         }
 
-        if (_clashesOwed.Count == 0)
+        int first = -1;
+        for (int i = 0; i < _clashesOwed.Count; i++)
+        {
+            if (_clashesOwed[i].ReadyAt <= SampleCount && (first < 0 || _clashesOwed[i].ReadyAt < _clashesOwed[first].ReadyAt))
+            {
+                first = i;
+            }
+        }
+
+        if (first < 0)
         {
             return false;
         }
 
-        (int number, uint id) = _clashesOwed[0];
-        _clashesOwed.RemoveAt(0);
+        (int number, uint id, _) = _clashesOwed[first];
+        _clashesOwed.RemoveAt(first);
         int format = StandardFormats.FirstContact;
         _renderer ??= new BurstRenderer();
         PayloadCodec.WriteKey(_stationId, _idItemValue);
@@ -488,7 +504,26 @@ public sealed partial class Station
         return true;
     }
 
-    private void OnClashBurstStarted() => _clashesSent++;
+    private bool HasClashReady()
+    {
+        foreach ((int _, uint _, long readyAt) in _clashesOwed)
+        {
+            if (readyAt <= SampleCount)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void OnClashBurstStarted()
+    {
+        _clashesSent++;
+
+        // The Clash has been said: what was remembered as the last id heard on the number is cleared, so that the next identification heard there is only recorded.
+        _idKnown[_clashNumber] = false;
+    }
 
     private void OnClashBurstEnded()
     {

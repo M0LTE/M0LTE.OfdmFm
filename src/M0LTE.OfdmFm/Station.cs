@@ -115,6 +115,7 @@ public sealed partial class Station
         _random = random;
         _inline = runJobsInline;
         Array.Fill(_senderHeardAt, long.MinValue);
+        _onClashReady = EnsureClashRequest;
         InitialiseReceive();
         InitialiseAccess();
     }

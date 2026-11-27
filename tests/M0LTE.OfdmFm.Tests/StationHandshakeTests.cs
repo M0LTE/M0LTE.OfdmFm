@@ -8,7 +8,7 @@ public class StationHandshakeTests
 {
     private static (Station Station, FakeAudioLayer Layer) Make()
     {
-        var station = new Station("M0LTE", 1, new Random(1));
+        var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
         return (station, new FakeAudioLayer(station));
     }
 

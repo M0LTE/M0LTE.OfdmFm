@@ -133,6 +133,12 @@ public sealed partial class Station
     /// </summary>
     private void NoteVerdict(int sender, long burstEnd, LinkReport? owed, bool asked, bool decoded)
     {
+        if (Callsign is null)
+        {
+            // A listener only: nothing is owed, so nothing stale goes out once an identity is set.
+            return;
+        }
+
         if (decoded && owed is null && _owedSlots[sender] is { Active: true, Kind: OwedKind.Failed })
         {
             // The failed bit says "your last burst reached me and I could not decode it". A later burst from the same station has now decoded, so the last one did not fail: the report that goes is the recommendation alone, as a drop is.

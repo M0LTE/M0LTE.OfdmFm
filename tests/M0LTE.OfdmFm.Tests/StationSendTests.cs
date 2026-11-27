@@ -116,7 +116,7 @@ public class StationSendTests
     {
         // Station 2 hears station 1 by number alone, then is told its name.
         var rig = new SimRig(2, connect: true);
-        var third = new Station("M0NEW", 3, new Random(5), runJobsInline: true);
+        var third = new Station(3, new Random(5), runJobsInline: true).WithIdentity("M0NEW");
         Station s1 = rig.Stations[0];
         Station s2 = rig.Stations[1];
         var heardBy2 = new List<ReceivedEvent>();
@@ -127,7 +127,7 @@ public class StationSendTests
         s2.PathReport += paths.Add;
 
         // Make 2 forget the binding for 1 by working from a fresh station that never had it.
-        var fresh = new Station("M0FRESH", 4, new Random(7), runJobsInline: true);
+        var fresh = new Station(4, new Random(7), runJobsInline: true).WithIdentity("M0FRESH");
         var channel = new SimChannel(4800, 3);
         SimNode n1 = channel.Add(s1, "S1");
         SimNode n4 = channel.Add(fresh, "S4");
@@ -401,7 +401,7 @@ public class StationSendTests
     public void A_Burst_Handed_Over_Does_Not_Allocate_Once_Its_Shape_Has_Been_Seen()
     {
         // One station and a bare audio layer (no simulation around it, which allocates its own copies). The same datagram a few times: the first sends grow every pool and buffer; later ones allocate nothing.
-        var station = new Station("M0ALLOC", 1, new Random(3), runJobsInline: true) { IdentificationSuspended = true };
+        var station = (new Station(1, new Random(3), runJobsInline: true) { IdentificationSuspended = true }).WithIdentity("M0ALLOC");
         station.Bind(B, 2);
         long id = 0;
         long earliest = 0;

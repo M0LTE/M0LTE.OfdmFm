@@ -42,7 +42,7 @@ internal sealed class ReceiveRig : IDisposable
     {
         _workers = workers;
         _park = park && workers > 0;
-        Station = new Station("M0LTE", number, new Random(5), runJobsInline: workers == 0);
+        Station = new Station(number, new Random(5), runJobsInline: workers == 0).WithIdentity("M0LTE");
 
         // A listening station: the carrier indication is held set, so the channel is never free and the station never keys. Step 6 sends lone reports, and a station that sent them would call the rules (ReportFor, Choose)
         // in ways the tests that replay the recorded calls by hand do not know of.

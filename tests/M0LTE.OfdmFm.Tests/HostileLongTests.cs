@@ -186,7 +186,7 @@ public class HostileLongTests
         Hostile.Gate();
         HostileScenarios.Idents r = HostileScenarios.Identification(HostileScenarios.Default, 1, 600, 1330);
         Hostile.Say("ten minutes: " + HostileScenarios.Describe(r));
-        r.Sent.Should().Equal(new[] { 3, 3, 1 }, "at once, then 10 minutes and 20 minutes later for the two that keep transmitting; C once");
+        r.Sent.Should().Equal(new[] { 3, 3, 1 }, "at once, then after the first transmission to end past ten minutes from the start of the last, for the two that keep transmitting; C once");
         r.IdentsOverlapped.Should().Be(0);
         r.TrafficOverlappedByIdent.Should().Be(0);
     }

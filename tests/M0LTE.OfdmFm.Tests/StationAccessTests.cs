@@ -119,7 +119,7 @@ public class StationAccessTests
         return () => rng.Next(1, 1500);
     }
 
-    private static Station Make(int seed = 1) => new("M0LTE", 1, new Random(seed), runJobsInline: true) { IdentificationSuspended = true };
+    private static Station Make(int seed = 1) => (new Station(1, new Random(seed), runJobsInline: true) { IdentificationSuspended = true }).WithIdentity("M0LTE");
 
     private static (float[] Stream, Placed Placed) OneDataBurst()
     {

@@ -18,7 +18,7 @@ internal sealed class IdentDriver
 
     public IdentDriver(long intervalSamples, string callsign = "M0LTE", int number = 1, int seed = 1)
     {
-        Station = new Station(callsign, number, new Random(seed), runJobsInline: true);
+        Station = new Station(number, new Random(seed), runJobsInline: true).WithIdentity(callsign);
         if (intervalSamples > 0)
         {
             Station.IdentificationInterval = intervalSamples;
@@ -141,9 +141,9 @@ internal sealed class IdentDriver
 }
 
 /// <summary>
-/// The identification rule (step 7): due when ten minutes have passed since the last identification (or there was none) and the station has transmitted since. These tests step it with a shorter interval (a seam:
-/// <c>Station.IdentificationInterval</c>) so that a run is seconds and not ten minutes of audio through the detector. The seam is sound because the interval is read in one place (when a transmission starts) and goes into one timer's
-/// due sample and one comparison; the real interval is pinned by a test of its own and run end to end behind <c>SM_MASK_GATE=1</c>.
+/// The identification rule (step 7, as changed on 27 November 2026): due when a transmission of the station's ends and either it has never identified or ten minutes have passed since its last identification started. No timer, so an idle
+/// station never keys to identify. These tests step it with a shorter interval (a seam: <c>Station.IdentificationInterval</c>) so that a run is seconds and not ten minutes of audio through the detector. The seam is sound because the interval is
+/// read in one place (when a transmission ends) and goes into one comparison; the real interval is pinned by a test of its own and run end to end behind <c>SM_MASK_GATE=1</c>.
 /// </summary>
 public class StationIdentificationClockTests
 {
@@ -168,13 +168,7 @@ public class StationIdentificationClockTests
         d.RunTo(6 * 48000);
         d.SendToEveryone(1);
         RunUntilAir(d, 2);
-        long identStart = d.Air[1].Start;
-        d.Station.LastIdentificationStart.Should().Be(identStart);
-        d.Station.IdentificationDueAt.Should().BeNull("nothing has been sent since it");
-        d.RunTo(identStart + 200000);
-        d.SendToEveryone(2);
-        d.RunTo(identStart + 600000);
-        d.Station.IdentificationDueAt.Should().Be(identStart + 28_800_000, "ten minutes from the start of the last identification burst, whatever the wait for the channel was");
+        d.Station.LastIdentificationStart.Should().Be(d.Air[1].Start);
     }
 
     [Fact]
@@ -183,7 +177,6 @@ public class StationIdentificationClockTests
         var d = new IdentDriver(Interval);
         d.RunTo(4 * Interval);
         d.Log.Should().BeEmpty();
-        d.Station.IdentificationResting.Should().BeTrue();
         d.Station.PendingTimers.Should().Be(0);
     }
 
@@ -200,7 +193,7 @@ public class StationIdentificationClockTests
         d.Air[1].Start.Should().Be(d.Air[0].End + 4800 + 2400, "right after, by the ordinary rules: the own tail and the first slot");
         d.Clocks("modem Identification").Should().ContainSingle();
         d.Station.IdentificationsSent.Should().Be(1);
-        d.Station.IdentificationResting.Should().BeTrue("the identification burst is not a transmission since");
+        d.Station.IdentificationOwed.Should().BeFalse("the identification burst is not a transmission that owes another");
         d.Station.PendingTimers.Should().Be(0);
     }
 
@@ -260,7 +253,7 @@ public class StationIdentificationClockTests
     }
 
     [Fact]
-    public void A_Station_That_Identified_Transmitted_Again_Within_The_Interval_And_Went_Quiet_Keys_Once_When_The_Interval_Is_Up()
+    public void A_Station_That_Identified_Transmitted_Again_Within_The_Interval_And_Went_Quiet_Never_Keys_Again_However_Long_The_Clock_Runs()
     {
         var d = new IdentDriver(Interval);
         d.RunTo(6 * 48000);
@@ -269,13 +262,48 @@ public class StationIdentificationClockTests
         long identStart = d.Air[1].Start;
         d.RunTo(d.Air[1].End + 48000);
         d.SendToEveryone(2);
-        d.RunTo(identStart + (5 * Interval));
+        RunUntilAir(d, 3);
+        d.RunTo(d.Air[2].End + 48000);
+        d.Air[2].End.Should().BeLessThan(identStart + Interval, "sent inside the interval: covered by the identification before it");
+        int requests = d.Requests.Count;
+        int due = d.Clocks("due").Count();
 
-        d.Air.Should().HaveCount(4, "datagram, identification, datagram, one more identification");
-        d.Air[2].End.Should().BeLessThan(identStart + Interval);
-        d.Clocks("due").Last().Should().Be(identStart + Interval, "when the ten minutes since the last one are up, while the station is idle");
-        d.Air[3].Start.Should().Be(identStart + Interval, "the channel was long clear, so it goes the moment it is due");
-        d.Station.IdentificationResting.Should().BeTrue();
+        // The clock runs on: many intervals, in steps.
+        for (int i = 0; i < 10; i++)
+        {
+            d.Station.Skip((int)Interval);
+        }
+
+        d.Station.SampleCount.Should().BeGreaterThan(identStart + (10 * Interval));
+        d.Requests.Count.Should().Be(requests, "no request: an idle station never keys to identify");
+        d.Clocks("due").Count().Should().Be(due, "and no identification fell due");
+        d.Air.Should().HaveCount(3, "the datagram, the identification, the datagram");
+        d.Station.IdentificationsSent.Should().Be(1);
+        d.Station.PendingTimers.Should().Be(0, "there is no identification timer");
+    }
+
+    [Fact]
+    public void A_Transmission_That_Ends_Inside_The_Interval_Owes_Nothing_And_The_First_To_End_Past_It_Is_Followed_By_An_Identification()
+    {
+        var d = new IdentDriver(Interval);
+        d.RunTo(6 * 48000);
+        d.SendToEveryone(1);
+        RunUntilAir(d, 2);
+        long identStart = d.Air[1].Start;
+        d.RunTo(d.Air[1].End + 48000);
+        d.SendToEveryone(2);
+        d.RunTo(identStart + Interval - 48000);
+        d.Air.Should().HaveCount(3);
+        d.Clocks("due").Should().HaveCount(1);
+
+        // A transmission that begins inside the interval and ends past it is the one that makes it due.
+        d.RunTo(identStart + Interval - 2000);
+        d.SendToEveryone(3, length: 200);
+        d.RunTo(identStart + (3 * Interval));
+        d.Air.Should().HaveCount(5);
+        d.Air[3].End.Should().BeGreaterThanOrEqualTo(identStart + Interval);
+        d.Clocks("due").Last().Should().Be(d.Air[3].End);
+        d.Air[4].Length.Should().Be(IdentLength("M0LTE"));
     }
 
     [Fact]
@@ -364,7 +392,7 @@ public class StationIdentificationClockTests
     }
 
     [Fact]
-    public void The_Whole_Ten_Minutes_Run_Through_The_Detector_Give_One_Identification_Exactly_Ten_Minutes_After_The_Last_One_Started()
+    public void The_Whole_Ten_Minutes_Run_Through_The_Detector_An_Idle_Station_Never_Keys_And_The_First_Transmission_To_End_Past_Ten_Minutes_Is_Followed_By_An_Identification()
     {
         Assert.SkipWhen(Environment.GetEnvironmentVariable("SM_MASK_GATE") != "1", "set SM_MASK_GATE=1: ten minutes of audio goes through the detector");
         var d = new IdentDriver(0);
@@ -374,13 +402,15 @@ public class StationIdentificationClockTests
         long identStart = d.Air[1].Start;
         d.RunTo(d.Air[1].End + 48000);
         d.SendToEveryone(2);
-        d.RunTo(identStart + 28_800_000 - 48000);
-        d.Clocks("due").Should().HaveCount(1, "only the first: one second short of ten minutes");
-        d.RunTo(identStart + 28_800_000 + (10L * 48000));
-        d.Clocks("due").Last().Should().Be(identStart + 28_800_000);
-        d.Air.Should().HaveCount(4);
         d.RunTo(identStart + 28_800_000 + (60L * 48000));
-        d.Air.Should().HaveCount(4, "nothing sent since: nothing more");
+        d.Air.Should().HaveCount(3, "datagram, identification, datagram: an idle station never keys, not at ten minutes and not after");
+        d.Clocks("due").Should().HaveCount(1);
+
+        d.SendToEveryone(3);
+        d.RunTo(d.Station.SampleCount + (30L * 48000));
+        d.Air.Should().HaveCount(5);
+        d.Clocks("due").Last().Should().Be(d.Air[3].End, "at the end of the first transmission past the ten minutes");
+        d.Air[3].End.Should().BeGreaterThanOrEqualTo(identStart + 28_800_000);
     }
 
     private static int IdentLength(string callsign)

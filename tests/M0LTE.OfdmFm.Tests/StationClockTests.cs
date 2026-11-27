@@ -6,7 +6,7 @@ namespace M0LTE.OfdmFm.Tests;
 /// <summary>Step 1 of the station: the sample clock, the timers on it, and one seed giving one run.</summary>
 public class StationClockTests
 {
-    private static Station Make(int seed = 1) => new("M0LTE", 1, new Random(seed));
+    private static Station Make(int seed = 1) => new Station(1, new Random(seed)).WithIdentity("M0LTE");
 
     private static void PushInBlocks(Station station, long total, int block)
     {

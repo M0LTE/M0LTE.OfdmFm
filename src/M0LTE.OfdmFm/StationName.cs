@@ -131,4 +131,20 @@ public enum SendResult
 
     /// <summary>The queue to that station holds its limit of airtime. <see cref="Station.Congestion"/> says when it is writable again.</summary>
     QueueFull = 3,
+
+    /// <summary>The station has no identity yet (<see cref="Station.SetIdentity"/>) and does not transmit. Nothing is queued.</summary>
+    NoIdentity = 4,
+}
+
+/// <summary>What <see cref="Station.SetIdentity"/> did.</summary>
+public enum IdentityResult
+{
+    /// <summary>The callsign is the station's: it was set, or it was already this one. Nothing changes if it was.</summary>
+    Accepted = 0,
+
+    /// <summary>Not 1 to 16 characters of A to Z, 0 to 9, '/' and '-'. Nothing changes.</summary>
+    Invalid = 1,
+
+    /// <summary>The station has a different callsign already. Nothing changes: to change callsign, make a new station.</summary>
+    Different = 2,
 }

@@ -10,7 +10,7 @@ public class CaptureModelTests
 
     private static SimNode Node(params (long Start, float[] Data)[] signals)
     {
-        var node = new SimNode(new Station("M0TST", 1, new Random(1), runJobsInline: true), "X", 0);
+        var node = new SimNode(new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0TST"), "X", 0);
         foreach ((long start, float[] data) in signals)
         {
             node.Heard.Add(new Incoming { Start = start, Data = data, Level = CaptureModel.Levels(data) });

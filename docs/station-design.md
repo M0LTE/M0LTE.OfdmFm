@@ -372,6 +372,8 @@ Choices the design left open, taken as the simplest that fits it:
 7. The data a station had queued for a forgotten address is dropped (the brief said so), where an address forgotten for silence still sends its datagrams on to everyone.
 8. A burst built before a move is discarded and built again, not patched.
 
+Results (seeds 1 to 8, the gated tier; each is a test): a direct clash, B moved once in every seed and A never, and 96 of 96 datagrams were delivered with a carrier indication and 93 of 96 with detection alone, none twice. A hidden clash: one Clash burst in every seed in both modes, naming the later id, C moved and A did not, and 32 of 32 datagrams were delivered afterwards. Two observers: with detection alone two Clash bursts went out in 5 seeds of 8 and C moved in 3; with a carrier indication two went out in 6 and C moved in 5 (two sent together overlap and neither is decoded). Three stations with random numbers over the soak, all eight seeds: no number clashed by chance, so no station moved and every invariant held.
+
 Found, recorded and not worked round:
 
 - **A lost Clash is not repeated.** Two stations that both owe a Clash for the same number can send together (they cannot hear each other in time), and then neither is decoded. The clash stays until the other station identifies; the third stations have the later id on record, so the other station's next identification looks like a change and the Clash then names it.

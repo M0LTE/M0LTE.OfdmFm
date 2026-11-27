@@ -241,8 +241,11 @@ public sealed partial class Station
     /// <summary>Candidates whose opening the ring had overwritten before a worker could read it.</summary>
     internal long HeadersLost => Volatile.Read(ref _headersLost);
 
-    /// <summary>Bursts dropped because more than four were waiting for a worker. Nothing is raised for one.</summary>
-    internal long BurstsDropped => Volatile.Read(ref _burstsDropped);
+    /// <summary>
+    /// How many bursts the station has dropped, ever, because more than four were waiting for a worker: decoding is falling behind the audio, as on a processor too slow for the traffic. A dropped burst is not decoded and nothing is raised for it;
+    /// its datagrams are lost and the far station will count a silence. A host should report it whenever the count rises (a log line, say), so that its operator knows the computer is too slow.
+    /// </summary>
+    public long BurstsDropped => Volatile.Read(ref _burstsDropped);
 
     /// <summary>Bursts whose start the ring had overwritten before they could be copied.</summary>
     internal long BurstsLost => Volatile.Read(ref _burstsLost);

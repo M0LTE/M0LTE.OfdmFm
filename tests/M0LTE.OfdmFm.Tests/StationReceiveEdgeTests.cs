@@ -381,6 +381,65 @@ public class StationReceiveEdgeTests
         events.Should().Be(1, "one neighbour's first link state, and nothing for the four dropped");
     }
 
+    /// <summary>Pushes <paramref name="count"/> bursts with every worker busy (only header reads run) and returns the public drop count and the queue length after each block.</summary>
+    private static List<(long Dropped, int Queued)> DropCountsWhileBursts(int count)
+    {
+        var b = new StreamBuilder().Silence(1.0);
+        for (int i = 0; i < count; i++)
+        {
+            b.Add(TestBurst.Data(5, 1, Format, [TestBurst.Datagram(20 + i, 30)], symbols: 8));
+            b.Silence(0.6);
+        }
+
+        b.Silence(1.5).Noise(0.01, 31);
+        var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
+        station.SetExternalBusy(true);
+        var counts = new List<(long, int)>();
+        float[] samples = b.ToArray();
+        for (int at = 0; at < samples.Length; at += 4800)
+        {
+            station.Push(samples.AsSpan(at, Math.Min(4800, samples.Length - at)));
+            station.DeliverResults();
+            while (station.HeaderJobPending)
+            {
+                station.RunOne();
+                station.DeliverResults();
+            }
+
+            counts.Add((station.BurstsDropped, station.BurstsQueued));
+        }
+
+        return counts;
+    }
+
+    [Fact]
+    public void The_Public_Count_Of_Dropped_Bursts_Rises_By_One_For_Each_Burst_Dropped_And_Not_Otherwise()
+    {
+        const int count = 8;
+        List<(long Dropped, int Queued)> counts = DropCountsWhileBursts(count);
+
+        long previous = 0;
+        foreach ((long dropped, int queued) in counts)
+        {
+            (dropped - previous).Should().BeInRange(0, 1, "a burst arrives at most once between two blocks here, and each one dropped adds one");
+            if (dropped > previous)
+            {
+                queued.Should().Be(4, "a burst is dropped only when the queue is full");
+            }
+
+            previous = dropped;
+        }
+
+        previous.Should().Be(count - 4, "one for each burst beyond the four the queue holds");
+        counts.TakeWhile(c => c.Queued < 4).Should().OnlyContain(c => c.Dropped == 0, "nothing is counted while the queue has room");
+    }
+
+    [Fact]
+    public void The_Public_Count_Of_Dropped_Bursts_Stays_Zero_While_The_Queue_Holds_Every_Burst()
+    {
+        DropCountsWhileBursts(4).Should().OnlyContain(c => c.Dropped == 0);
+    }
+
     [Fact]
     public void A_Queued_Station_Delivers_Nothing_Until_Its_Jobs_Are_Run_And_Then_On_The_Next_Delivery()
     {

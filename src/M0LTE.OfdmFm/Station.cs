@@ -37,7 +37,7 @@ internal enum TransmitState
 /// <b>The channel.</b> The channel is busy while any of these holds, each ending on the sample clock, and <see cref="ChannelBusy"/> is raised on each change of the union:
 /// a burst the station knows of, from the frame that read its header to its last sample (the length is in the header); a candidate whose header will not read, for its opening and one second from its first sample;
 /// a header of a version the station does not know, one second at a time while more arrive; a candidate still waiting to be judged; the station's own transmission, from the grant to the end and 100 ms after; and the
-/// host's carrier indication (<see cref="SetExternalBusy"/>), while set and for 100 ms after. Audio from a symbol before the station's own transmission to 0.25 s after it is ignored.
+/// host's carrier indication (<see cref="SetExternalBusy"/>), while set and for 100 ms after (none while the host says it has none). Audio from a symbol before the station's own transmission to 0.25 s after it is ignored.
 /// A burst is found only after its opening has been heard and the next correlation frame has run, so a carrier is noticed late by burst detection alone: up to 0.9 s after another station keys, against 0.1 s with a carrier indication.
 /// </para>
 /// <para>
@@ -46,7 +46,7 @@ internal enum TransmitState
 /// (<c>LinkAdaptation.Choose</c>), takes datagrams for it in order while they fit (up to 2.5 s of airtime, or one datagram if it needs longer), writes the prelude (the recommendation for the destination, "report wanted" when the rules or the host ask,
 /// and then the capability word), packs and renders the burst and hands the samples to the audio layer in <see cref="TransmitRequest"/>. A burst for everyone goes at the first-contact format with no prelude. The burst number counts up by one a burst, modulo 16.
 /// <see cref="TransmitStarted"/> tells the rules a burst was sent (<c>Sent</c>); <see cref="TransmitEnded"/> raises <see cref="Transmitted"/> for each datagram in it. If the burst asked for a report and no header of any burst from the station was read within the answer wait
-/// (3 s plus twice the burst's airtime) of its end, the rules are told of one silence (<c>NoAnswer</c>). A request withdrawn before it is keyed keeps its burst, built as it was, and is handed over again unchanged.
+/// (3 s plus twice the burst's airtime) of its end, the rules are told of one silence (<c>NoAnswer</c>). A request withdrawn before it is keyed, or one the audio layer refuses (<see cref="TransmitRefused"/>), keeps its burst, built as it was, and is handed over again unchanged.
 /// </para>
 /// <para>
 /// <b>Channel access.</b> Transmissions are requested as a report, an expedited datagram or ordinary traffic. A report or expedited datagram is granted once the channel has been
@@ -56,7 +56,7 @@ internal enum TransmitState
 /// </para>
 /// <para>
 /// <b>Threads.</b> A station has no threads of its own. Two groups of members exist.
-/// The <i>audio-thread</i> members are <see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/>, <see cref="SetExternalBusy"/>, the host's operations
+/// The <i>audio-thread</i> members are <see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/>, <see cref="TransmitRefused"/>, <see cref="SetExternalBusy"/>, the host's operations
 /// <see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Cancel(LinkAddress)"/> and <see cref="Snapshot"/>, the internal <c>Enqueue</c> and the properties
 /// <see cref="SampleCount"/> and <see cref="Seconds"/>; the caller must serialise every call to them on one station (one thread, or a lock: a host that sends from other threads takes the lock its audio thread takes around <see cref="Push"/>), events are raised on the thread that made the call that
 /// caused them, and an event handler must not call any of these members (they throw <see cref="InvalidOperationException"/>, as they do from a timer action).
@@ -200,7 +200,7 @@ public sealed partial class Station
     public event Action<LinkStateEvent>? LinkState;
 
     /// <summary>
-    /// Raised when the channel becomes busy or clear, on the audio thread, in the call that caused it (<see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="SetExternalBusy"/>, <see cref="TransmitStarted"/> or <see cref="TransmitEnded"/>),
+    /// Raised when the channel becomes busy or clear, on the audio thread, in the call that caused it (<see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="SetExternalBusy"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/> or <see cref="TransmitRefused"/>),
     /// with the clock at the exact sample the rule gives. Never twice running with the same value. The union of what the station hears of other stations (see the class's documentation), its own transmission and the host's carrier indication.
     /// </summary>
     public event Action<ChannelBusyEvent>? ChannelBusy;

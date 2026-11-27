@@ -50,6 +50,15 @@ internal sealed class SimNode
     /// <summary>The audio layer's own delay between a request and playing it, samples: the request starts at its earliest sample plus this. During it the station may withdraw the request.</summary>
     public int StartLatencySamples { get; set; }
 
+    /// <summary>The audio layer cannot key: for each request handed over, given its number (1 for the first the station ever asked for), true refuses it (nothing is radiated). Null: none refused.</summary>
+    public Func<int, bool>? RefuseRequest { get; set; }
+
+    /// <summary>True (the default): a refusal is reported with <see cref="Station.TransmitRefused"/>. False: the layer refuses in silence, as a layer without the call would.</summary>
+    public bool ReportRefusals { get; set; } = true;
+
+    /// <summary>Every request the audio layer refused: its id and the clock.</summary>
+    public List<(long Id, long Clock)> Refused { get; } = [];
+
     // ---- what the tests read ----
 
     /// <summary>Every datagram received: the clock, the sender's number (read from the station by the test seam: no host sees it), whether it was for everyone (with or without a For), how it was addressed, the For key, the bytes and the quality.</summary>
@@ -662,6 +671,18 @@ internal sealed class SimChannel
     {
         if (plan.Cancelled)
         {
+            return;
+        }
+
+        if (n.RefuseRequest is { } refuse && refuse(n.Requests.FindIndex(r => r.Id == plan.Id) + 1))
+        {
+            n.Refused.Add((plan.Id, Clock));
+            n.Plans.Remove(plan.Id);
+            if (n.ReportRefusals)
+            {
+                n.Station.TransmitRefused(plan.Id);
+            }
+
             return;
         }
 

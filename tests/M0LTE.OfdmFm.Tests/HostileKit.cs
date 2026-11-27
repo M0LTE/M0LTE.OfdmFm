@@ -26,6 +26,9 @@ internal static class Hostile
 
     public static string Seconds(long samples) => F(samples / 48000.0, "F2");
 
+    /// <summary>True when the gated tier is on (SM_MASK_GATE=1).</summary>
+    public static bool Gated => Environment.GetEnvironmentVariable("SM_MASK_GATE") == "1";
+
     public static void Gate() =>
         Assert.SkipWhen(Environment.GetEnvironmentVariable("SM_MASK_GATE") != "1", "set SM_MASK_GATE=1: minutes of simulated traffic among three stations, and the capture-margin sweeps");
 

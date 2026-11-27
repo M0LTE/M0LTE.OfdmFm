@@ -56,11 +56,22 @@ public class HostileLongTests
         Hostile.Gate();
         HostileScenarios.Soak r = HostileScenarios.Soaking(HostileScenarios.Default, seed, 240, 90, meanGap, indication);
         Hostile.Say($"seed {seed}, mean gap {meanGap} s, {(indication ? "carrier indication" : "detection alone")}: " + HostileScenarios.Describe(r));
+        CheckSoak(r, randomNumbers: false);
+    }
+
+    /// <summary>What every soak asserts. With random numbers the stations may clash and move (the hosts then see datagrams dropped as "link forgotten"); with fixed ones nothing can be.</summary>
+    internal static void CheckSoak(HostileScenarios.Soak r, bool randomNumbers)
+    {
         r.Duplicates.Should().Be(0, "no datagram delivered twice");
         r.DeliveredWithoutEvent.Should().Be(0, "nothing arrives that the sender was not told went out");
         r.Accepted.Should().Be(r.Transmitted + r.Dropped + r.StillQueued, "every datagram accepted went out, was reported dropped or is still queued");
         r.StillQueued.Should().Be(0, "the queues emptied in the 90 s after the traffic stopped");
-        r.Dropped.Should().Be(r.Cancelled + r.NoLongerFit, "the only datagrams dropped are those the host cancelled and those that no longer fit a burst after the format fell");
+        r.Dropped.Should().Be(r.Cancelled + r.NoLongerFit + r.LinkForgotten, "the only datagrams dropped are those the host cancelled, those that no longer fit a burst after the format fell and those for a number found to have changed hands");
+        if (!randomNumbers)
+        {
+            r.LinkForgotten.Should().Be(0, "with fixed numbers no number changes hands");
+        }
+
         r.WrongHints.Should().Be(0, "a hint names only datagrams sent to that station that did not arrive");
         r.MisattributedReports.Should().Be(0);
         r.Reordered.Should().Be(0, "ordinary datagrams from one station to another arrive in the order they were sent");
@@ -71,6 +82,33 @@ public class HostileLongTests
         r.MaxTimers.Should().BeLessThan(32);
         r.MaxQueued.Should().BeLessThan(64);
         r.Delivered.Should().BeGreaterThan(r.Transmitted / 3);
+    }
+
+    [Theory]
+    [InlineData(1, 9.0, false)]
+    [InlineData(2, 9.0, true)]
+    [InlineData(3, 4.0, false)]
+    [InlineData(4, 4.0, true)]
+    [InlineData(5, 2.0, false)]
+    [InlineData(6, 3.0, false)]
+    [InlineData(7, 3.0, true)]
+    [InlineData(8, 6.0, false)]
+    public void The_Soak_With_Stations_That_Pick_Their_Own_Numbers_Keeps_Every_Invariant_The_Soak_Asserts(int seed, double meanGap, bool indication)
+    {
+        Hostile.Gate();
+        HostileScenarios.Soak r = HostileScenarios.Soaking(HostileScenarios.Default, seed, 240, 90, meanGap, indication, randomNumbers: true);
+        Hostile.Say($"random numbers, seed {seed}, mean gap {meanGap} s, {(indication ? "carrier indication" : "detection alone")}: " + HostileScenarios.Describe(r) + $"; dropped as link forgotten {r.LinkForgotten}");
+        CheckSoak(r, randomNumbers: true);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void A_Short_Run_Of_Three_Stations_With_Random_Numbers_And_Ids_Keeps_Every_Invariant_The_Soak_Asserts(int seed)
+    {
+        HostileScenarios.Soak r = HostileScenarios.Soaking(HostileScenarios.Default, seed, 120, 60, 6, indication: seed == 2, randomNumbers: true);
+        Hostile.Say($"short random-number run, seed {seed}: " + HostileScenarios.Describe(r) + $"; dropped as link forgotten {r.LinkForgotten}");
+        CheckSoak(r, randomNumbers: true);
     }
 
     [Fact]

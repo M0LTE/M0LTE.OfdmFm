@@ -111,7 +111,7 @@ public sealed partial class Station
         }
 
         int count = 0;
-        int oldest = 1;
+        int oldest = 0;
         for (int n = 1; n <= 63; n++)
         {
             long heard = _senderHeardAt[n];
@@ -120,7 +120,8 @@ public sealed partial class Station
                 _candidateNumbers[count++] = n;
             }
 
-            if (heard < _senderHeardAt[oldest])
+            // The number held now is not a choice: a station that moves goes somewhere else.
+            if (n != _number && (oldest == 0 || heard < _senderHeardAt[oldest]))
             {
                 oldest = n;
             }

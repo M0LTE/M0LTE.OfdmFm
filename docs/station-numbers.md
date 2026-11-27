@@ -1,6 +1,6 @@
 # Link addresses and station numbers: the design
 
-Status: agreed by Tom on 2026-11-27 ("so effectively MAC addresses and ARP. OK"), for packet-net/pdn-soundmodem#835. Not yet built. It replaces the interim arrangement (the station number is a setting, the host binds names to numbers, a heard callsign becomes a number's name). Two earlier forms of this document were dropped the same day: one kept names in the modem with a question and answer on the air, one had the host send to numbers. "Choices made here" at the end lists what was settled without asking.
+Status: agreed by Tom on 2026-11-27 ("so effectively MAC addresses and ARP. OK"), for packet-net/pdn-soundmodem#835. Not yet built. It replaces the interim arrangement (the station number is a setting, the host binds names to numbers, a heard callsign becomes a number's name). Amended the same day after a review against a draft third-party network stack that would run over the modem (see "Amended" at the end). Two earlier forms of this document were dropped the same day: one kept names in the modem with a question and answer on the air, one had the host send to numbers. "Choices made here" at the end lists what was settled without asking.
 
 ## In one paragraph
 
@@ -37,7 +37,9 @@ Nothing changes in the header. Two blocks of tagged items carry what is new.
 
 | Tag | Item | Value |
 |---|---|---|
-| 1 | From | one or more keys, 4 bytes each: the link addresses the burst's datagrams were sent from |
+| 1 | From | one or more runs of 6 bytes each: a key (4 bytes), a protocol byte and a count. The next count datagrams in the burst were sent from that address and are of that protocol. The runs are in the datagrams' order and their counts add up to the number of datagrams |
+
+**The protocol byte** says what a datagram is, so that hosts of different protocols can share a channel (as the PID byte does in AX.25 and the EtherType on a LAN). Its values are borrowed from AX.25's PID field, which already has numbers for what is likely to be carried (0xCC IP, 0xCD ARP, 0xCF NET/ROM, 0xF0 no layer 3), with one added: 0x00 is a whole AX.25 frame. A host ignores datagrams of a protocol it does not speak.
 
 **A data burst to everyone** now begins with a block of its own, in the same form as the extension block (one length byte, then items), before the datagrams. Until now it began with the datagrams.
 
@@ -53,11 +55,11 @@ Nothing changes in the header. Two blocks of tagged items carry what is new.
 | 1 | Station id | 4 bytes, in every identification burst |
 | 2 | Clash | a number, 1 byte, and the station id that should move, 4 bytes |
 
-From is sent in every data burst. At the slowest format it costs about a fifth of a second. Sending it only now and then is a later refinement, if it is shown to matter.
+From is sent in every data burst for now. At the slowest format a run costs about a fifth of a second. It is agreed that this becomes occasional (see "Amended"), as a later step.
 
 ## Learning where an address lives
 
-Every station learns from every data burst it decodes, whoever the burst is for: each key in From now lives at the sender's number. The latest burst heard wins.
+Every station learns from every data burst it decodes, whoever the burst is for: each key in a From run now lives at the sender's number. The latest burst heard wins.
 
 What a station knows about an address is forgotten:
 
@@ -69,7 +71,7 @@ After any of these the next datagram for the address goes to everyone again.
 
 ## Sending
 
-The host gives a datagram, the address it is for and the address it is from.
+The host gives a datagram, the address it is for, the address it is from and its protocol byte.
 
 - **The address is known:** the datagram goes in a burst to that station, as now.
 - **The address is not known:** it goes in a burst to everyone, at the first-contact format, with For set. This is the format a first contact uses anyway. There is no prelude, so no report is asked for and none comes back. The answer, when the far host sends one, carries its own From, and the two then address each other.
@@ -79,7 +81,9 @@ A burst to everyone carries datagrams for one For, or for none. Datagrams waitin
 
 ## Receiving
 
-A burst addressed to this station is delivered to the host, as now. A burst to everyone is delivered to the host whether or not it has a For, and the host is told which of the three it was and, when there is one, the For key.
+A burst addressed to this station is delivered to the host, as now. A burst to everyone is delivered to the host whether or not it has a For. With each datagram the host is given the key of the address it was sent from, its protocol byte, which of the three ways it was addressed and, when there is one, the For key.
+
+The From key is the datagram's layer 2 source, as a source MAC address is. A host whose own header does not say who sent a packet (one that uses short labels agreed between neighbours, say) cannot work without it.
 
 The modem does not filter on For. A host that can tell from its own frame whether a datagram is for it (AX.25) ignores the key. One that cannot (an IP host, which would otherwise route a packet that was only passing) compares it with the key of its own address, which the library computes for it.
 
@@ -99,12 +103,12 @@ The modem does not filter on For. A host that can tell from its own frame whethe
 
 ## What the host sees
 
-- **Send**(datagram, to, from, tag, priority, report wanted). The request to bind a name to a number goes, and the refusal "not bound".
-- **Received**(datagram, how it was addressed, the For key if any, quality). How it was addressed is one of: to this station, to everyone, or for an address not yet located.
-- **LinkState**, **Congestion** and the snapshot are by link address, for the addresses the host has sent to. An address not yet located has a state of its own. Two addresses at one station give two entries.
+- **Send**(datagram, to, from, protocol, tag, priority, report wanted). The request to bind a name to a number goes, and the refusal "not bound".
+- **Received**(datagram, the From key, the protocol byte, how it was addressed, the For key if any, quality). How it was addressed is one of: to this station, to everyone, or for an address not yet located.
+- **LinkState**, **Congestion** and the snapshot are by link address, for the addresses the host has sent to. An address not yet located has a state of its own. Two addresses at one station give two entries. LinkState gives the rate in both directions: what this station sends to them at, and what it has told them the path from them supports. A routing layer that costs a link from its receiving end needs the second.
 - **PathReport** and **BurstNotDecoded** name the link address the datagrams were sent to.
 - **Identified**(callsign, capability word). The callsign names nothing.
-- **The key of an address**, as a function, for a host that needs to compare.
+- **The key of an address**, as a function, for a host that needs to compare, or to answer a datagram whose sender it knows only by key. Send takes a key in place of an address.
 - No station number appears anywhere.
 
 ## Limits and what is not covered
@@ -119,7 +123,7 @@ The modem does not filter on For. A host that can tell from its own frame whethe
 Settled without being put to Tom, because each is internal or a starting value. Each is fixed in the design, not a setting.
 
 1. An address is 1 to 32 bytes and travels as a 4-byte key, the payload's own CRC-32.
-2. From goes in every data burst.
+2. From goes in every data burst, for now.
 3. The modem learns from every burst it decodes, not only those for it.
 4. Three silences forget an address, the same count that falls back to first contact.
 5. The modem does not filter on For; the host is given the key.
@@ -127,3 +131,16 @@ Settled without being put to Tom, because each is internal or a starting value. 
 7. A station picks its number at once, without listening first.
 8. Whoever notices a clash moves. For hidden stations the more recent arrival is told to.
 9. Nothing is carried across a change of number.
+10. The protocol byte borrows AX.25's PID numbers, with 0x00 added for a whole AX.25 frame.
+
+## Amended (Tom, 27 November 2026)
+
+After reading a draft of a network stack by another amateur that is meant to run over any layer 2, this modem included. It fits: it wants neighbour addresses, unreliable datagrams of 256 bytes or more and a broadcast, and it costs its links from bit rate and delivery, which the modem can tell it. It showed two things missing, both now above, and settled three more.
+
+1. **Each received datagram comes with the address it was sent from.** Built with step one.
+2. **Each datagram has a protocol byte.** Built with step one.
+3. **A burst for everyone goes at the best rate that every known neighbour can take**, not always at the slowest. A stack that keeps its routing in step by broadcasts cannot afford the slowest format for all of them. A datagram for an address not yet located still goes at the first-contact format, since its station may not have been heard at all. A later step.
+4. **From becomes occasional.** The sender gives each of its addresses a short number, says which key the number stands for now and then, and marks each run with the number alone. A later step.
+5. **LinkState gives the rate in both directions.** Built with step one.
+
+Larger datagrams. One burst at the slowest format carries a little over 330 bytes, because the header counts at most 252 payload symbols, and the modem does not split. Nothing in the design stands in the way of splitting later: the item blocks can carry a fragment's place, the capability word can say a station understands it, there are spare burst types and a version field, and with the protocol byte a splitting layer can also sit above the modem as a protocol of its own.

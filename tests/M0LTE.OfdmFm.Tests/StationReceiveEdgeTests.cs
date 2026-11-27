@@ -262,6 +262,7 @@ public class StationReceiveEdgeTests
         Placed other = b.Add(TestBurst.Report(6, 8, 99, false, FormatOpening.UpTo3000Hz));
         b.Silence(2.5).Noise(0.01, 12);
         using var rig = new ReceiveRig(0);
+        rig.SendTo(6);
         rig.Push(b.ToArray(), () => 480);
         rig.Finish();
 
@@ -280,6 +281,7 @@ public class StationReceiveEdgeTests
     {
         (float[] samples, List<Placed> _) = MixedStream.Build();
         using var rig = new ReceiveRig(0);
+        rig.SendTo(2, 3);
         rig.Push(samples, () => 4800);
         rig.Finish();
 
@@ -295,25 +297,39 @@ public class StationReceiveEdgeTests
     }
 
     [Fact]
-    public void A_Station_Heard_By_Number_Alone_Is_Named_By_The_Placeholder()
+    public void Events_Name_The_Address_The_Host_Sent_To_And_A_Station_It_Sent_Nothing_To_Raises_None()
     {
-        Station.PlaceholderName(7).Bytes.ToArray().Should().Equal("#7"u8.ToArray());
-        Station.PlaceholderName(42).ToString().Should().Be(Convert.ToHexString("#42"u8));
-        Station.PlaceholderName(0).Bytes.ToArray().Should().Equal("#0"u8.ToArray());
-        ((Action)(() => Station.PlaceholderName(64))).Should().Throw<ArgumentOutOfRangeException>();
-
         TestBurst burst = TestBurst.Data(7, 1, Format, [TestBurst.Datagram(9, 30)], new PayloadPrelude(false, 77, false, null), symbols: 12);
-        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
-        var names = new List<LinkAddress>();
-        var senders = new List<LinkAddress?>();
-        station.PathReport += e => names.Add(e.Station);
-        station.LinkState += e => names.Add(e.Station);
-        station.Received += e => senders.Add(e.Sender);
-        station.Push(OneBurst(burst));
-        station.DeliverResults();
+        foreach (bool sentTo in new[] { false, true })
+        {
+            var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
+            station.SetExternalBusy(true);
+            var names = new List<LinkAddress>();
+            var received = new List<ReceivedEvent>();
+            station.PathReport += e => names.Add(e.Address);
+            station.LinkState += e => names.Add(e.Address);
+            station.Received += received.Add;
+            if (sentTo)
+            {
+                station.Locate(ReceiveRig.Address(7), 7);
+                station.Send(new byte[] { 1 }, ReceiveRig.Address(7), ReceiveRig.Own, new HostTag(1)).Should().Be(SendResult.Accepted);
+                names.Clear();
+            }
 
-        names.Should().NotBeEmpty().And.OnlyContain(n => n == Station.PlaceholderName(7));
-        senders.Should().ContainSingle().Which.Should().BeNull("no name is bound to the number yet");
+            station.Push(OneBurst(burst));
+            station.DeliverResults();
+
+            if (sentTo)
+            {
+                names.Should().NotBeEmpty().And.OnlyContain(n => n == ReceiveRig.Address(7));
+            }
+            else
+            {
+                names.Should().BeEmpty("the host has sent to no address, so there is none to tell it about");
+            }
+
+            received.Should().ContainSingle().Which.Should().Match<ReceivedEvent>(e => e.Addressing == Addressing.ToThisStation && e.ForKey == null);
+        }
     }
 
     [Fact]
@@ -331,6 +347,9 @@ public class StationReceiveEdgeTests
 
         // Every worker is busy for the whole stream: the test runs the header reads and nothing else, so each burst's receive waits in the queue.
         var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
+        station.SetExternalBusy(true);
+        station.Locate(ReceiveRig.Address(5), 5);
+        station.Send(new byte[] { 1 }, ReceiveRig.Address(5), ReceiveRig.Own, new HostTag(1)).Should().Be(SendResult.Accepted);
         var datagrams = new List<byte[]>();
         var events = 0;
         station.Received += e => datagrams.Add(e.Datagram.ToArray());
@@ -451,8 +470,10 @@ public class StationReceiveEdgeTests
         rig.Station.SampleCount.Should().Be((2000L + pushes) * 480);
     }
 
-    [Fact]
-    public void Receiving_A_Burst_Allocates_Nothing_In_Steady_State_On_Either_Side_Of_The_Job_Queue()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Receiving_A_Burst_Allocates_Nothing_In_Steady_State_On_Either_Side_Of_The_Job_Queue(bool toEveryone)
     {
         // The test is its own worker on one thread, so one count covers both sides. The first burst of a shape builds what the shape needs (codes, pooled buffers, a neighbour's record); each later one reuses it.
         var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
@@ -464,7 +485,9 @@ public class StationReceiveEdgeTests
         float[][] bursts = new float[1 + AllocationMeasure.Attempts][];
         for (int round = 0; round < bursts.Length; round++)
         {
-            bursts[round] = OneBurst(TestBurst.Data(3, 1, Format, [TestBurst.Datagram(40 + round, 40)], new PayloadPrelude(false, 70, false, null), burstNumber: round, symbols: 12), noise: 0.005, seed: round);
+            // Each burst carries its From keys (and a For to everyone): the learning table is written to on every one, and once it has the addresses that costs nothing.
+            bursts[round] = OneBurst(TestBurst.Data(3, toEveryone ? 0 : 1, Format, [TestBurst.Datagram(40 + round, 40)], toEveryone ? null : new PayloadPrelude(false, 70, false, null), burstNumber: round, symbols: 12,
+                from: [LinkAddress.FromAscii("X1").Key, LinkAddress.FromAscii("X2").Key], forKey: toEveryone ? LinkAddress.FromAscii("X3").Key : null), noise: 0.005, seed: round);
         }
 
         int next = 0;
@@ -493,22 +516,25 @@ public class StationReceiveEdgeTests
         Assert.SkipWhen(Environment.GetEnvironmentVariable("SM_MASK_GATE") != "1", "set SM_MASK_GATE=1: ten minutes of audio goes through the detector");
         TestBurst burst = TestBurst.Data(3, 1, Format, [TestBurst.Datagram(50, 40)], symbols: 12);
         using var rig = new ReceiveRig(0);
+        rig.SendTo(3);
         rig.Push(OneBurst(burst), () => 4800);
         rig.Finish();
-        rig.Log.Count(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().Be(1);
+        rig.Log.Count(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().Be(2, "at the send, and when heard");
 
         rig.Station.Skip(9 * 60 * 48000);
         rig.Station.DeliverResults();
-        rig.Log.Count(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().Be(1, "nine minutes is not ten");
+        rig.Log.Count(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().Be(2, "nine minutes is not ten");
 
         rig.Station.Skip(2 * 60 * 48000);
         rig.Station.DeliverResults();
-        rig.Log.Where(l => l.StartsWith("link ", StringComparison.Ordinal)).Last().Should().EndWith("gone True");
-        rig.Log.Count(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().Be(2);
+        rig.Log.Where(l => l.StartsWith("link ", StringComparison.Ordinal)).Last().Should().Contain("located False").And.EndWith("gone True");
+        rig.Log.Count(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().Be(3);
+        rig.Station.LocatedNow(ReceiveRig.Address(3)).Should().Be(0, "forgotten with the station it lived at");
 
-        rig.Push(OneBurst(TestBurst.Data(3, 1, Format, [TestBurst.Datagram(51, 40)], symbols: 12)), () => 4800);
+        rig.Push(OneBurst(TestBurst.Data(3, 1, Format, [TestBurst.Datagram(51, 40)], symbols: 12, from: [ReceiveRig.Address(3).Key])), () => 4800);
         rig.Finish();
-        rig.Log.Count(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().Be(3, "heard again, it is a new neighbour");
+        rig.Log.Count(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().Be(4, "heard again, it is a new neighbour, and its address is learned afresh");
+        rig.Station.LocatedNow(ReceiveRig.Address(3)).Should().Be(3);
         rig.Datagrams.Should().HaveCount(2);
     }
 }

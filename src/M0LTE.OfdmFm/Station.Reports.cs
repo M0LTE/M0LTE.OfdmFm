@@ -49,9 +49,10 @@ public sealed partial class Station
         public int Length;
     }
 
-    /// <summary>The latest burst sent to a station: the tags of its datagrams and the sample it ended at (the audio layer's report). What a "failed" report from that station can be about.</summary>
+    /// <summary>The latest burst sent to a station: the address it was for, the tags of its datagrams and the sample it ended at (the audio layer's report). What a "failed" report from that station can be about.</summary>
     private sealed class SentRecord
     {
+        public LinkAddress Address;
         public readonly List<HostTag> Tags = [];
         public long EndedAt = -1;
     }
@@ -64,6 +65,9 @@ public sealed partial class Station
     private TimerHandle _askedTimer;
     private long _askedTimerAt = -1;
     private long _owedSequence;
+
+    /// <summary>The on-air number of the station the burst whose <see cref="ModemSent"/> is being raised is for (0 for everyone). For tests: no host sees it.</summary>
+    internal int ModemSentTo { get; private set; }
 
     private void InitialiseReports() => _onAskedTimer = OnAskedTimer;
 
@@ -330,7 +334,7 @@ public sealed partial class Station
                 return false;
             }
 
-            if (_owedSlots[dest].Kind != OwedKind.Failed && (_queues[dest]?.Expedited.Count ?? 0) > 0)
+            if (_owedSlots[dest].Kind != OwedKind.Failed && HasQueuedAt(dest, expeditedOnly: true))
             {
                 _owedSlots[dest].Active = false;
                 ReportsCovered++;
@@ -376,7 +380,7 @@ public sealed partial class Station
         _report.Length = total;
         ReportsBuilt++;
         request.Samples = audio.AsMemory(0, total);
-        request.Modem = new ModemSentEvent(ModemSentKind.Report, NameOfDestination(dest), choice.Format);
+        request.Modem = new ModemSentEvent(ModemSentKind.Report, choice.Format);
         return true;
     }
 
@@ -398,7 +402,7 @@ public sealed partial class Station
         _report.Audio = null;
         _report.Built = false;
         _report.Started = false;
-        if ((_queues[dest]?.Count ?? 0) > 0 && !AwaitingAnswerFrom(dest))
+        if (HasQueuedAt(dest, expeditedOnly: false) && !AwaitingAnswerFrom(dest))
         {
             _access.GoStraightOn();
         }
@@ -422,9 +426,10 @@ public sealed partial class Station
 
     // ---- what this station sent, for the hint ----
 
-    private void RememberBurst(int dest, long endedAt)
+    private void RememberBurst(int dest, LinkAddress address, long endedAt)
     {
         SentRecord record = _sent[dest] ??= new SentRecord();
+        record.Address = address;
         record.Tags.Clear();
         foreach (Pending p in _burst.Items)
         {
@@ -448,6 +453,6 @@ public sealed partial class Station
 
         HostTag[] tags = [.. record.Tags];
         record.Tags.Clear();
-        BurstNotDecoded?.Invoke(new BurstNotDecodedEvent(NameFor(station), tags));
+        BurstNotDecoded?.Invoke(new BurstNotDecodedEvent(record.Address, tags));
     }
 }

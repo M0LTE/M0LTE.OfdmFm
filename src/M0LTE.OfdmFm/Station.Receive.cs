@@ -41,8 +41,8 @@ public sealed partial class Station
     private const int Carriers = BurstRenderer.Carriers;
     private const int MaxNoted = 64;
 
-    /// <summary>The overhead a datagram has in a burst's payload: the largest prelude (4 bytes) and the datagram's own length (2 bytes).</summary>
-    private const int DatagramOverhead = 6;
+    /// <summary>The overhead a datagram has in a burst to one station: the largest prelude (4 bytes), the block of items with one From key (7 bytes) and the datagram's own length (2 bytes).</summary>
+    private const int DatagramOverhead = 4 + 7 + 2;
 
     private readonly bool _inline;
     private readonly object _gate = new();
@@ -50,8 +50,8 @@ public sealed partial class Station
     private readonly float[] _silence = new float[4096];
     private readonly StreamingBurstDetector _detector = new();
     private LinkAdaptation _link = null!;
-    private readonly LinkAddress[] _placeholders = new LinkAddress[64];
-    private readonly LinkShown[] _shown = new LinkShown[64];
+    private readonly StationShown[] _stationShown = new StationShown[64];
+    private readonly AddressTable _table = new();
     private readonly List<Candidate> _candidates = [];
     private readonly List<BurstRecord> _bursts = [];
     private readonly List<Extent> _extents = [];
@@ -129,7 +129,8 @@ public sealed partial class Station
 
     private readonly record struct Extent(long Start, long End, BurstHeader Header);
 
-    private readonly record struct LinkShown(bool Shown, bool Gone, int Format, int Room, LinkKnowledge Knowledge);
+    /// <summary>Whether a station has been announced through <see cref="LinkState"/> (some address of the host's lives at it) and whether it has been forgotten since.</summary>
+    private record struct StationShown(bool Shown, bool Gone);
 
     private sealed class BurstRecord
     {
@@ -292,17 +293,6 @@ public sealed partial class Station
     /// <summary>The adaptation rules' time for a sample index: seconds on the sample clock.</summary>
     private static double ClockSeconds(long sample) => sample / (double)SampleRate;
 
-    /// <summary>
-    /// The name a station heard by its number alone is given until names can be bound: the ASCII text "#" and the number in decimal ("#7", "#42"). A later step's binding replaces the name in these events,
-    /// not their type.
-    /// </summary>
-    public static LinkAddress PlaceholderName(int number)
-    {
-        ArgumentOutOfRangeException.ThrowIfLessThan(number, 0);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, 63);
-        return LinkAddress.FromAscii("#" + number.ToString(System.Globalization.CultureInfo.InvariantCulture));
-    }
-
     /// <summary>True when a job waits for <see cref="RunOne"/>: a header read, or a burst to receive. Always false for an inline station. Safe from any thread.</summary>
     public bool HasWork
     {
@@ -358,10 +348,6 @@ public sealed partial class Station
     private void InitialiseReceive()
     {
         _link = new LinkAdaptation(StationNumber);
-        for (int n = 0; n < _placeholders.Length; n++)
-        {
-            _placeholders[n] = PlaceholderName(n);
-        }
     }
 
     // ---- feeding audio ----
@@ -1078,9 +1064,11 @@ public sealed partial class Station
         bool unpacked = false;
         ReadOnlySpan<byte> payload = job.Payload.AsSpan(0, job.PayloadBytes);
         DatagramReader datagrams = default;
-        if (decoded && (mine || everyone))
+        ExtensionReader items = default;
+        if (decoded)
         {
-            unpacked = PayloadCodec.TryUnpack(payload, everyone, out prelude, out datagrams);
+            // Every data burst is unpacked, whoever it is for: its From says where its sender's addresses live.
+            unpacked = PayloadCodec.TryUnpack(payload, everyone, out prelude, out items, out datagrams);
             if (unpacked && mine)
             {
                 their = new LinkReport(prelude.Recommended, prelude.Failed);
@@ -1092,17 +1080,22 @@ public sealed partial class Station
         AdaptationCalled?.Invoke(new AdaptationCall(false, sender, h.Destination, h.Format, decoded, quality.ToArray(), now, footing, job.Sudden, their, capability, owed));
         if (unpacked)
         {
+            uint? forKey = ReadAddressItems(items, sender, now);
             if (mine && prelude.Recommended is int recommended)
             {
-                PathReport?.Invoke(new PathReportEvent(NameFor(sender), recommended, prelude.Failed));
+                RaisePathReport(sender, recommended, prelude.Failed, now);
             }
 
-            double db = MeanQualityDb(job.Quality, StandardFormats.Describe(h.Format).Carriers);
-            LinkAddress? name = _bound[sender];
-            while (datagrams.TryNext(out ReadOnlySpan<byte> datagram))
+            if (mine || everyone)
             {
-                int offset = (int)Unsafe.ByteOffset(ref MemoryMarshal.GetReference(payload), ref MemoryMarshal.GetReference(datagram));
-                Received?.Invoke(new ReceivedEvent(job.Payload.AsMemory(offset, datagram.Length), name, sender, everyone, db));
+                HearingSender = sender;
+                double db = MeanQualityDb(job.Quality, StandardFormats.Describe(h.Format).Carriers);
+                Addressing addressing = mine ? Addressing.ToThisStation : forKey is null ? Addressing.ToEveryone : Addressing.ForAddressNotYetLocated;
+                while (datagrams.TryNext(out ReadOnlySpan<byte> datagram))
+                {
+                    int offset = (int)Unsafe.ByteOffset(ref MemoryMarshal.GetReference(payload), ref MemoryMarshal.GetReference(datagram));
+                    Received?.Invoke(new ReceivedEvent(job.Payload.AsMemory(offset, datagram.Length), addressing, forKey, db));
+                }
             }
         }
 
@@ -1112,6 +1105,34 @@ public sealed partial class Station
         }
 
         RaiseLinkState(sender, now);
+    }
+
+    /// <summary>The on-air number of the station whose burst is being reported to the host, while <see cref="Received"/> or <see cref="Identified"/> is raised. For tests: no host sees it.</summary>
+    internal int HearingSender { get; private set; }
+
+    /// <summary>
+    /// Reads the items of a decoded data burst's block: each key in From now lives at the sender (the latest burst heard wins), and the For key is returned when there is one. Items with other tags, and From or For items of the wrong length, are skipped.
+    /// Allocates nothing once the addresses are known.
+    /// </summary>
+    private uint? ReadAddressItems(ExtensionReader items, int sender, double now)
+    {
+        uint? forKey = null;
+        while (items.TryNext(out byte tag, out ReadOnlySpan<byte> value))
+        {
+            if (tag == PayloadCodec.FromTag && value.Length >= PayloadCodec.KeyBytes && value.Length % PayloadCodec.KeyBytes == 0)
+            {
+                for (int i = 0; i < value.Length; i += PayloadCodec.KeyBytes)
+                {
+                    _table.Learn(PayloadCodec.ReadKey(value[i..]), sender, now);
+                }
+            }
+            else if (tag == PayloadCodec.ForTag && value.Length == PayloadCodec.KeyBytes)
+            {
+                forKey = PayloadCodec.ReadKey(value);
+            }
+        }
+
+        return forKey;
     }
 
     private void ApplyReport(BurstRecord r)
@@ -1128,7 +1149,7 @@ public sealed partial class Station
         double now = ClockSeconds(r.End);
         _link.HeardReport(h.Sender, h.Format, h.Failed, now);
         AdaptationCalled?.Invoke(new AdaptationCall(true, h.Sender, h.Destination, h.Format, false, [], now, null, false, new LinkReport(h.Format, h.Failed), null, null));
-        PathReport?.Invoke(new PathReportEvent(NameFor(h.Sender), h.Format, h.Failed));
+        RaisePathReport(h.Sender, h.Format, h.Failed, now);
         if (h.Failed)
         {
             RaiseNotDecoded(h.Sender, r.Start);
@@ -1154,32 +1175,23 @@ public sealed partial class Station
         return count == 0 ? double.NaN : sum / count;
     }
 
-    // ---- what the station knows of each neighbour, for the host ----
+    // ---- what the station knows of each address the host has sent to ----
 
-    private readonly LinkAddress?[] _bound = new LinkAddress?[64];
-
-    /// <summary>True for a number whose name the host gave with <see cref="Bind"/>: a name learned from an identification burst never replaces it.</summary>
-    private readonly bool[] _hostBound = new bool[64];
-
-    private LinkAddress NameFor(int number) => _bound[number] ?? _placeholders[number];
-
-    /// <summary>The largest datagram one burst to a neighbour at this format carries: the longest burst's payload less the largest prelude and the datagram's length.</summary>
+    /// <summary>The largest datagram one burst to a station carries at this format: the longest burst's payload less the largest prelude, the block of items with one From key and the datagram's length.</summary>
     private static int DatagramRoomFor(int format) => Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - DatagramOverhead);
 
-    /// <summary>What the station knows of neighbour <paramref name="who"/> as a <see cref="LinkStateEvent"/>, with the format <c>Choose</c> gives now. False when the rules hold nothing about it.</summary>
-    private bool DescribeLink(int who, double now, out LinkStateEvent link, out int chosen)
+    /// <summary>What the station knows of neighbour <paramref name="who"/>, with the format <c>Choose</c> gives now. False when the rules hold nothing about it.</summary>
+    private bool DescribeStation(int who, double now, out int chosen, out LinkKnowledge knowledge, out double age)
     {
-        link = default;
         chosen = 0;
+        knowledge = LinkKnowledge.FirstContact;
+        age = 0;
         if (!_link.TryGetNeighbour(who, out LinkNeighbour? nb) || nb is null)
         {
             return false;
         }
 
-        int format = _link.Choose(who, now).Format;
-        chosen = format;
-        LinkKnowledge knowledge;
-        double age;
+        chosen = _link.Choose(who, now).Format;
         if (nb.ReportFormat is not null)
         {
             knowledge = LinkKnowledge.Report;
@@ -1190,44 +1202,135 @@ public sealed partial class Station
             knowledge = LinkKnowledge.OwnEstimate;
             age = now - (nb.MeasuredAt ?? nb.LastHeard ?? now);
         }
-        else
-        {
-            knowledge = LinkKnowledge.FirstContact;
-            age = 0;
-        }
 
-        bool known = knowledge != LinkKnowledge.FirstContact;
-        link = new LinkStateEvent(NameFor(who), known ? format : null, known ? StandardFormats.Rate(format) * 1000.0 : null, DatagramRoomFor(format), knowledge, Math.Max(0, age), false);
         return true;
     }
 
-    private void RaiseLinkState(int who, double now)
+    /// <summary>The station an address lives at now, or 0 when the station has not located it, or has forgotten it (the station it was at has gone unheard for ten minutes).</summary>
+    private int LocatedAt(uint key, double now)
     {
-        if (!DescribeLink(who, now, out LinkStateEvent link, out int format))
+        if (!_table.TryGet(key, out AddressTable.Entry entry))
+        {
+            return 0;
+        }
+
+        if (_link.TryGetNeighbour(entry.Number, out LinkNeighbour? nb) && nb?.LastHeard is double heard && now - heard > LinkAdaptation.ForgetSeconds)
+        {
+            return 0;
+        }
+
+        return entry.Number;
+    }
+
+    /// <summary>What the host should know of an address it has sent to, as a <see cref="LinkStateEvent"/>, with the format <c>Choose</c> gives now (or -1 when it is not located).</summary>
+    private LinkStateEvent DescribeAddress(AddressQueue q, double now, out int chosen)
+    {
+        int who = LocatedAt(q.Key, now);
+        if (who == 0)
+        {
+            chosen = -1;
+            return new LinkStateEvent(q.Address, false, null, null, RoomFor(StandardFormats.FirstContact, false, true), LinkKnowledge.FirstContact, 0, q.Forgotten);
+        }
+
+        if (!DescribeStation(who, now, out chosen, out LinkKnowledge knowledge, out double age))
+        {
+            chosen = -1;
+            return new LinkStateEvent(q.Address, true, null, null, DatagramRoomFor(StandardFormats.FirstContact), LinkKnowledge.FirstContact, 0, false);
+        }
+
+        bool known = knowledge != LinkKnowledge.FirstContact;
+        return new LinkStateEvent(q.Address, true, known ? chosen : null, known ? StandardFormats.Rate(chosen) * 1000.0 : null, DatagramRoomFor(chosen), knowledge, Math.Max(0, age), false);
+    }
+
+    /// <summary>Raises <see cref="LinkState"/> for an address the host has sent to if what it would say differs from what it said last.</summary>
+    private void RefreshAddress(AddressQueue q, double now)
+    {
+        LinkStateEvent link = DescribeAddress(q, now, out int chosen);
+        if (link.Located)
+        {
+            q.Forgotten = false;
+        }
+
+        if (q.Shown && q.ShownLocated == link.Located && q.ShownGone == link.Gone && q.ShownFormat == chosen && q.ShownRoom == link.DatagramRoom && q.ShownKnowledge == link.Knowledge)
         {
             return;
         }
 
-        LinkShown shown = _shown[who];
-        if (shown.Shown && !shown.Gone && shown.Format == format && shown.Room == link.DatagramRoom && shown.Knowledge == link.Knowledge)
-        {
-            return;
-        }
-
-        _shown[who] = new LinkShown(true, false, format, link.DatagramRoom, link.Knowledge);
+        q.Shown = true;
+        q.ShownLocated = link.Located;
+        q.ShownGone = link.Gone;
+        q.ShownFormat = chosen;
+        q.ShownRoom = link.DatagramRoom;
+        q.ShownKnowledge = link.Knowledge;
         LinkState?.Invoke(link);
     }
 
-    /// <summary>Raises "gone" for each neighbour the rules forget by <paramref name="seconds"/>: ten minutes without a word. The rules drop the record themselves the next time they are given the time for it.</summary>
+    /// <summary>Raises <see cref="LinkState"/> for each address the host has sent to that lives at station <paramref name="who"/>, when what it knows of them changed.</summary>
+    private void RaiseLinkState(int who, double now)
+    {
+        if (!_link.TryGetNeighbour(who, out LinkNeighbour? nb) || nb is null)
+        {
+            return;
+        }
+
+        _stationShown[who] = new StationShown(true, false);
+        for (int i = 0; i < _queueList.Count; i++)
+        {
+            AddressQueue q = _queueList[i];
+            if (!q.Address.IsEveryone && LocatedAt(q.Key, now) == who)
+            {
+                RefreshAddress(q, now);
+            }
+        }
+    }
+
+    /// <summary>Raises <see cref="PathReport"/> for each address the host has sent to that lives at station <paramref name="who"/>.</summary>
+    private void RaisePathReport(int who, int? recommended, bool failed, double now)
+    {
+        for (int i = 0; i < _queueList.Count; i++)
+        {
+            AddressQueue q = _queueList[i];
+            if (!q.Address.IsEveryone && LocatedAt(q.Key, now) == who)
+            {
+                PathReport?.Invoke(new PathReportEvent(q.Address, recommended, failed));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Forgets where every address at station <paramref name="who"/> lives: the station was unheard for ten minutes, or three bursts running to it met silence. Each address the host has sent to
+    /// that lived there is told with <see cref="LinkState"/> (not located, <see cref="LinkStateEvent.Gone"/>); a datagram waiting for it goes to everyone from now on.
+    /// </summary>
+    private void ForgetAddressesAt(int who, double now)
+    {
+        _affected.Clear();
+        for (int i = 0; i < _queueList.Count; i++)
+        {
+            AddressQueue q = _queueList[i];
+            if (!q.Address.IsEveryone && _table.TryGet(q.Key, out AddressTable.Entry entry) && entry.Number == who)
+            {
+                q.Forgotten = true;
+                _affected.Add(q);
+            }
+        }
+
+        _table.ForgetStation(who);
+        foreach (AddressQueue q in _affected)
+        {
+            RefreshAddress(q, now);
+        }
+    }
+
+    /// <summary>Forgets what is known of each neighbour the rules forget by <paramref name="seconds"/>: ten minutes without a word. The rules drop the record themselves the next time they are given the time for it.</summary>
     private void CheckGone(double seconds)
     {
-        for (int who = 1; who < _shown.Length; who++)
+        for (int who = 1; who < _stationShown.Length; who++)
         {
-            if (_shown[who].Shown && !_shown[who].Gone && _link.TryGetNeighbour(who, out LinkNeighbour? nb) && nb?.LastHeard is double heard
+            if (_stationShown[who].Shown && !_stationShown[who].Gone && _link.TryGetNeighbour(who, out LinkNeighbour? nb) && nb?.LastHeard is double heard
                 && seconds - heard > LinkAdaptation.ForgetSeconds)
             {
-                _shown[who] = _shown[who] with { Gone = true };
-                LinkState?.Invoke(new LinkStateEvent(NameFor(who), null, null, DatagramRoomFor(StandardFormats.FirstContact), LinkKnowledge.FirstContact, 0, true));
+                _stationShown[who] = _stationShown[who] with { Gone = true };
+                ForgetAddressesAt(who, seconds);
             }
         }
     }

@@ -27,6 +27,7 @@ internal static class Runs
     {
         using var rig = new ReceiveRig(workers, park);
         rig.SetOrder(order, shuffleSeed);
+        rig.SendTo(2, 3); // the host has sent to the addresses at the two stations that talk to this one, so what is known of them is told
         rig.Push(samples, block, settleHeaders: workers > 0);
         rig.Finish();
         return new RunOutcome(rig.Log, ReceiveRig.Neighbours(rig.Station.Adaptation), rig.ReleasedOrder);

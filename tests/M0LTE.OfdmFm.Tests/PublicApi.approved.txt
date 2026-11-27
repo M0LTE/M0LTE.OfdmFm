@@ -1,5 +1,11 @@
 namespace M0LTE.OfdmFm
 {
+    public enum Addressing
+    {
+        ToThisStation = 0,
+        ToEveryone = 1,
+        ForAddressNotYetLocated = 2,
+    }
     public readonly struct BurstCandidate : System.IEquatable<M0LTE.OfdmFm.BurstCandidate>
     {
         public BurstCandidate(int Index, double Peak) { }
@@ -46,8 +52,8 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct BurstNotDecodedEvent : System.IEquatable<M0LTE.OfdmFm.BurstNotDecodedEvent>
     {
-        public BurstNotDecodedEvent(M0LTE.OfdmFm.LinkAddress Station, System.Collections.Generic.IReadOnlyList<M0LTE.OfdmFm.HostTag> Tags) { }
-        public M0LTE.OfdmFm.LinkAddress Station { get; init; }
+        public BurstNotDecodedEvent(M0LTE.OfdmFm.LinkAddress Address, System.Collections.Generic.IReadOnlyList<M0LTE.OfdmFm.HostTag> Tags) { }
+        public M0LTE.OfdmFm.LinkAddress Address { get; init; }
         public System.Collections.Generic.IReadOnlyList<M0LTE.OfdmFm.HostTag> Tags { get; init; }
     }
     public sealed class BurstRenderer
@@ -71,8 +77,8 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct CongestionEvent : System.IEquatable<M0LTE.OfdmFm.CongestionEvent>
     {
-        public CongestionEvent(M0LTE.OfdmFm.LinkAddress Station, bool Writable) { }
-        public M0LTE.OfdmFm.LinkAddress Station { get; init; }
+        public CongestionEvent(M0LTE.OfdmFm.LinkAddress Address, bool Writable) { }
+        public M0LTE.OfdmFm.LinkAddress Address { get; init; }
         public bool Writable { get; init; }
     }
     public sealed class Constellation
@@ -164,11 +170,9 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct IdentifiedEvent : System.IEquatable<M0LTE.OfdmFm.IdentifiedEvent>
     {
-        public IdentifiedEvent(int StationNumber, string Callsign, int Capability, M0LTE.OfdmFm.LinkAddress Name) { }
+        public IdentifiedEvent(string Callsign, int Capability) { }
         public string Callsign { get; init; }
         public int Capability { get; init; }
-        public M0LTE.OfdmFm.LinkAddress Name { get; init; }
-        public int StationNumber { get; init; }
     }
     public enum IdentityResult
     {
@@ -264,21 +268,21 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct LinkStateEvent : System.IEquatable<M0LTE.OfdmFm.LinkStateEvent>
     {
-        public LinkStateEvent(M0LTE.OfdmFm.LinkAddress Station, int? Format, double? RateBitsPerSecond, int DatagramRoom, M0LTE.OfdmFm.LinkKnowledge Knowledge, double AgeSeconds, bool Gone) { }
+        public LinkStateEvent(M0LTE.OfdmFm.LinkAddress Address, bool Located, int? Format, double? RateBitsPerSecond, int DatagramRoom, M0LTE.OfdmFm.LinkKnowledge Knowledge, double AgeSeconds, bool Gone) { }
+        public M0LTE.OfdmFm.LinkAddress Address { get; init; }
         public double AgeSeconds { get; init; }
         public int DatagramRoom { get; init; }
         public int? Format { get; init; }
         public bool Gone { get; init; }
         public M0LTE.OfdmFm.LinkKnowledge Knowledge { get; init; }
+        public bool Located { get; init; }
         public double? RateBitsPerSecond { get; init; }
-        public M0LTE.OfdmFm.LinkAddress Station { get; init; }
     }
     public readonly struct ModemSentEvent : System.IEquatable<M0LTE.OfdmFm.ModemSentEvent>
     {
-        public ModemSentEvent(M0LTE.OfdmFm.ModemSentKind Kind, M0LTE.OfdmFm.LinkAddress? Station, int Format) { }
+        public ModemSentEvent(M0LTE.OfdmFm.ModemSentKind Kind, int Format) { }
         public int Format { get; init; }
         public M0LTE.OfdmFm.ModemSentKind Kind { get; init; }
-        public M0LTE.OfdmFm.LinkAddress? Station { get; init; }
     }
     public enum ModemSentKind
     {
@@ -287,10 +291,10 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct PathReportEvent : System.IEquatable<M0LTE.OfdmFm.PathReportEvent>
     {
-        public PathReportEvent(M0LTE.OfdmFm.LinkAddress Station, int? RecommendedFormat, bool Failed) { }
+        public PathReportEvent(M0LTE.OfdmFm.LinkAddress Address, int? RecommendedFormat, bool Failed) { }
+        public M0LTE.OfdmFm.LinkAddress Address { get; init; }
         public bool Failed { get; init; }
         public int? RecommendedFormat { get; init; }
-        public M0LTE.OfdmFm.LinkAddress Station { get; init; }
     }
     public static class PayloadCodec
     {
@@ -350,12 +354,11 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct ReceivedEvent : System.IEquatable<M0LTE.OfdmFm.ReceivedEvent>
     {
-        public ReceivedEvent(System.ReadOnlyMemory<byte> Datagram, M0LTE.OfdmFm.LinkAddress? Sender, int SenderNumber, bool ToEveryone, double QualityDb) { }
+        public ReceivedEvent(System.ReadOnlyMemory<byte> Datagram, M0LTE.OfdmFm.Addressing Addressing, uint? ForKey, double QualityDb) { }
+        public M0LTE.OfdmFm.Addressing Addressing { get; init; }
         public System.ReadOnlyMemory<byte> Datagram { get; init; }
+        public uint? ForKey { get; init; }
         public double QualityDb { get; init; }
-        public M0LTE.OfdmFm.LinkAddress? Sender { get; init; }
-        public int SenderNumber { get; init; }
-        public bool ToEveryone { get; init; }
     }
     public enum SendPriority
     {
@@ -365,10 +368,9 @@ namespace M0LTE.OfdmFm
     public enum SendResult
     {
         Accepted = 0,
-        NotBound = 1,
-        TooLarge = 2,
-        QueueFull = 3,
-        NoIdentity = 4,
+        TooLarge = 1,
+        QueueFull = 2,
+        NoIdentity = 3,
     }
     public static class StandardFormats
     {
@@ -393,7 +395,6 @@ namespace M0LTE.OfdmFm
         public bool HasWork { get; }
         public long SampleCount { get; }
         public double Seconds { get; }
-        public int StationNumber { get; }
         public event System.Action<M0LTE.OfdmFm.BurstNotDecodedEvent>? BurstNotDecoded;
         public event System.Action<M0LTE.OfdmFm.ChannelBusyEvent>? ChannelBusy;
         public event System.Action<M0LTE.OfdmFm.CongestionEvent>? Congestion;
@@ -408,21 +409,19 @@ namespace M0LTE.OfdmFm
         public event System.Action<M0LTE.OfdmFm.TransmittedEvent>? Transmitted;
         public event System.Action<M0LTE.OfdmFm.WithdrawRequestEvent>? WithdrawRequest;
         public event System.Action? WorkAvailable;
-        public void Bind(M0LTE.OfdmFm.LinkAddress name, int number) { }
         public int Cancel(M0LTE.OfdmFm.HostTag tag) { }
-        public int Cancel(M0LTE.OfdmFm.LinkAddress station) { }
+        public int Cancel(M0LTE.OfdmFm.LinkAddress address) { }
         public void DeliverResults() { }
         public void Push(System.ReadOnlySpan<float> samples) { }
         public bool RunOne() { }
         public int RunPending() { }
-        public M0LTE.OfdmFm.SendResult Send(System.ReadOnlyMemory<byte> datagram, M0LTE.OfdmFm.LinkAddress destination, M0LTE.OfdmFm.HostTag tag, bool reportWanted = false, M0LTE.OfdmFm.SendPriority priority = 0) { }
+        public M0LTE.OfdmFm.SendResult Send(System.ReadOnlyMemory<byte> datagram, M0LTE.OfdmFm.LinkAddress to, M0LTE.OfdmFm.LinkAddress from, M0LTE.OfdmFm.HostTag tag, bool reportWanted = false, M0LTE.OfdmFm.SendPriority priority = 0) { }
         public void SetExternalBusy(bool busy) { }
         public M0LTE.OfdmFm.IdentityResult SetIdentity(string callsign) { }
         public void Skip(int count) { }
         public System.Collections.Generic.IReadOnlyList<M0LTE.OfdmFm.LinkStateEvent> Snapshot() { }
         public void TransmitEnded(long id, long sampleIndex) { }
         public void TransmitStarted(long id, long sampleIndex) { }
-        public static M0LTE.OfdmFm.LinkAddress PlaceholderName(int number) { }
     }
     public sealed class TrackedReceiver
     {
@@ -446,12 +445,12 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct TransmittedEvent : System.IEquatable<M0LTE.OfdmFm.TransmittedEvent>
     {
-        public TransmittedEvent(M0LTE.OfdmFm.HostTag Tag, M0LTE.OfdmFm.LinkAddress Station, int Burst, int Format, double RateBitsPerSecond, double AirtimeSeconds, double TimeOutSeconds) { }
+        public TransmittedEvent(M0LTE.OfdmFm.HostTag Tag, M0LTE.OfdmFm.LinkAddress Address, int Burst, int Format, double RateBitsPerSecond, double AirtimeSeconds, double TimeOutSeconds) { }
+        public M0LTE.OfdmFm.LinkAddress Address { get; init; }
         public double AirtimeSeconds { get; init; }
         public int Burst { get; init; }
         public int Format { get; init; }
         public double RateBitsPerSecond { get; init; }
-        public M0LTE.OfdmFm.LinkAddress Station { get; init; }
         public M0LTE.OfdmFm.HostTag Tag { get; init; }
         public double TimeOutSeconds { get; init; }
     }

@@ -32,11 +32,11 @@ public class StationExchangeTests
         {
             // The caller's buffer is its own again when Send returns: it is overwritten with junk at once, and the datagram must still arrive as it was.
             sentByA.Add(Take(buffer, 100 + i));
-            rig.Stations[0].Send(buffer, SimRig.Name(2), new HostTag(100 + i)).Should().Be(SendResult.Accepted);
+            rig.Stations[0].Send(buffer, SimRig.Address(2), SimRig.Address(1), new HostTag(100 + i)).Should().Be(SendResult.Accepted);
             Array.Fill(buffer, (byte)0xEE);
             rig.Run(8);
             sentByB.Add(Take(buffer, 200 + i));
-            rig.Stations[1].Send(buffer, SimRig.Name(1), new HostTag(200 + i)).Should().Be(SendResult.Accepted);
+            rig.Stations[1].Send(buffer, SimRig.Address(1), SimRig.Address(2), new HostTag(200 + i)).Should().Be(SendResult.Accepted);
             Array.Fill(buffer, (byte)0xEE);
             rig.Run(8);
         }
@@ -68,7 +68,7 @@ public class StationExchangeTests
         rig.Stations[0].TransmitRequest += r => audio = r.Samples.ToArray();
         rig.RunTo(6);
         byte[] datagram = SimRig.Datagram(1, 30);
-        rig.Stations[0].Send(datagram, LinkAddress.Everyone, new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
+        rig.Stations[0].Send(datagram, LinkAddress.Everyone, SimRig.Address(1), new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
         rig.Run(14);
 
         foreach (int listener in new[] { 1, 2 })
@@ -81,7 +81,7 @@ public class StationExchangeTests
         }
 
         TransmittedEvent sent = rig.Nodes[0].Transmitted.Should().ContainSingle().Subject.Event;
-        sent.Station.Should().Be(LinkAddress.Everyone);
+        sent.Address.Should().Be(LinkAddress.Everyone);
         sent.Format.Should().Be(StandardFormats.FirstContact);
         rig.Stations[0].Adaptation.TryGetNeighbour(2, out LinkNeighbour? near).Should().BeFalse("nothing was asked of anyone, so nothing is awaited");
         near.Should().BeNull();
@@ -100,10 +100,13 @@ public class StationExchangeTests
         byte[] payload = new byte[PayloadReceiver.PayloadRoom(header)];
         PayloadReceiveResult result = receiver.Receive(audio, found.Index, header, headerReader.Bits, payload);
         result.CheckPassed.Should().BeTrue();
-        payload[0].Should().Be(0, "the leading block is empty for now");
-        payload[1].Should().Be(0);
-        payload[2].Should().Be(30, "the first thing after the leading block is the datagram's length");
-        payload.AsSpan(3, 30).ToArray().Should().Equal(datagram);
+        // The leading block: six bytes of one From item (tag 1, four bytes, the key of the address S1 it was sent from) and no For (the burst is for everyone); then the datagram behind its length.
+        byte[] key = new byte[4];
+        PayloadCodec.WriteKey(SimRig.Address(1).Key, key);
+        payload.AsSpan(0, 7).ToArray().Should().Equal([6, 1, 4, .. key]);
+        payload[7].Should().Be(0);
+        payload[8].Should().Be(30, "the first thing after the leading block is the datagram's length");
+        payload.AsSpan(9, 30).ToArray().Should().Equal(datagram);
     }
 
     [Fact]
@@ -125,15 +128,19 @@ public class StationExchangeTests
         two.Received.Select(r => r.Data).Should().BeEquivalentTo(new[] { SimRig.Datagram(1, 30) }, o => o.WithStrictOrdering());
         one.Received.Select(r => r.Data).Should().BeEquivalentTo(new[] { SimRig.Datagram(2, 30) }, o => o.WithStrictOrdering());
 
-        // The same burst, unchanged, was handed over again: same audio, same burst number, one Transmitted.
-        two.Requests.Should().HaveCount(2);
+        // The same burst, unchanged, was handed over again: same audio, same burst number, one Transmitted. After it station 2 owes station 1 the report it asked for (the burst had been built before station 1's was heard, so the
+        // recommendation could not ride on it), and that goes alone: a third request, which the burst's block of link addresses now makes certain by giving the station enough of station 1's burst to estimate the path from.
+        two.Requests.Should().HaveCount(3);
         two.Requests[1].Checksum.Should().Be(two.Requests[0].Checksum);
         two.Requests[1].Length.Should().Be(two.Requests[0].Length);
         two.Requests[1].Clock.Should().BeGreaterThan(two.Requests[0].Clock);
+        two.Requests[2].Length.Should().BeLessThan(two.Requests[0].Length, "a lone report");
+        two.ModemSent.Should().ContainSingle().Which.Kind.Should().Be(ModemSentKind.Report);
         two.Transmitted.Should().ContainSingle().Which.Event.Burst.Should().Be(0);
         one.Transmitted.Should().ContainSingle();
         two.Dropped.Should().BeEmpty();
-        two.Transmissions.Should().ContainSingle("only the second hand-over was keyed");
+        two.Transmissions.Should().HaveCount(2, "only the second hand-over of the burst was keyed, and then the report");
+        two.Transmissions[0].Length.Should().Be(two.Requests[0].Length);
         two.Transmissions[0].Start.Should().BeGreaterThan(one.Transmissions[0].Start + one.Transmissions[0].Length, "it waited for station 1's burst to end");
         rig.Stations[1].NextBurstNumber.Should().Be(1);
     }
@@ -178,7 +185,10 @@ public class StationExchangeTests
         }
 
         formats.Should().Equal(first, first, StandardFormats.Slower(first, 2), StandardFormats.FirstContact, StandardFormats.FirstContact);
-        silences.Should().Equal(0, 1, 1, 2, 2, 3, 3, 4, 4, 5);
+        // The third silence makes the station forget where the address lives, so the fourth and fifth bursts go to everyone, ask for no report and add no silence.
+        silences.Should().Equal(0, 1, 1, 2, 2, 3, 3, 3, 3, 3);
+        rig.Stations[0].LocatedNow(SimRig.Address(2)).Should().Be(0);
+        a.Transmitted.Skip(3).Select(t => t.Event.Address).Should().OnlyContain(x => x == SimRig.Address(2));
         far.ReportFormat.Should().BeNull();
     }
 

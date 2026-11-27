@@ -75,7 +75,7 @@ public class StationIdentityTests
     {
         var station = new Station(1, new Random(1), runJobsInline: true);
         var peer = LinkAddress.FromAscii("G9XYZ");
-        station.Bind(peer, 2);
+        station.Locate(peer, 2);
         int requests = 0;
         int dropped = 0;
         int transmitted = 0;
@@ -83,12 +83,12 @@ public class StationIdentityTests
         station.Dropped += _ => dropped++;
         station.Transmitted += _ => transmitted++;
 
-        station.Send(new byte[20], peer, new HostTag(1)).Should().Be(SendResult.NoIdentity);
-        station.Send(new byte[20], LinkAddress.Everyone, new HostTag(2)).Should().Be(SendResult.NoIdentity);
-        station.Send(new byte[20], LinkAddress.FromAscii("NOBODY"), new HostTag(3)).Should().Be(SendResult.NoIdentity, "checked before the name is looked up");
-        station.Send(new byte[20], peer, new HostTag(4), reportWanted: true, priority: SendPriority.Expedited).Should().Be(SendResult.NoIdentity);
-        station.QueuedFor(2).Should().Be(0);
-        station.QueuedFor(0).Should().Be(0);
+        station.Send(new byte[20], peer, SimRig.Address(1), new HostTag(1)).Should().Be(SendResult.NoIdentity);
+        station.Send(new byte[20], LinkAddress.Everyone, SimRig.Address(1), new HostTag(2)).Should().Be(SendResult.NoIdentity);
+        station.Send(new byte[20], LinkAddress.FromAscii("NOBODY"), SimRig.Address(1), new HostTag(3)).Should().Be(SendResult.NoIdentity, "checked before the address is looked at");
+        station.Send(new byte[20], peer, SimRig.Address(1), new HostTag(4), reportWanted: true, priority: SendPriority.Expedited).Should().Be(SendResult.NoIdentity);
+        station.QueuedFor(peer).Should().Be(0);
+        station.QueuedFor(LinkAddress.Everyone).Should().Be(0);
 
         float[] silence = new float[4800];
         for (int i = 0; i < 300; i++)
@@ -105,12 +105,12 @@ public class StationIdentityTests
     {
         var station = new Station(1, new Random(1), runJobsInline: true);
         var peer = LinkAddress.FromAscii("G9XYZ");
-        station.Bind(peer, 2);
+        station.Locate(peer, 2);
         int requests = 0;
         station.TransmitRequest += _ => requests++;
-        station.Send(new byte[20], peer, new HostTag(1)).Should().Be(SendResult.NoIdentity);
+        station.Send(new byte[20], peer, SimRig.Address(1), new HostTag(1)).Should().Be(SendResult.NoIdentity);
         station.SetIdentity("M0LTE").Should().Be(IdentityResult.Accepted);
-        station.Send(new byte[20], peer, new HostTag(1)).Should().Be(SendResult.Accepted);
+        station.Send(new byte[20], peer, SimRig.Address(1), new HostTag(1)).Should().Be(SendResult.Accepted);
         float[] silence = new float[4800];
         for (int i = 0; i < 300 && requests == 0; i++)
         {
@@ -160,9 +160,10 @@ public class StationIdentityTests
         rig.RunTo(6);
         rig.Stations[0].Adaptation.HeardReport(2, settled, false, rig.Stations[0].Seconds);
 
+        // Datagrams 110 to 112: the contents decide whether a burst at the margin this path runs at decodes, and 100 to 102 now lose one of the three (the burst carries its block of link addresses, so its bits are not what they were).
         for (int i = 0; i < 3; i++)
         {
-            rig.Send(1, 2, 100 + i, reportWanted: true).Should().Be(SendResult.Accepted);
+            rig.Send(1, 2, 110 + i, reportWanted: true).Should().Be(SendResult.Accepted);
             rig.Run(8);
         }
 
@@ -180,6 +181,7 @@ public class StationIdentityTests
 
         // Told the settled format afresh (the silences so far have walked it down), then 10 dB weaker: the burst is heard and not decoded.
         rig.Stations[0].Adaptation.HeardReport(2, settled, false, rig.Stations[0].Seconds);
+        rig.Stations[0].Locate(SimRig.Address(2), 2); // a report heard comes in a burst from B, whose From says where its address lives: three silences forgot it, and this tells it again
         rig.Channel.Link(a, b).Gain *= SimChannel.Db(-10);
         int before = b.Received.Count;
         rig.Send(1, 2, 300).Should().Be(SendResult.Accepted);

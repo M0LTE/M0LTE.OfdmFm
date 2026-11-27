@@ -177,6 +177,7 @@ public sealed partial class Station
 
         if (request.Modem is { } modem)
         {
+            ModemSentTo = ReferenceEquals(request, _reportRequest) ? _report.Dest : 0;
             ModemSent?.Invoke(modem);
         }
 

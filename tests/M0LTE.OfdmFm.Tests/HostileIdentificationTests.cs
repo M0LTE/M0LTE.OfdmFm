@@ -38,7 +38,7 @@ public class HostileIdentificationTests
     }
 
     [Fact]
-    public void The_Others_Learn_Each_Callsign_And_The_Hosts_Names_Stand()
+    public void The_Others_Hear_Each_Callsign_And_It_Names_Nothing()
     {
         HostileScenarios.Idents r = Shared.Value;
         r.HeardAt[0].Count(h => h == "M0S2@2").Should().Be(3, "A heard each of B's three");
@@ -48,10 +48,10 @@ public class HostileIdentificationTests
         r.HeardAt[2].Count(h => h == "M0S1@1").Should().Be(3);
         r.HeardAt[2].Count(h => h == "M0S2@2").Should().Be(3);
 
-        // A and B know each other by host names, which stand; C is learned by callsign at both.
-        r.NamesAt[0].Where((_, i) => r.HeardAt[0][i].EndsWith("@2", StringComparison.Ordinal)).Distinct().Should().Equal(SimRig.Name(2).ToString());
-        r.NamesAt[0].Where((_, i) => r.HeardAt[0][i].EndsWith("@3", StringComparison.Ordinal)).Distinct().Should().Equal(LinkAddress.FromAscii("M0S3").ToString());
-        r.NamesAt[1].Where((_, i) => r.HeardAt[1][i].EndsWith("@3", StringComparison.Ordinal)).Distinct().Should().Equal(LinkAddress.FromAscii("M0S3").ToString());
+        // The event carries the callsign as sent; a callsign names nothing the host can use.
+        r.NamesAt[0].Where((_, i) => r.HeardAt[0][i].EndsWith("@2", StringComparison.Ordinal)).Distinct().Should().Equal("M0S2");
+        r.NamesAt[0].Where((_, i) => r.HeardAt[0][i].EndsWith("@3", StringComparison.Ordinal)).Distinct().Should().Equal("M0S3");
+        r.NamesAt[1].Where((_, i) => r.HeardAt[1][i].EndsWith("@3", StringComparison.Ordinal)).Distinct().Should().Equal("M0S3");
     }
 
     [Fact]

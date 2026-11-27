@@ -26,7 +26,7 @@ internal sealed class TestBurst
     public byte[][] Datagrams { get; private init; } = [];
 
     /// <summary>A data burst. <paramref name="symbols"/> of 0 picks the fewest the datagrams need.</summary>
-    public static TestBurst Data(int sender, int destination, int format, byte[][] datagrams, PayloadPrelude? prelude = null, int burstNumber = 0, int symbols = 0)
+    public static TestBurst Data(int sender, int destination, int format, byte[][] datagrams, PayloadPrelude? prelude = null, int burstNumber = 0, int symbols = 0, uint[]? from = null, uint? forKey = null, ExtensionItem[]? extra = null)
     {
         if (destination != 0 && prelude is null)
         {
@@ -39,7 +39,32 @@ internal sealed class TestBurst
         }
 
         var packed = new byte[200_000];
-        int length = PayloadCodec.Pack(prelude, [.. datagrams.Select(d => new ReadOnlyMemory<byte>(d))], packed);
+        // The block of link addresses a station always sends: From (the keys the datagrams were sent from) and, to everyone, For. A recording that gives neither has an empty block (to everyone) or none (to one station).
+        var items = new List<ExtensionItem>();
+        if (from is { Length: > 0 })
+        {
+            var keys = new byte[from.Length * PayloadCodec.KeyBytes];
+            for (int i = 0; i < from.Length; i++)
+            {
+                PayloadCodec.WriteKey(from[i], keys.AsSpan(i * PayloadCodec.KeyBytes));
+            }
+
+            items.Add(new ExtensionItem(PayloadCodec.FromTag, keys));
+        }
+
+        if (forKey is { } key)
+        {
+            var value = new byte[PayloadCodec.KeyBytes];
+            PayloadCodec.WriteKey(key, value);
+            items.Add(new ExtensionItem(PayloadCodec.ForTag, value));
+        }
+
+        if (extra is not null)
+        {
+            items.AddRange(extra);
+        }
+
+        int length = PayloadCodec.Pack(prelude, [.. items], [.. datagrams.Select(d => new ReadOnlyMemory<byte>(d))], packed);
         if (length < 0)
         {
             throw new ArgumentException("The datagrams do not fit.");

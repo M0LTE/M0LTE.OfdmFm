@@ -34,7 +34,9 @@ public class HostilePathCutTests
         int.Parse(r.AToCCut.Split(',').Last()).Should().NotBe(StandardFormats.FirstContact, "A's last burst to C in the cut is not at first contact");
         int.Parse(r.BToCCut.Split(',').Last()).Should().NotBe(StandardFormats.FirstContact);
         r.ToCSentInCut.Should().BeGreaterThan(0);
-        r.ToCDeliveredInCut.Should().Be(r.ToCSentInCut);
+        // Before link addresses none was lost in the cut (no burst collided at C then). Now four bursts collide at C in the cut (A and B are hidden from each other, and every burst is a few bytes longer and the timing differs), and the scenario
+        // resends nothing, so a datagram to C that did not arrive must be in a burst that collided at C: that is what is checked, and the figure moved from 10 of 10 to 7 of 10.
+        (r.ToCSentInCut - r.ToCDeliveredInCut).Should().BeLessThanOrEqualTo(r.CollidedByPeriod[1], "every datagram to C lost in the cut was in a burst that collided at C");
 
         // Restored: they find each other and climb back to where they were.
         r.BurstsToRecover.Should().NotBeNull("A is back at 90 percent of its pre-cut rate");

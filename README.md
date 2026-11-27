@@ -68,14 +68,14 @@ A host sends a datagram through a station (inline, so the example needs no worke
 var station = new Station(1, new Random(1), runJobsInline: true);
 station.SetIdentity("M0LTE");                           // the callsign it identifies with; until it has one the station only listens
 var peer = LinkAddress.FromAscii("G9XYZ");
-station.Bind(peer, 2);                                  // the interim way a name gets an on-air number
+var me = LinkAddress.FromAscii("M0LTE-1");              // an address of the host's own: datagrams are sent from it
 
 long id = 0;
 ReadOnlyMemory<float> audio = default;
 station.TransmitRequest += r => (id, audio) = (r.Id, r.Samples);
 station.Transmitted += e => Console.WriteLine($"tag {e.Tag.Value} went at {e.RateBitsPerSecond} bit/s");
 
-SendResult accepted = station.Send(datagram, peer, new HostTag(1));
+SendResult accepted = station.Send(datagram, peer, me, new HostTag(1));
 float[] input = new float[4800];                        // the radio's audio, 0.1 s at a time (silence here)
 while (id == 0) station.Push(input);                    // the station listens for 5 s first, then asks to transmit
 station.TransmitStarted(id, station.SampleCount);       // play audio.Span to the radio, and say when it began ...

@@ -107,7 +107,7 @@ public sealed partial class Station
         _identAudio = audio;
         _identBuilt = true;
         request.Samples = audio.AsMemory(0, total);
-        request.Modem = new ModemSentEvent(ModemSentKind.Identification, null, format);
+        request.Modem = new ModemSentEvent(ModemSentKind.Identification, format);
         return true;
     }
 
@@ -155,35 +155,9 @@ public sealed partial class Station
             return;
         }
 
-        // The name: the host's own binding always stands. Otherwise the callsign becomes the number's name, and the latest identification wins (a callsign learned at another number moves here, as Bind moves a name);
-        // a callsign the host bound to another number is the host's, and is not taken from it. A callsign that is this station's own is nobody else's name.
-        var name = new LinkAddress(callsign);
-        string text = System.Text.Encoding.ASCII.GetString(callsign);
-        bool renamed = false;
-        if (!_hostBound[sender] && !(Callsign is not null && name.Equals(LinkAddress.FromAscii(Callsign))))
-        {
-            int holder = NumberOf(name);
-            if ((holder == 0 || !_hostBound[holder]) && (_bound[sender] is not { } current || current != name))
-            {
-                _bound[sender] = name;
-                if (holder != 0 && holder != sender)
-                {
-                    _bound[holder] = null;
-                    AnnounceLink(holder);
-                }
-
-                renamed = true;
-            }
-        }
-
-        Identified?.Invoke(new IdentifiedEvent(sender, text, capability, NameFor(sender)));
-        if (renamed)
-        {
-            AnnounceLink(sender);
-        }
-        else
-        {
-            RaiseLinkState(sender, now);
-        }
+        HearingSender = sender;
+        Identified?.Invoke(new IdentifiedEvent(System.Text.Encoding.ASCII.GetString(callsign), capability));
+        RaiseLinkState(sender, now);
     }
 }
+

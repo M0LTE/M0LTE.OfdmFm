@@ -11,7 +11,7 @@ public class StationIdentificationExchangeTests
 
     private static LinkAddress Name(string text) => LinkAddress.FromAscii(text);
 
-    /// <summary>A ("M0AAA", number 1) and B ("M0BBB", number 2) on one channel, connected, with the identification interval shortened. A knows B by the host's name "HOSTB"; B knows nobody.</summary>
+    /// <summary>A ("M0AAA", number 1) and B ("M0BBB", number 2) on one channel, connected, with the identification interval shortened. A has B's address "HOSTB" located; B has located nobody.</summary>
     private static (SimChannel Channel, SimNode A, SimNode B) Pair(int seed)
     {
         var channel = new SimChannel(4800, seed);
@@ -20,7 +20,7 @@ public class StationIdentificationExchangeTests
         SimNode na = channel.Add(a, "A");
         SimNode nb = channel.Add(b, "B");
         channel.Connect(na, nb, 1.0, 0.004);
-        a.Bind(HostB, 2);
+        a.Locate(HostB, 2);
         return (channel, na, nb);
     }
 
@@ -28,7 +28,7 @@ public class StationIdentificationExchangeTests
     private static void Scenario(SimChannel channel, SimNode a)
     {
         channel.Run(6 * 48000);
-        a.Station.Send(TestBurst.Datagram(1, 20), HostB, new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
+        a.Station.Send(TestBurst.Datagram(1, 20), HostB, SimRig.Address(1), new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
         channel.Run(34 * 48000);
     }
 
@@ -45,26 +45,27 @@ public class StationIdentificationExchangeTests
         b.Transmissions.Should().HaveCount(2);
         a.ModemSent.Select(m => m.Kind).Should().Equal(ModemSentKind.Identification);
         b.ModemSent.Select(m => m.Kind).Should().Equal(ModemSentKind.Report, ModemSentKind.Identification);
-        a.ModemSent[0].Station.Should().BeNull("an identification is for everyone");
+        a.ModemSentTo.Should().Equal(0);
+        b.ModemSentTo.Should().Equal(1, 0);
         a.ModemSent[0].Format.Should().Be(StandardFormats.FirstContact);
         a.IdentificationsDue.Should().ContainSingle();
         b.IdentificationsDue.Should().ContainSingle();
 
-        // B has no host name for A, so the callsign becomes the name; the capability word is the station's own (revision 0, no flags).
+        // B hears A's callsign and capability word (the station's own: revision 0, no flags). A callsign names nothing: B's host can send to it, and the address is not located.
         IdentifiedEvent atB = b.Identified.Should().ContainSingle().Subject.Event;
-        atB.Should().Be(new IdentifiedEvent(1, "M0AAA", 0, Name("M0AAA")));
-        b.Station.Snapshot().Select(s => s.Station).Should().Contain(Name("M0AAA"));
-        b.LinkStates.Select(l => l.Station).Should().Contain(Name("M0AAA"), "a station heard before it had a name is announced again under it");
-        b.Station.Send(TestBurst.Datagram(2, 10), Name("M0AAA"), new HostTag(2)).Should().Be(SendResult.Accepted, "the learned name can be sent to");
+        atB.Should().Be(new IdentifiedEvent("M0AAA", 0));
+        b.Station.Snapshot().Should().BeEmpty("the host has sent to nobody");
+        b.Station.Send(TestBurst.Datagram(2, 10), Name("M0AAA"), SimRig.Address(2), new HostTag(2)).Should().Be(SendResult.Accepted);
+        b.Station.Snapshot().Should().ContainSingle().Which.Located.Should().BeFalse("a heard callsign is not an address anyone sent from");
 
-        // A has a host name for B, which stands. The event still says what B sent.
+        // A has B's address located and hears B's callsign all the same.
         IdentifiedEvent atA = a.Identified.Should().ContainSingle().Subject.Event;
-        atA.Should().Be(new IdentifiedEvent(2, "M0BBB", 0, HostB));
-        a.Station.Snapshot().Select(s => s.Station).Should().Equal(HostB);
-        a.LinkStates.Select(l => l.Station).Should().NotContain(Name("M0BBB"));
+        atA.Should().Be(new IdentifiedEvent("M0BBB", 0));
+        a.Station.Snapshot().Select(s => s.Address).Should().Equal(HostB);
+        a.LinkStates.Select(l => l.Address).Should().NotContain(Name("M0BBB"));
 
         // An identification is not a datagram, and nothing is owed for it: B heard the datagram and A's identification, measured both, and owes A nothing for the second.
-        b.Received.Should().ContainSingle().Which.Everyone.Should().BeFalse();
+        b.Received.Should().ContainSingle().Which.Addressing.Should().Be(Addressing.ToThisStation);
         a.Received.Should().BeEmpty();
         Station.AdaptationCall heard = callsB.Should().ContainSingle(c => c.Dest == 0).Subject;
         (heard.Sender, heard.Decoded, heard.Capability, heard.Returned, heard.IsReport).Should().Be((1, true, 0, null, false));
@@ -124,12 +125,12 @@ public class StationIdentificationExchangeTests
     }
 
     [Fact]
-    public void An_Identification_Binds_The_Number_To_The_Callsign_Shows_The_Capability_Word_Is_Measured_And_Owes_Nothing()
+    public void An_Identification_Shows_The_Callsign_And_Capability_Word_Is_Measured_Owes_Nothing_And_Names_Nothing()
     {
         (ReceiveRig rig, List<IdentifiedEvent> identified, List<LinkStateEvent> links) = Listen(null, TestBurst.Identification(5, "M0XYZ-1", 0x1234, burstNumber: 9));
         using (rig)
         {
-            identified.Should().Equal(new IdentifiedEvent(5, "M0XYZ-1", 0x1234, Name("M0XYZ-1")));
+            identified.Should().Equal(new IdentifiedEvent("M0XYZ-1", 0x1234));
             rig.Station.Adaptation.TryGetNeighbour(5, out LinkNeighbour? nb).Should().BeTrue();
             nb!.Capability.Should().Be(0x1234);
             nb.Measures.Should().Be(1, "measured like any burst from that station");
@@ -138,50 +139,30 @@ public class StationIdentificationExchangeTests
             rig.Datagrams.Should().BeEmpty("it is not a datagram");
             rig.Station.OwedReports.Should().BeEmpty();
             rig.Station.AskedReportsOwed.Should().Be(0);
-            links.Should().ContainSingle().Which.Station.Should().Be(Name("M0XYZ-1"), "it is announced once, under the callsign");
-            rig.Station.Snapshot().Should().ContainSingle().Which.Station.Should().Be(Name("M0XYZ-1"));
+            links.Should().BeEmpty("the host has sent to no address, and a callsign is not one");
+            rig.Station.Snapshot().Should().BeEmpty();
+            rig.Station.LearnedAddresses.Count.Should().Be(0, "an identification burst carries no From");
         }
     }
 
     [Fact]
-    public void A_Name_The_Host_Bound_Wins_Over_A_Callsign_And_Nothing_Misleading_Is_Raised()
+    public void Identifications_Heard_From_Several_Numbers_Are_Each_Reported_And_Change_Nothing_Else()
     {
-        (ReceiveRig rig, List<IdentifiedEvent> identified, List<LinkStateEvent> links) = Listen(s => s.Bind(Name("HOST"), 5), TestBurst.Identification(5, "M0XYZ", 0x0001));
+        (ReceiveRig rig, List<IdentifiedEvent> two, _) = Listen(null, TestBurst.Identification(5, "M0XYZ", 0), TestBurst.Identification(6, "M0XYZ", 0, burstNumber: 1), TestBurst.Identification(6, "M0ABC", 0, burstNumber: 2));
         using (rig)
         {
-            identified.Should().Equal(new IdentifiedEvent(5, "M0XYZ", 1, Name("HOST")));
-            links.Select(l => l.Station).Should().OnlyContain(n => n == Name("HOST"), "the burst was heard under the host's name, and no other name appears");
-            rig.Station.Snapshot().Single().Station.Should().Be(Name("HOST"));
-            rig.Station.Adaptation.TryGetNeighbour(5, out LinkNeighbour? nb).Should().BeTrue();
-            nb!.Capability.Should().Be(1, "the capability word is recorded whatever the name");
+            two.Should().Equal(new IdentifiedEvent("M0XYZ", 0), new IdentifiedEvent("M0XYZ", 0), new IdentifiedEvent("M0ABC", 0));
+            rig.Station.Snapshot().Should().BeEmpty();
         }
     }
 
     [Fact]
-    public void A_Callsign_The_Host_Bound_To_Another_Number_Is_Not_Taken_From_It_And_A_Learned_One_Moves_To_The_Latest_Number()
-    {
-        (ReceiveRig rig, List<IdentifiedEvent> identified, _) = Listen(s => s.Bind(Name("M0XYZ"), 3), TestBurst.Identification(6, "M0XYZ", 0));
-        using (rig)
-        {
-            identified.Should().ContainSingle().Which.Name.Should().Be(Name("#6"), "the host's M0XYZ is number 3; number 6 stays a placeholder");
-            rig.Station.Snapshot().Select(s => s.Station).Should().Equal(Name("M0XYZ"), Name("#6"));
-        }
-
-        (ReceiveRig rig2, List<IdentifiedEvent> two, _) = Listen(null, TestBurst.Identification(5, "M0XYZ", 0), TestBurst.Identification(6, "M0XYZ", 0, burstNumber: 1), TestBurst.Identification(6, "M0ABC", 0, burstNumber: 2));
-        using (rig2)
-        {
-            two.Select(e => (e.StationNumber, e.Name)).Should().Equal((5, Name("M0XYZ")), (6, Name("M0XYZ")), (6, Name("M0ABC")));
-            rig2.Station.Snapshot().Select(s => s.Station).Should().Equal(Name("#5"), Name("M0ABC")); // the callsign moved from 5 to 6, and then 6 took another
-        }
-    }
-
-    [Fact]
-    public void A_Callsign_That_Is_The_Stations_Own_Is_Reported_But_Never_Bound()
+    public void A_Callsign_That_Is_The_Stations_Own_Is_Reported_As_Any_Other()
     {
         (ReceiveRig rig, List<IdentifiedEvent> identified, _) = Listen(null, TestBurst.Identification(7, "M0LTE", 0));
         using (rig)
         {
-            identified.Should().ContainSingle().Which.Name.Should().Be(Name("#7"));
+            identified.Should().ContainSingle().Which.Callsign.Should().Be("M0LTE");
         }
     }
 

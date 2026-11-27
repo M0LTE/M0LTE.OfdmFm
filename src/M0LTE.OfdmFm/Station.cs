@@ -19,7 +19,7 @@ internal enum TransmitState
 /// <summary>
 /// The live station: one per radio channel. So far (steps 1 to 6 of docs/station-design.md) it keeps a sample clock with timers on it, runs the transmit handshake with the audio layer,
 /// receives (audio pushed in comes out as <see cref="Received"/> datagrams, <see cref="PathReport"/> and <see cref="LinkState"/> events and calls on the adaptation rules), knows when the channel is busy and when it may transmit,
-/// and sends what the host gives it (<see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Bind"/>, <see cref="Snapshot"/>; events <see cref="Transmitted"/>, <see cref="Dropped"/>, <see cref="Congestion"/>).
+/// and sends what the host gives it (<see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Snapshot"/>; events <see cref="Transmitted"/>, <see cref="Dropped"/>, <see cref="Congestion"/>).
 /// It tells the stations it hears what the path supports, by the protocol's rules (lone reports, step 6), and tells the host when a burst it sent was heard and not decoded (<see cref="BurstNotDecoded"/>).
 /// And it identifies itself (step 7): while it has been transmitting it sends an identification burst by that rule and raises <see cref="IdentificationDue"/> for the audio layer's Morse ident, and it learns the callsigns of the stations it hears do the same (<see cref="Identified"/>).
 /// <para>
@@ -41,7 +41,7 @@ internal enum TransmitState
 /// A burst is found only after its opening has been heard and the next correlation frame has run, so a carrier is noticed late by burst detection alone: up to 0.9 s after another station keys, against 0.1 s with a carrier indication.
 /// </para>
 /// <para>
-/// <b>Sending.</b> <see cref="Send"/> copies a datagram into the queue for its destination (one queue per station, bounded at 30 s of airtime at the format in use). While anything is queued the station keeps one request with the
+/// <b>Sending.</b> <see cref="Send"/> copies a datagram into the queue for its destination (one queue per link address, bounded at 30 s of airtime at the format in use). While anything is queued the station keeps one request with the
 /// channel-access rules, in the class of its most urgent datagram. When the channel is free and the rules grant it, the station picks a destination (the one served longest ago, expedited traffic first), asks the adaptation rules for the format
 /// (<c>LinkAdaptation.Choose</c>), takes datagrams for it in order while they fit (up to 2.5 s of airtime, or one datagram if it needs longer), writes the prelude (the recommendation for the destination, "report wanted" when the rules or the host ask,
 /// and then the capability word), packs and renders the burst and hands the samples to the audio layer in <see cref="TransmitRequest"/>. A burst for everyone goes at the first-contact format with no prelude. The burst number counts up by one a burst, modulo 16.
@@ -57,7 +57,7 @@ internal enum TransmitState
 /// <para>
 /// <b>Threads.</b> A station has no threads of its own. Two groups of members exist.
 /// The <i>audio-thread</i> members are <see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/>, <see cref="SetExternalBusy"/>, the host's operations
-/// <see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Cancel(LinkAddress)"/>, <see cref="Bind"/> and <see cref="Snapshot"/>, the internal <c>Enqueue</c> and the properties
+/// <see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Cancel(LinkAddress)"/> and <see cref="Snapshot"/>, the internal <c>Enqueue</c> and the properties
 /// <see cref="SampleCount"/> and <see cref="Seconds"/>; the caller must serialise every call to them on one station (one thread, or a lock: a host that sends from other threads takes the lock its audio thread takes around <see cref="Push"/>), events are raised on the thread that made the call that
 /// caused them, and an event handler must not call any of these members (they throw <see cref="InvalidOperationException"/>, as they do from a timer action).
 /// The <i>worker</i> members are <see cref="RunOne"/>, <see cref="RunPending"/> and <see cref="HasWork"/>; they may be called from any number of threads at the same time, and from the audio thread too when it is not inside a call of its own (a single-threaded host can run its own jobs between pushes),
@@ -144,8 +144,8 @@ public sealed partial class Station
         return Callsign == callsign ? IdentityResult.Accepted : IdentityResult.Different;
     }
 
-    /// <summary>The station's on-air number.</summary>
-    public int StationNumber { get; }
+    /// <summary>The station's on-air number. Not part of the host interface: no host sees a station number.</summary>
+    internal int StationNumber { get; }
 
     /// <summary>The sample clock: receive samples so far, counting those the audio layer reported dropped.</summary>
     public long SampleCount { get; private set; }
@@ -161,16 +161,16 @@ public sealed partial class Station
 
     /// <summary>
     /// Raised for each datagram received, addressed to this station or to everyone, in the order the bursts started. The datagram's memory is valid only during the call: copy it to keep it.
-    /// The sender's name is null until a later step binds names; <see cref="ReceivedEvent.SenderNumber"/> always says who.
+    /// The event says how the burst was addressed, and the For key when it was for an address not yet located. The station does not filter: a burst to everyone is delivered whether or not it has a For.
     /// </summary>
     public event Action<ReceivedEvent>? Received;
 
     /// <summary>
-    /// Raised when a report for this station is heard, alone or in the prelude of a data burst that gives a recommendation. Until names are bound the station is named by <see cref="PlaceholderName"/>.
+    /// Raised when a report for this station is heard, alone or in the prelude of a data burst that gives a recommendation. Raised once for each address the host has sent to that lives at the station that sent the report.
     /// </summary>
     public event Action<PathReportEvent>? PathReport;
 
-    /// <summary>Raised when what the station knows of a neighbour changes (its format, the room in a burst or where the format came from), and when it is forgotten after ten minutes without a word from it. Named as <see cref="PathReport"/> names them.</summary>
+    /// <summary>Raised when what the station knows of a neighbour changes (its format, the room in a burst or where the format came from), and when it is forgotten after ten minutes without a word from it. Raised for each address the host has sent to (when it first sends to it, and when what is known of it changes), not located included.</summary>
     public event Action<LinkStateEvent>? LinkState;
 
     /// <summary>
@@ -183,7 +183,7 @@ public sealed partial class Station
     public event Action? WorkAvailable;
 
     /// <summary>
-    /// Raised once for each datagram, when the burst carrying it has ended on the air (the audio layer's <see cref="TransmitEnded"/>): its tag, the station, the burst number, the format, the format's rate, the time the burst was on air
+    /// Raised once for each datagram, when the burst carrying it has ended on the air (the audio layer's <see cref="TransmitEnded"/>): its tag, the link address it was for, the burst number, the format, the format's rate, the time the burst was on air
     /// (from the audio layer's reported start to its reported end, lead-in included) and the sample clock at the end. Raised on the audio thread, in the call to <see cref="TransmitEnded"/>. Not raised for a datagram that was dropped.
     /// </summary>
     public event Action<TransmittedEvent>? Transmitted;
@@ -216,7 +216,7 @@ public sealed partial class Station
     public event Action<IdentificationDueEvent>? IdentificationDue;
 
     /// <summary>
-    /// Raised when an identification burst from another station has been decoded and read, in the order the bursts started: its number, its callsign, its capability word and the name the station is known by now (see <see cref="IdentifiedEvent"/>).
+    /// Raised when an identification burst from another station has been decoded and read, in the order the bursts started: its callsign and its capability word (see <see cref="IdentifiedEvent"/>).
     /// Not raised for a burst that did not decode or whose payload is not an identification. A datagram is never raised for it: <see cref="Received"/> is for datagrams.
     /// </summary>
     public event Action<IdentifiedEvent>? Identified;

@@ -49,7 +49,8 @@ public class HostileHiddenStationTests
     {
         // A starts, B reads its header; C, 20 dB stronger, starts 0.5 s later, as the payload begins. B's audio becomes C's. A's payload fails, and C's burst, which began inside a burst B knows of, is ignored unread:
         // neither datagram arrives. B reports "failed" to A (and the host is hinted at which datagram), and reads the failure as the path's: the margin goes up and the cap is set, though the path is fine.
-        HostileScenarios.HiddenRound r = Round(-20, 0, 0.5, "C 20 dB stronger, starts 0.5 s later");
+        // 0.43 s, not the 0.5 s it was: every burst now carries its block of link addresses, which moved where the receiver's test for "the quality collapsed part-way" falls, by a few hundredths of a second.
+        HostileScenarios.HiddenRound r = Round(-20, 0, 0.43, "C 20 dB stronger, starts 0.43 s later");
         r.ADelivered.Should().BeFalse();
         r.CDelivered.Should().BeFalse("it is ignored: a candidate inside a burst already known is not read");
         r.BHeard.Should().StartWith("from 1 fmt 192 decoded False").And.NotContain("from 3");
@@ -66,7 +67,8 @@ public class HostileHiddenStationTests
     {
         // Poor behaviour, recorded, not tuned. The collision begins as the payload does, so there is no clean early part and the failure is not judged sudden (the test needs two clean symbols first): by the rules it is a failure of
         // the path, so the margin goes up by half a dB and the cap is set. At the most robust format the cap changes nothing, the margin is what is left of it; at any other format the recommendation would have fallen.
-        HostileScenarios.HiddenRound r = Round(0, 0, 0.5, "equal strength, C starts 0.5 s later");
+        // 0.43 s, not 0.5 (see the test of the stronger station above).
+        HostileScenarios.HiddenRound r = Round(0, 0, 0.43, "equal strength, C starts 0.43 s later");
         r.BHeard.Should().Contain("decoded False sudden False");
         r.MarginForA.Should().BeApproximately(3.5, 1e-9);
         r.CapForA.Should().Be(StandardFormats.FirstContact);
@@ -112,8 +114,8 @@ public class HostileHiddenStationTests
     [Fact]
     public void The_Same_Seeds_Give_The_Same_Log_Of_Every_Event_At_All_Three_Stations()
     {
-        List<string> once = HostileScenarios.HiddenOne(HostileScenarios.Default, 2, 0, 0, 0.5, "x").Log;
+        List<string> once = HostileScenarios.HiddenOne(HostileScenarios.Default, 2, 0, 0, 0.43, "x").Log;
         once.Should().Contain(l => l.Contains("notdecoded", StringComparison.Ordinal));
-        HostileScenarios.HiddenOne(HostileScenarios.Default, 2, 0, 0, 0.5, "x").Log.Should().Equal(once);
+        HostileScenarios.HiddenOne(HostileScenarios.Default, 2, 0, 0, 0.43, "x").Log.Should().Equal(once);
     }
 }

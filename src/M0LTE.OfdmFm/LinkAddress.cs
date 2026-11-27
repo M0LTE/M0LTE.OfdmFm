@@ -132,7 +132,7 @@ public enum DropReason
     /// <summary>It waited in the queue too long. Not raised yet: a queue is bounded in airtime and the host cancels what it no longer wants.</summary>
     Expired = 1,
 
-    /// <summary>The station it was for was forgotten. Not raised yet: a station forgotten after ten minutes is sent to again from first contact.</summary>
+    /// <summary>The address was forgotten. Not raised: a datagram waiting for an address that is forgotten goes to everyone instead.</summary>
     LinkForgotten = 2,
 
     /// <summary>The link's format fell after the datagram was accepted, and the datagram is now larger than one burst at the format carries. The host sees the new room in <see cref="LinkStateEvent"/>.</summary>
@@ -168,17 +168,14 @@ public enum SendResult
     /// <summary>The datagram is queued. Its fate is told by <see cref="Station.Transmitted"/> or <see cref="Station.Dropped"/>.</summary>
     Accepted = 0,
 
-    /// <summary>The name is not bound to a station number (see <see cref="Station.Bind"/>).</summary>
-    NotBound = 1,
+    /// <summary>The datagram is larger than one burst to that address carries at the format it would go at now (<see cref="LinkStateEvent.DatagramRoom"/>). The modem never splits a datagram.</summary>
+    TooLarge = 1,
 
-    /// <summary>The datagram is larger than one burst to that station carries at the format it would go at now (<see cref="LinkStateEvent.DatagramRoom"/>). The modem never splits a datagram.</summary>
-    TooLarge = 2,
-
-    /// <summary>The queue to that station holds its limit of airtime. <see cref="Station.Congestion"/> says when it is writable again.</summary>
-    QueueFull = 3,
+    /// <summary>The queue to that address holds its limit of airtime. <see cref="Station.Congestion"/> says when it is writable again.</summary>
+    QueueFull = 2,
 
     /// <summary>The station has no identity yet (<see cref="Station.SetIdentity"/>) and does not transmit. Nothing is queued.</summary>
-    NoIdentity = 4,
+    NoIdentity = 3,
 }
 
 /// <summary>What <see cref="Station.SetIdentity"/> did.</summary>

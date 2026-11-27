@@ -2,13 +2,13 @@ using M0LTE.OfdmFm;
 
 namespace M0LTE.OfdmFm.Tests;
 
-/// <summary>Several inline stations, numbered 1 up and named "S1", "S2" and so on, on one <see cref="SimChannel"/>, each bound to every other (or as <c>binds</c> says: station i binds station j when it returns true), all pairs connected. Each is given its identity unless <c>identified</c> says false for its number.</summary>
+/// <summary>Several inline stations, numbered 1 up and named "S1", "S2" and so on, on one <see cref="SimChannel"/>, each given the address of every other, as if a conversation had located them (or as <c>locates</c> says: station i has station j's address located when it returns true), all pairs connected. Each is given its identity unless <c>identified</c> says false for its number.</summary>
 internal sealed class SimRig
 {
     /// <summary>The first-contact format's rate, bit/s.</summary>
     public static readonly double FirstContactRate = StandardFormats.Rate(StandardFormats.FirstContact) * 1000.0;
 
-    public SimRig(int stations, int block = 4800, int seed = 1, double noise = 0.004, double gain = 1.0, bool connect = true, Func<int, int, bool>? binds = null, Func<int, bool>? identified = null)
+    public SimRig(int stations, int block = 4800, int seed = 1, double noise = 0.004, double gain = 1.0, bool connect = true, Func<int, int, bool>? locates = null, Func<int, bool>? identified = null)
     {
         Channel = new SimChannel(block, seed);
         for (int i = 1; i <= stations; i++)
@@ -28,9 +28,9 @@ internal sealed class SimRig
         {
             for (int j = 1; j <= stations; j++)
             {
-                if (i != j && (binds?.Invoke(i, j) ?? true))
+                if (i != j && (locates?.Invoke(i, j) ?? true))
                 {
-                    Stations[i - 1].Bind(Name(j), j);
+                    Stations[i - 1].Locate(Address(j), j);
                 }
             }
         }
@@ -53,8 +53,8 @@ internal sealed class SimRig
 
     public List<SimNode> Nodes { get; } = [];
 
-    /// <summary>The name station <paramref name="number"/> is bound under at the others.</summary>
-    public static LinkAddress Name(int number) => LinkAddress.FromAscii($"S{number}");
+    /// <summary>The link address of station <paramref name="number"/>'s host: the one datagrams for it go to and, from that station, the one they are sent from.</summary>
+    public static LinkAddress Address(int number) => LinkAddress.FromAscii($"S{number}");
 
     /// <summary>Runs for <paramref name="seconds"/> more of simulated time.</summary>
     public void Run(double seconds) => Channel.Run(Channel.Clock + (long)(seconds * 48000));
@@ -67,9 +67,9 @@ internal sealed class SimRig
 
     /// <summary>Station <paramref name="from"/> sends datagram number <paramref name="tag"/> to station <paramref name="to"/>.</summary>
     public SendResult Send(int from, int to, int tag, int length = 30, SendPriority priority = SendPriority.Ordinary, bool reportWanted = false) =>
-        Send(from, Name(to), tag, length, priority, reportWanted);
+        Send(from, Address(to), tag, length, priority, reportWanted);
 
-    /// <summary>Station <paramref name="from"/> sends datagram number <paramref name="tag"/> to a name (or everyone).</summary>
+    /// <summary>Station <paramref name="from"/> sends datagram number <paramref name="tag"/> to an address (or everyone), from its own address.</summary>
     public SendResult Send(int from, LinkAddress to, int tag, int length = 30, SendPriority priority = SendPriority.Ordinary, bool reportWanted = false) =>
-        Stations[from - 1].Send(Datagram(tag, length), to, new HostTag(tag), reportWanted, priority);
+        Stations[from - 1].Send(Datagram(tag, length), to, Address(from), new HostTag(tag), reportWanted, priority);
 }

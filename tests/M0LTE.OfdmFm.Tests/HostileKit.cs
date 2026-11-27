@@ -121,6 +121,13 @@ internal sealed class Ledger
     /// <summary>Datagrams a station refused (<see cref="Station.Send"/> did not say Accepted).</summary>
     public List<(SentItem Item, SendResult Result)> Refused { get; } = [];
 
+    /// <summary>
+    /// The datagram size the scenarios send unless they say otherwise. It was 30 bytes when a burst to a station carried 4 bytes of prelude and one to everyone nothing besides the datagrams; every burst now also carries its block of
+    /// link addresses (7 bytes with one From key), so 23 bytes keeps the payload of a burst to a located address, and so its symbols and airtime, what they were. The scenarios were tuned on those lengths (the receiver judges a collision
+    /// "sudden" only from six payload symbols up).
+    /// </summary>
+    public const int DefaultLength = 23;
+
     public static long TagOf(int from, int seq, int attempt) => (from * 10_000_000L) + (seq * 100L) + attempt;
 
     /// <summary>The bytes of a datagram: sender, sequence (two bytes), attempt, then filler that depends on all of them.</summary>
@@ -142,7 +149,7 @@ internal sealed class Ledger
     public static (int From, int Seq, int Attempt) Identify(byte[] data) => (data[0], (data[1] << 8) | data[2], data[3]);
 
     /// <summary>Station <paramref name="from"/> sends a new datagram to station <paramref name="to"/> (0: everyone).</summary>
-    public SentItem Send(int from, int to, int length = 30, SendPriority priority = SendPriority.Ordinary, bool reportWanted = false, long cancelAfter = 0)
+    public SentItem Send(int from, int to, int length = DefaultLength, SendPriority priority = SendPriority.Ordinary, bool reportWanted = false, long cancelAfter = 0)
     {
         var item = new SentItem { From = from, To = to, Seq = _nextSeq[from]++, Length = length, FirstSentClock = _rig.Channel.Clock, Priority = priority };
         Items.Add(item);
@@ -161,8 +168,8 @@ internal sealed class Ledger
         long tag = TagOf(item.From, item.Seq, attempt);
         item.Tags.Add(tag);
         _byTag[tag] = item;
-        LinkAddress to = item.To == 0 ? LinkAddress.Everyone : SimRig.Name(item.To);
-        SendResult r = _rig.Stations[item.From - 1].Send(Bytes(item.From, item.Seq, attempt, item.Length), to, new HostTag(tag), reportWanted, priority);
+        LinkAddress to = item.To == 0 ? LinkAddress.Everyone : SimRig.Address(item.To);
+        SendResult r = _rig.Stations[item.From - 1].Send(Bytes(item.From, item.Seq, attempt, item.Length), to, SimRig.Address(item.From), new HostTag(tag), reportWanted, priority);
         if (r != SendResult.Accepted)
         {
             Refused.Add((item, r));

@@ -71,5 +71,5 @@ internal sealed class SimRig
 
     /// <summary>Station <paramref name="from"/> sends datagram number <paramref name="tag"/> to an address (or everyone), from its own address.</summary>
     public SendResult Send(int from, LinkAddress to, int tag, int length = 30, SendPriority priority = SendPriority.Ordinary, bool reportWanted = false) =>
-        Stations[from - 1].Send(Datagram(tag, length), to, Address(from), new HostTag(tag), reportWanted, priority);
+        Stations[from - 1].Send(Datagram(tag, length), to, Address(from), LinkProtocol.NoLayer3, new HostTag(tag), reportWanted, priority);
 }

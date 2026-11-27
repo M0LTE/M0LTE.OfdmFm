@@ -28,7 +28,7 @@ public class StationIdentificationExchangeTests
     private static void Scenario(SimChannel channel, SimNode a)
     {
         channel.Run(6 * 48000);
-        a.Station.Send(TestBurst.Datagram(1, 20), HostB, SimRig.Address(1), new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
+        a.Station.Send(TestBurst.Datagram(1, 20), HostB, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
         channel.Run(34 * 48000);
     }
 
@@ -55,7 +55,7 @@ public class StationIdentificationExchangeTests
         IdentifiedEvent atB = b.Identified.Should().ContainSingle().Subject.Event;
         atB.Should().Be(new IdentifiedEvent("M0AAA", 0));
         b.Station.Snapshot().Should().BeEmpty("the host has sent to nobody");
-        b.Station.Send(TestBurst.Datagram(2, 10), Name("M0AAA"), SimRig.Address(2), new HostTag(2)).Should().Be(SendResult.Accepted);
+        b.Station.Send(TestBurst.Datagram(2, 10), Name("M0AAA"), SimRig.Address(2), LinkProtocol.NoLayer3, new HostTag(2)).Should().Be(SendResult.Accepted);
         b.Station.Snapshot().Should().ContainSingle().Which.Located.Should().BeFalse("a heard callsign is not an address anyone sent from");
 
         // A has B's address located and hears B's callsign all the same.

@@ -83,10 +83,10 @@ public class StationIdentityTests
         station.Dropped += _ => dropped++;
         station.Transmitted += _ => transmitted++;
 
-        station.Send(new byte[20], peer, SimRig.Address(1), new HostTag(1)).Should().Be(SendResult.NoIdentity);
-        station.Send(new byte[20], LinkAddress.Everyone, SimRig.Address(1), new HostTag(2)).Should().Be(SendResult.NoIdentity);
-        station.Send(new byte[20], LinkAddress.FromAscii("NOBODY"), SimRig.Address(1), new HostTag(3)).Should().Be(SendResult.NoIdentity, "checked before the address is looked at");
-        station.Send(new byte[20], peer, SimRig.Address(1), new HostTag(4), reportWanted: true, priority: SendPriority.Expedited).Should().Be(SendResult.NoIdentity);
+        station.Send(new byte[20], peer, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.NoIdentity);
+        station.Send(new byte[20], LinkAddress.Everyone, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2)).Should().Be(SendResult.NoIdentity);
+        station.Send(new byte[20], LinkAddress.FromAscii("NOBODY"), SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(3)).Should().Be(SendResult.NoIdentity, "checked before the address is looked at");
+        station.Send(new byte[20], peer, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(4), reportWanted: true, priority: SendPriority.Expedited).Should().Be(SendResult.NoIdentity);
         station.QueuedFor(peer).Should().Be(0);
         station.QueuedFor(LinkAddress.Everyone).Should().Be(0);
 
@@ -108,9 +108,9 @@ public class StationIdentityTests
         station.Locate(peer, 2);
         int requests = 0;
         station.TransmitRequest += _ => requests++;
-        station.Send(new byte[20], peer, SimRig.Address(1), new HostTag(1)).Should().Be(SendResult.NoIdentity);
+        station.Send(new byte[20], peer, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.NoIdentity);
         station.SetIdentity("M0LTE").Should().Be(IdentityResult.Accepted);
-        station.Send(new byte[20], peer, SimRig.Address(1), new HostTag(1)).Should().Be(SendResult.Accepted);
+        station.Send(new byte[20], peer, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
         float[] silence = new float[4800];
         for (int i = 0; i < 300 && requests == 0; i++)
         {

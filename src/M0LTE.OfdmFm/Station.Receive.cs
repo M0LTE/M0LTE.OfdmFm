@@ -41,8 +41,8 @@ public sealed partial class Station
     private const int Carriers = BurstRenderer.Carriers;
     private const int MaxNoted = 64;
 
-    /// <summary>The overhead a datagram has in a burst to one station: the largest prelude (4 bytes), the block of items with one From key (7 bytes) and the datagram's own length (2 bytes).</summary>
-    private const int DatagramOverhead = 4 + 7 + 2;
+    /// <summary>The overhead a datagram has in a burst to one station: the largest prelude (4 bytes), the block of items with one run in its From (9 bytes) and the datagram's own length (2 bytes).</summary>
+    private const int DatagramOverhead = 4 + 9 + 2;
 
     private readonly bool _inline;
     private readonly object _gate = new();
@@ -1080,22 +1080,42 @@ public sealed partial class Station
         AdaptationCalled?.Invoke(new AdaptationCall(false, sender, h.Destination, h.Format, decoded, quality.ToArray(), now, footing, job.Sudden, their, capability, owed));
         if (unpacked)
         {
-            uint? forKey = ReadAddressItems(items, sender, now);
+            // The block's From runs must add up to the datagrams: a burst whose do not (or that has none) is treated as malformed, and nothing is learned from it or delivered from it.
+            bool valid = ReadAddressItems(items, datagrams, sender, now, out uint? forKey, out ReadOnlySpan<byte> runs);
             if (mine && prelude.Recommended is int recommended)
             {
                 RaisePathReport(sender, recommended, prelude.Failed, now);
             }
 
-            if (mine || everyone)
+            if (valid && (mine || everyone))
             {
                 HearingSender = sender;
                 double db = MeanQualityDb(job.Quality, StandardFormats.Describe(h.Format).Carriers);
                 Addressing addressing = mine ? Addressing.ToThisStation : forKey is null ? Addressing.ToEveryone : Addressing.ForAddressNotYetLocated;
+                int run = 0;
+                int left = 0;
+                uint fromKey = 0;
+                byte protocol = 0;
                 while (datagrams.TryNext(out ReadOnlySpan<byte> datagram))
                 {
+                    if (left == 0)
+                    {
+                        fromKey = PayloadCodec.ReadKey(runs[(run * PayloadCodec.RunBytes)..]);
+                        protocol = runs[(run * PayloadCodec.RunBytes) + PayloadCodec.KeyBytes];
+                        left = runs[(run * PayloadCodec.RunBytes) + PayloadCodec.KeyBytes + 1];
+                        run++;
+                    }
+
+                    left--;
                     int offset = (int)Unsafe.ByteOffset(ref MemoryMarshal.GetReference(payload), ref MemoryMarshal.GetReference(datagram));
-                    Received?.Invoke(new ReceivedEvent(job.Payload.AsMemory(offset, datagram.Length), addressing, forKey, db));
+                    Received?.Invoke(new ReceivedEvent(job.Payload.AsMemory(offset, datagram.Length), fromKey, protocol, addressing, forKey, db));
                 }
+            }
+
+            if (valid && everyone && forKey is uint asked && _ownKeys.Contains(asked) && _link.ReportFor(sender) is int told)
+            {
+                // A burst to everyone for one of this station's own addresses: answer with the recommendation, as for a drop, so that the sender can bind the address to this station.
+                NoteVerdict(sender, r.End, new LinkReport(told, false), false, true);
             }
         }
 
@@ -1111,20 +1131,21 @@ public sealed partial class Station
     internal int HearingSender { get; private set; }
 
     /// <summary>
-    /// Reads the items of a decoded data burst's block: each key in From now lives at the sender (the latest burst heard wins), and the For key is returned when there is one. Items with other tags, and From or For items of the wrong length, are skipped.
-    /// Allocates nothing once the addresses are known.
+    /// Reads the items of a decoded data burst's block. The From item's runs must be whole runs (6 bytes each, none with a count of 0) whose counts add up to the datagrams in the burst; if they do, each key lives at the sender from now (the latest
+    /// burst heard wins) and true is returned, with the runs and the For key if there is one. If they do not (no From, a length that is not whole runs, counts that do not add up), nothing is learned and false is returned. Items with other tags are skipped, as is a For item
+    /// of the wrong length, and only the first From counts. Allocates nothing once the addresses are known.
     /// </summary>
-    private uint? ReadAddressItems(ExtensionReader items, int sender, double now)
+    private bool ReadAddressItems(ExtensionReader items, DatagramReader datagrams, int sender, double now, out uint? forKey, out ReadOnlySpan<byte> runs)
     {
-        uint? forKey = null;
+        forKey = null;
+        runs = default;
+        bool haveFrom = false;
         while (items.TryNext(out byte tag, out ReadOnlySpan<byte> value))
         {
-            if (tag == PayloadCodec.FromTag && value.Length >= PayloadCodec.KeyBytes && value.Length % PayloadCodec.KeyBytes == 0)
+            if (tag == PayloadCodec.FromTag && !haveFrom)
             {
-                for (int i = 0; i < value.Length; i += PayloadCodec.KeyBytes)
-                {
-                    _table.Learn(PayloadCodec.ReadKey(value[i..]), sender, now);
-                }
+                haveFrom = true;
+                runs = value;
             }
             else if (tag == PayloadCodec.ForTag && value.Length == PayloadCodec.KeyBytes)
             {
@@ -1132,7 +1153,87 @@ public sealed partial class Station
             }
         }
 
-        return forKey;
+        int count = 0;
+        while (datagrams.TryNext(out _))
+        {
+            count++;
+        }
+
+        if (!haveFrom || runs.Length == 0 || runs.Length % PayloadCodec.RunBytes != 0)
+        {
+            return false;
+        }
+
+        int total = 0;
+        for (int i = 0; i < runs.Length; i += PayloadCodec.RunBytes)
+        {
+            int n = runs[i + PayloadCodec.KeyBytes + 1];
+            if (n == 0)
+            {
+                return false;
+            }
+
+            total += n;
+        }
+
+        if (total != count)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < runs.Length; i += PayloadCodec.RunBytes)
+        {
+            _table.Learn(PayloadCodec.ReadKey(runs[i..]), sender, now);
+        }
+
+        return true;
+    }
+
+    /// <summary>A burst to everyone for an address not located, sent and not yet answered: the key it was for, the sample it ended at, and when the wait for an answer runs out.</summary>
+    private readonly record struct Flood(uint Key, long Ended, long Due);
+
+    private readonly List<Flood> _floods = [];
+
+    /// <summary>Notes a burst to everyone for the address with this key as sent and unanswered (for a test of the binding; a station notes its own at the end of a burst).</summary>
+    internal void NoteFlood(uint key, long ended, long due) => _floods.Add(new Flood(key, ended, due));
+
+    /// <summary>The floods outstanding, for a test.</summary>
+    internal int FloodsOutstanding => _floods.Count;
+
+    /// <summary>
+    /// A lone report for this station has begun at <paramref name="reportStart"/>, from station <paramref name="sender"/>. If exactly one address (one For key) has a burst to everyone outstanding (sent, with its answer wait not run out, counted from the burst's end),
+    /// that address lives at the sender: the station that owns it answered. With none outstanding, or two keys, nothing is learned. The report is then applied as any is.
+    /// </summary>
+    private void BindFloodedAddress(int sender, long reportStart, double now)
+    {
+        ForgetFloods(reportStart + 1);
+        uint? only = null;
+        foreach (Flood f in _floods)
+        {
+            if (f.Ended > reportStart)
+            {
+                continue;
+            }
+
+            if (only is { } k && k != f.Key)
+            {
+                return;
+            }
+
+            only = f.Key;
+        }
+
+        if (only is { } key)
+        {
+            _table.Learn(key, sender, now);
+            for (int i = _floods.Count - 1; i >= 0; i--)
+            {
+                if (_floods[i].Key == key)
+                {
+                    _floods.RemoveAt(i);
+                }
+            }
+        }
     }
 
     private void ApplyReport(BurstRecord r)
@@ -1147,6 +1248,7 @@ public sealed partial class Station
         // After a lone report for this station, ordinary traffic leaves the channel clear for about a second from the report's last sample.
         _access.HoldOffOrdinaryUntil(r.End + ChannelAccess.ReportHoldOff);
         double now = ClockSeconds(r.End);
+        BindFloodedAddress(h.Sender, r.Start, now);
         _link.HeardReport(h.Sender, h.Format, h.Failed, now);
         AdaptationCalled?.Invoke(new AdaptationCall(true, h.Sender, h.Destination, h.Format, false, [], now, null, false, new LinkReport(h.Format, h.Failed), null, null));
         RaisePathReport(h.Sender, h.Format, h.Failed, now);
@@ -1181,8 +1283,9 @@ public sealed partial class Station
     private static int DatagramRoomFor(int format) => Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - DatagramOverhead);
 
     /// <summary>What the station knows of neighbour <paramref name="who"/>, with the format <c>Choose</c> gives now. False when the rules hold nothing about it.</summary>
-    private bool DescribeStation(int who, double now, out int chosen, out LinkKnowledge knowledge, out double age)
+    private bool DescribeStation(int who, double now, out int chosen, out LinkKnowledge knowledge, out double age, out int told)
     {
+        told = -1;
         chosen = 0;
         knowledge = LinkKnowledge.FirstContact;
         age = 0;
@@ -1192,6 +1295,7 @@ public sealed partial class Station
         }
 
         chosen = _link.Choose(who, now).Format;
+        told = nb.Told ?? -1;
         if (nb.ReportFormat is not null)
         {
             knowledge = LinkKnowledge.Report;
@@ -1229,17 +1333,17 @@ public sealed partial class Station
         if (who == 0)
         {
             chosen = -1;
-            return new LinkStateEvent(q.Address, false, null, null, RoomFor(StandardFormats.FirstContact, false, true), LinkKnowledge.FirstContact, 0, q.Forgotten);
+            return new LinkStateEvent(q.Address, false, null, null, null, RoomFor(StandardFormats.FirstContact, false, true), LinkKnowledge.FirstContact, 0, q.Forgotten);
         }
 
-        if (!DescribeStation(who, now, out chosen, out LinkKnowledge knowledge, out double age))
+        if (!DescribeStation(who, now, out chosen, out LinkKnowledge knowledge, out double age, out int told))
         {
             chosen = -1;
-            return new LinkStateEvent(q.Address, true, null, null, DatagramRoomFor(StandardFormats.FirstContact), LinkKnowledge.FirstContact, 0, false);
+            return new LinkStateEvent(q.Address, true, null, null, null, DatagramRoomFor(StandardFormats.FirstContact), LinkKnowledge.FirstContact, 0, false);
         }
 
         bool known = knowledge != LinkKnowledge.FirstContact;
-        return new LinkStateEvent(q.Address, true, known ? chosen : null, known ? StandardFormats.Rate(chosen) * 1000.0 : null, DatagramRoomFor(chosen), knowledge, Math.Max(0, age), false);
+        return new LinkStateEvent(q.Address, true, known ? chosen : null, known ? StandardFormats.Rate(chosen) * 1000.0 : null, told >= 0 ? StandardFormats.Rate(told) * 1000.0 : null, DatagramRoomFor(chosen), knowledge, Math.Max(0, age), false);
     }
 
     /// <summary>Raises <see cref="LinkState"/> for an address the host has sent to if what it would say differs from what it said last.</summary>
@@ -1251,7 +1355,7 @@ public sealed partial class Station
             q.Forgotten = false;
         }
 
-        if (q.Shown && q.ShownLocated == link.Located && q.ShownGone == link.Gone && q.ShownFormat == chosen && q.ShownRoom == link.DatagramRoom && q.ShownKnowledge == link.Knowledge)
+        if (q.Shown && q.ShownLocated == link.Located && q.ShownGone == link.Gone && q.ShownFormat == chosen && q.ShownRoom == link.DatagramRoom && q.ShownKnowledge == link.Knowledge && q.ShownTold == link.RecommendedRateBitsPerSecond)
         {
             return;
         }
@@ -1261,6 +1365,7 @@ public sealed partial class Station
         q.ShownGone = link.Gone;
         q.ShownFormat = chosen;
         q.ShownRoom = link.DatagramRoom;
+        q.ShownTold = link.RecommendedRateBitsPerSecond;
         q.ShownKnowledge = link.Knowledge;
         LinkState?.Invoke(link);
     }

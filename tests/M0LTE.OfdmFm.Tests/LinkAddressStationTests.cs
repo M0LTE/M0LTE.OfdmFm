@@ -61,32 +61,32 @@ public class LinkAddressStationTests
         var audio = new List<float[]>();
         rig.Stations[0].TransmitRequest += r => audio.Add(r.Samples.ToArray());
         rig.RunTo(6);
-        rig.Stations[0].Send(SimRig.Datagram(1, 20), S(2), S(1), new HostTag(1)).Should().Be(SendResult.Accepted);
+        rig.Stations[0].Send(SimRig.Datagram(1, 20), S(2), S(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
         rig.Run(12);
         LinkAddress unknown = LinkAddress.FromAscii("NOBODY");
-        rig.Stations[0].Send(SimRig.Datagram(2, 20), unknown, S(1), new HostTag(2)).Should().Be(SendResult.Accepted);
+        rig.Stations[0].Send(SimRig.Datagram(2, 20), unknown, S(1), LinkProtocol.NoLayer3, new HostTag(2)).Should().Be(SendResult.Accepted);
         rig.Run(20);
-        rig.Stations[0].Send(SimRig.Datagram(3, 20), LinkAddress.Everyone, S(1), new HostTag(3)).Should().Be(SendResult.Accepted);
+        rig.Stations[0].Send(SimRig.Datagram(3, 20), LinkAddress.Everyone, S(1), LinkProtocol.NoLayer3, new HostTag(3)).Should().Be(SendResult.Accepted);
         rig.Run(20);
 
         audio.Should().HaveCount(3);
         (BurstHeader h1, byte[] p1) = DecodeBurst(audio[0]);
         h1.Destination.Should().Be(2);
-        Read(p1, false).Items.Should().Equal((PayloadCodec.FromTag, Key(S(1))));
+        Read(p1, false).Items.Should().Equal((PayloadCodec.FromTag, Key(S(1)) + "F001"));
 
         (BurstHeader h2, byte[] p2) = DecodeBurst(audio[1]);
         h2.Destination.Should().Be(0);
         (List<(byte Tag, string Value)> items2, List<string> grams2) = Read(p2, true);
-        items2.Should().Equal((PayloadCodec.FromTag, Key(S(1))), (PayloadCodec.ForTag, Key(unknown)));
+        items2.Should().Equal((PayloadCodec.FromTag, Key(S(1)) + "F001"), (PayloadCodec.ForTag, Key(unknown)));
         grams2.Should().Equal(Convert.ToHexString(SimRig.Datagram(2, 20)));
 
         (BurstHeader h3, byte[] p3) = DecodeBurst(audio[2]);
         h3.Destination.Should().Be(0);
-        Read(p3, true).Items.Should().Equal((PayloadCodec.FromTag, Key(S(1))));
+        Read(p3, true).Items.Should().Equal((PayloadCodec.FromTag, Key(S(1)) + "F001"));
     }
 
     [Fact]
-    public void Several_Distinct_From_Keys_In_One_Burst_Are_Listed_Once_Each_In_The_Order_They_First_Appear()
+    public void Datagrams_Sent_From_Several_Addresses_In_One_Burst_Are_Listed_As_Runs_In_Their_Order()
     {
         var rig = new SimRig(2, locates: (i, j) => i == 1 && j == 2);
         var audio = new List<float[]>();
@@ -95,15 +95,15 @@ public class LinkAddressStationTests
         LinkAddress y = LinkAddress.FromAscii("ALIAS-Y");
         rig.RunTo(1);
         Station a = rig.Stations[0];
-        a.Send(SimRig.Datagram(1, 8), S(2), x, new HostTag(1)).Should().Be(SendResult.Accepted);
-        a.Send(SimRig.Datagram(2, 8), S(2), y, new HostTag(2)).Should().Be(SendResult.Accepted);
-        a.Send(SimRig.Datagram(3, 8), S(2), x, new HostTag(3)).Should().Be(SendResult.Accepted);
+        a.Send(SimRig.Datagram(1, 8), S(2), x, LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
+        a.Send(SimRig.Datagram(2, 8), S(2), y, LinkProtocol.NoLayer3, new HostTag(2)).Should().Be(SendResult.Accepted);
+        a.Send(SimRig.Datagram(3, 8), S(2), x, LinkProtocol.NoLayer3, new HostTag(3)).Should().Be(SendResult.Accepted);
         rig.Run(30);
 
         audio.Should().HaveCount(1, "all three datagrams fit one burst");
         (_, byte[] payload) = DecodeBurst(audio[0]);
         (List<(byte Tag, string Value)> items, List<string> grams) = Read(payload, false);
-        items.Should().Equal((PayloadCodec.FromTag, Key(x) + Key(y)));
+        items.Should().Equal((PayloadCodec.FromTag, Key(x) + "F001" + Key(y) + "F001" + Key(x) + "F001"));
         grams.Should().Equal(Convert.ToHexString(SimRig.Datagram(1, 8)), Convert.ToHexString(SimRig.Datagram(2, 8)), Convert.ToHexString(SimRig.Datagram(3, 8)));
         rig.Nodes[1].Received.Select(r => r.Data).Should().BeEquivalentTo([SimRig.Datagram(1, 8), SimRig.Datagram(2, 8), SimRig.Datagram(3, 8)], o => o.WithStrictOrdering());
     }
@@ -208,7 +208,7 @@ public class LinkAddressStationTests
         first.Sender.Should().Be(1);
         a.Transmitted.Single().Event.Address.Should().Be(S(2));
         a.Transmitted.Single().Event.Format.Should().Be(StandardFormats.FirstContact);
-        a.LinkStates.Should().ContainSingle().Which.Should().Match<LinkStateEvent>(l => l.Address == S(2) && !l.Located && l.Format == null && l.DatagramRoom == 333);
+        a.LinkStates.Should().ContainSingle().Which.Should().Match<LinkStateEvent>(l => l.Address == S(2) && !l.Located && l.Format == null && l.DatagramRoom == 331);
         rig.Stations[0].Adaptation.TryGetNeighbour(2, out _).Should().BeFalse("nothing was asked of anyone");
         rig.Stations[1].LocatedNow(S(1)).Should().Be(1, "S2's station learned S1 from the From of the burst, though it was not for it");
         rig.Stations[0].LocatedNow(S(2)).Should().Be(0);
@@ -415,7 +415,7 @@ public class LinkAddressStationTests
             for (int i = 0; i < 6; i++)
             {
                 LinkAddress from = label == "one From" ? S(1) : LinkAddress.FromAscii($"FROM-{i % 4}");
-                rig.Stations[0].Send(SimRig.Datagram(i, 8), S(2), from, new HostTag(i)).Should().Be(SendResult.Accepted);
+                rig.Stations[0].Send(SimRig.Datagram(i, 8), S(2), from, LinkProtocol.NoLayer3, new HostTag(i)).Should().Be(SendResult.Accepted);
             }
 
             rig.Run(60);
@@ -430,12 +430,12 @@ public class LinkAddressStationTests
         var rig = new SimRig(2, connect: false);
         Station a = rig.Stations[0];
         double rate = StandardFormats.Rate(StandardFormats.FirstContact) * 1000.0;
-        a.Send(new byte[100], S(2), S(1), new HostTag(1));
-        a.QueuedAirtimeFor(S(2)).Should().BeApproximately((8 * (102 + 7)) / rate, 1e-9, "one datagram of 100 bytes, its length and a block with one key");
-        a.Send(new byte[100], S(2), LinkAddress.FromAscii("OTHER"), new HostTag(2));
-        a.QueuedAirtimeFor(S(2)).Should().BeApproximately((8 * ((2 * 102) + 11)) / rate, 1e-9, "two keys");
-        a.Send(new byte[100], LinkAddress.FromAscii("UNKNOWN"), S(1), new HostTag(3));
-        a.QueuedAirtimeFor(LinkAddress.FromAscii("UNKNOWN")).Should().BeApproximately((8 * (102 + 13)) / rate, 1e-9, "for an address not located the block carries a For key too");
+        a.Send(new byte[100], S(2), S(1), LinkProtocol.NoLayer3, new HostTag(1));
+        a.QueuedAirtimeFor(S(2)).Should().BeApproximately((8 * (102 + 9)) / rate, 1e-9, "one datagram of 100 bytes, its length and a block with one run");
+        a.Send(new byte[100], S(2), LinkAddress.FromAscii("OTHER"), LinkProtocol.NoLayer3, new HostTag(2));
+        a.QueuedAirtimeFor(S(2)).Should().BeApproximately((8 * ((2 * 102) + 15)) / rate, 1e-9, "two runs");
+        a.Send(new byte[100], LinkAddress.FromAscii("UNKNOWN"), S(1), LinkProtocol.NoLayer3, new HostTag(3));
+        a.QueuedAirtimeFor(LinkAddress.FromAscii("UNKNOWN")).Should().BeApproximately((8 * (102 + 15)) / rate, 1e-9, "for an address not located the block carries a For key too");
     }
 
     // ---- events by address ----
@@ -450,8 +450,8 @@ public class LinkAddressStationTests
         a.Locate(alias, 2);
         rig.RunTo(6);
 
-        rig.Stations[0].Send(SimRig.Datagram(1, 30), S(2), S(1), new HostTag(1), reportWanted: true);
-        rig.Stations[0].Send(SimRig.Datagram(2, 30), alias, S(1), new HostTag(2), reportWanted: true);
+        rig.Stations[0].Send(SimRig.Datagram(1, 30), S(2), S(1), LinkProtocol.NoLayer3, new HostTag(1), reportWanted: true);
+        rig.Stations[0].Send(SimRig.Datagram(2, 30), alias, S(1), LinkProtocol.NoLayer3, new HostTag(2), reportWanted: true);
         node.LinkStates.Select(l => l.Address).Should().Equal(S(2), alias);
         rig.Run(30);
 
@@ -477,11 +477,11 @@ public class LinkAddressStationTests
         SimNode node = rig.Nodes[0];
         for (int i = 1; i <= 10; i++)
         {
-            a.Send(new byte[100], S(2), S(1), new HostTag(i)).Should().Be(SendResult.Accepted);
+            a.Send(new byte[100], S(2), S(1), LinkProtocol.NoLayer3, new HostTag(i)).Should().Be(SendResult.Accepted);
         }
 
-        a.Send(new byte[100], S(2), S(1), new HostTag(11)).Should().Be(SendResult.QueueFull);
-        a.Send(new byte[10], S(3), S(1), new HostTag(12)).Should().Be(SendResult.Accepted, "the bound is for each address's queue");
+        a.Send(new byte[100], S(2), S(1), LinkProtocol.NoLayer3, new HostTag(11)).Should().Be(SendResult.QueueFull);
+        a.Send(new byte[10], S(3), S(1), LinkProtocol.NoLayer3, new HostTag(12)).Should().Be(SendResult.Accepted, "the bound is for each address's queue");
         node.Congestion.Should().Equal(new CongestionEvent(S(2), false));
         a.Cancel(S(2)).Should().Be(10);
         node.Congestion.Should().Equal(new CongestionEvent(S(2), false), new CongestionEvent(S(2), true));

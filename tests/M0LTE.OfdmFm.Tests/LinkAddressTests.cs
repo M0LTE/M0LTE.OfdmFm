@@ -84,46 +84,48 @@ public class LinkAddressTests
     [Fact]
     public void The_Address_Block_Sizes_Are_What_The_Layout_Says()
     {
-        // Length byte, then From (tag, length, 4 bytes a key), then For (tag, length, 4 bytes).
-        PayloadCodec.AddressBlockSize(1, false).Should().Be(1 + 2 + 4);
-        PayloadCodec.AddressBlockSize(3, false).Should().Be(1 + 2 + 12);
-        PayloadCodec.AddressBlockSize(1, true).Should().Be(1 + 2 + 4 + 2 + 4);
+        // Length byte, then From (tag, length, 6 bytes a run), then For (tag, length, 4 bytes).
+        PayloadCodec.AddressBlockSize(1, false).Should().Be(1 + 2 + 6);
+        PayloadCodec.AddressBlockSize(3, false).Should().Be(1 + 2 + 18);
+        PayloadCodec.AddressBlockSize(1, true).Should().Be(1 + 2 + 6 + 2 + 4);
         PayloadCodec.AddressBlockSize(0, false).Should().Be(1);
     }
 
-    private static byte[] Item(byte tag, params LinkAddress[] addresses)
+    private static byte[] Run(LinkAddress from, byte protocol, int count)
     {
-        var value = new byte[4 * addresses.Length];
-        for (int i = 0; i < addresses.Length; i++)
-        {
-            PayloadCodec.WriteKey(addresses[i].Key, value.AsSpan(4 * i));
-        }
-
+        var value = new byte[PayloadCodec.RunBytes];
+        PayloadCodec.WriteRun(from.Key, protocol, count, value);
         return value;
     }
 
-    private static string Packed(PayloadPrelude? prelude, ExtensionItem[] items)
+    private static string Packed(PayloadPrelude? prelude, ExtensionItem[] items, params byte[][] datagrams)
     {
         var buffer = new byte[200];
-        int n = PayloadCodec.Pack(prelude, items, [(byte[])[0x48, 0x69, 0x21]], buffer);
+        int n = PayloadCodec.Pack(prelude, items, [.. datagrams.Select(d => (ReadOnlyMemory<byte>)d)], buffer);
         return Convert.ToHexString(buffer.AsSpan(0, n));
     }
 
     [Fact]
     public void The_Worked_Examples_Of_The_Payload_In_The_Document_Are_Byte_For_Byte_What_Packs()
     {
-        // docs/adaptation-protocol.md, "Link addresses": the datagram "Hi!" sent from M0LTE-1, for G9XYZ.
+        // docs/adaptation-protocol.md, "Link addresses": the datagram "Hi!" sent from M0LTE-1 with the protocol 0xF0, for G9XYZ.
         LinkAddress from = LinkAddress.FromAscii("M0LTE-1");
         LinkAddress other = LinkAddress.FromAscii("G9XYZ");
         other.Key.Should().Be(0xB97C7FB1u);
-        var fromItem = new ExtensionItem(PayloadCodec.FromTag, Item(PayloadCodec.FromTag, from));
-        var forItem = new ExtensionItem(PayloadCodec.ForTag, Item(PayloadCodec.ForTag, other));
+        byte[] hi = "Hi!"u8.ToArray();
+        var fromItem = new ExtensionItem(PayloadCodec.FromTag, Run(from, LinkProtocol.NoLayer3, 1));
+        var forValue = new byte[4];
+        PayloadCodec.WriteKey(other.Key, forValue);
+        var forItem = new ExtensionItem(PayloadCodec.ForTag, forValue);
 
-        Packed(new PayloadPrelude(false, 0x28, false, null), [fromItem]).Should().Be("2828" + "06" + "01046EEC7110" + "000348" + "6921");
-        Packed(null, [fromItem, forItem]).Should().Be("0C" + "01046EEC7110" + "0204B97C7FB1" + "0003486921");
-        Packed(null, [fromItem]).Should().Be("06" + "01046EEC7110" + "0003486921");
-        Packed(null, [new ExtensionItem(PayloadCodec.FromTag, Item(PayloadCodec.FromTag, from, other))]).Should().Be("0A" + "01086EEC7110B97C7FB1" + "0003486921");
-        PayloadCodec.AddressBlockSize(2, false).Should().Be(1 + 2 + 8);
+        Packed(new PayloadPrelude(false, 0x28, false, null), [fromItem], hi).Should().Be("2828" + "08" + "0106" + "6EEC7110F001" + "000348" + "6921");
+        Packed(null, [fromItem, forItem], hi).Should().Be("0E" + "0106" + "6EEC7110F001" + "0204B97C7FB1" + "0003486921");
+        Packed(null, [fromItem], hi).Should().Be("08" + "0106" + "6EEC7110F001" + "0003486921");
+
+        // Two datagrams, "Hi!" from M0LTE-1 as IP and "OK" from G9XYZ with no layer 3: two runs.
+        byte[] runs = [.. Run(from, LinkProtocol.Ip, 1), .. Run(other, LinkProtocol.NoLayer3, 1)];
+        Packed(null, [new ExtensionItem(PayloadCodec.FromTag, runs)], hi, "OK"u8.ToArray()).Should().Be("0E" + "010C" + "6EEC7110CC01" + "B97C7FB1F001" + "0003486921" + "00024F4B");
+        PayloadCodec.AddressBlockSize(2, false).Should().Be(1 + 2 + 12);
     }
 
     [Fact]
@@ -133,5 +135,32 @@ public class LinkAddressTests
         var buffer = new byte[40];
         int n = PayloadCodec.PackIdentification("M0LTE-1"u8, 0, default, buffer);
         Convert.ToHexString(buffer.AsSpan(0, n)).Should().Be("074D304C54452D31" + "0000");
+    }
+
+    [Fact]
+    public void An_Address_Can_Be_Made_From_A_Key_Alone_And_Is_Equal_Only_To_Another_Made_The_Same_Way()
+    {
+        LinkAddress full = LinkAddress.FromAscii("M0LTE-1");
+        LinkAddress byKey = LinkAddress.FromKey(full.Key);
+        byKey.IsKeyOnly.Should().BeTrue();
+        byKey.IsEmpty.Should().BeFalse();
+        byKey.IsEveryone.Should().BeFalse();
+        byKey.Key.Should().Be(0x6EEC7110u);
+        byKey.Bytes.IsEmpty.Should().BeTrue();
+        byKey.Should().Be(LinkAddress.FromKey(0x6EEC7110u));
+        byKey.GetHashCode().Should().Be(LinkAddress.FromKey(0x6EEC7110u).GetHashCode());
+        byKey.Should().NotBe(full, "the key says which address it is on the air; as a value it is not the bytes");
+        byKey.Should().NotBe(LinkAddress.FromKey(1));
+        byKey.ToString().Should().Be("key 6EEC7110");
+    }
+
+    [Fact]
+    public void The_Protocol_Constants_Are_The_Values_The_Document_Lists()
+    {
+        LinkProtocol.Ax25Frame.Should().Be(0x00);
+        LinkProtocol.Ip.Should().Be(0xCC);
+        LinkProtocol.Arp.Should().Be(0xCD);
+        LinkProtocol.NetRom.Should().Be(0xCF);
+        LinkProtocol.NoLayer3.Should().Be(0xF0);
     }
 }

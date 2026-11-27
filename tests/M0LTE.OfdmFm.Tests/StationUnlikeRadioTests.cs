@@ -70,18 +70,18 @@ public class StationUnlikeRadioTests
     public static TheoryData<double, double, Outcome> Cases => new()
     {
         // A good path: the narrow station is sent formats up to 6.5 and 8 kHz wide for 37 of 40 bursts and loses four of them (seven before link addresses), spread right through the run, and each is reported at once and named in a hint (four failed reports from the narrow
-        // station, three others, and the wide station's one); reports change nothing about which formats it is sent. It hears the wide station's fast formats well enough to settle on 28
+        // station, one other, and the wide station's one); reports change nothing about which formats it is sent. It hears the wide station's fast formats well enough to settle on 28
         // (48.5 kbit/s, band 0) and 61 and 62 (band 1) for it, and 70 kbit/s the other way, where nothing is lost. Its estimate of the path from the wide station falls from 40 dB at 2 kHz to 19 dB at 6 kHz (39 and 17 before link addresses): it does know.
-        { 1.0, 3000, new Outcome(40, "10,17,27,39", 37, 28, 40, "", 38, 31, 40, 19, 1, 7, 4) },
+        { 1.0, 3000, new Outcome(40, "7,17,31,39", 37, 28, 40, "", 38, 31, 40, 19, 1, 5, 4) },
 
         // A weaker path (20 dB down): the same pattern, four lost of 40 one way (five before link addresses) and one the other.
-        { 0.1, 3000, new Outcome(40, "9,18,29,34", 37, 61, 40, "25", 38, 30, 35, 16, 2, 6, 4) },
+        { 0.1, 3000, new Outcome(40, "12,17,22,39", 37, 28, 40, "25", 38, 30, 35, 18, 2, 7, 4) },
 
-        // A path 30 dB down: the narrow station's estimate shows nothing above 3 kHz (the carriers there measured too weak to count), the wide station settles on the 3 kHz band (format 158, 22.4 kbit/s), and one burst is lost (fifth sent, reported and named in a hint; none was lost before link addresses).
-        { 0.03, 3000, new Outcome(40, "4", 0, 158, 40, "", 24, 26, 24, -4, 1, 2, 1) },
+        // A path 30 dB down: the narrow station's estimate shows nothing above 3 kHz (the carriers there measured too weak to count), the wide station settles on the 3 kHz band (format 158, 22.4 kbit/s), and nothing is lost.
+        { 0.03, 3000, new Outcome(40, "", 0, 158, 40, "", 20, 26, 24, -4, 1, 1, 0) },
 
         // The control: no cut, a good path: nothing lost either way, and the same ceiling of formats.
-        { 1.0, 0, new Outcome(40, "", 38, 31, 40, "", 39, 31, 54, 47, 1, 1, 0) },
+        { 1.0, 0, new Outcome(40, "", 38, 31, 40, "", 39, 31, 54, 46, 1, 1, 0) },
     };
 
     [Theory]

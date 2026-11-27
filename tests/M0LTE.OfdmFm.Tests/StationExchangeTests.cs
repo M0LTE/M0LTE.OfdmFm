@@ -32,11 +32,11 @@ public class StationExchangeTests
         {
             // The caller's buffer is its own again when Send returns: it is overwritten with junk at once, and the datagram must still arrive as it was.
             sentByA.Add(Take(buffer, 100 + i));
-            rig.Stations[0].Send(buffer, SimRig.Address(2), SimRig.Address(1), new HostTag(100 + i)).Should().Be(SendResult.Accepted);
+            rig.Stations[0].Send(buffer, SimRig.Address(2), SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(100 + i)).Should().Be(SendResult.Accepted);
             Array.Fill(buffer, (byte)0xEE);
             rig.Run(8);
             sentByB.Add(Take(buffer, 200 + i));
-            rig.Stations[1].Send(buffer, SimRig.Address(1), SimRig.Address(2), new HostTag(200 + i)).Should().Be(SendResult.Accepted);
+            rig.Stations[1].Send(buffer, SimRig.Address(1), SimRig.Address(2), LinkProtocol.NoLayer3, new HostTag(200 + i)).Should().Be(SendResult.Accepted);
             Array.Fill(buffer, (byte)0xEE);
             rig.Run(8);
         }
@@ -68,7 +68,7 @@ public class StationExchangeTests
         rig.Stations[0].TransmitRequest += r => audio = r.Samples.ToArray();
         rig.RunTo(6);
         byte[] datagram = SimRig.Datagram(1, 30);
-        rig.Stations[0].Send(datagram, LinkAddress.Everyone, SimRig.Address(1), new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
+        rig.Stations[0].Send(datagram, LinkAddress.Everyone, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1), reportWanted: true).Should().Be(SendResult.Accepted);
         rig.Run(14);
 
         foreach (int listener in new[] { 1, 2 })
@@ -100,13 +100,13 @@ public class StationExchangeTests
         byte[] payload = new byte[PayloadReceiver.PayloadRoom(header)];
         PayloadReceiveResult result = receiver.Receive(audio, found.Index, header, headerReader.Bits, payload);
         result.CheckPassed.Should().BeTrue();
-        // The leading block: six bytes of one From item (tag 1, four bytes, the key of the address S1 it was sent from) and no For (the burst is for everyone); then the datagram behind its length.
-        byte[] key = new byte[4];
-        PayloadCodec.WriteKey(SimRig.Address(1).Key, key);
-        payload.AsSpan(0, 7).ToArray().Should().Equal([6, 1, 4, .. key]);
-        payload[7].Should().Be(0);
-        payload[8].Should().Be(30, "the first thing after the leading block is the datagram's length");
-        payload.AsSpan(9, 30).ToArray().Should().Equal(datagram);
+        // The leading block: eight bytes of one From item (tag 1, six bytes: one run of the key of the address S1 it was sent from, the protocol byte 0xF0 and a count of 1) and no For (the burst is for everyone); then the datagram behind its length.
+        byte[] run = new byte[6];
+        PayloadCodec.WriteRun(SimRig.Address(1).Key, LinkProtocol.NoLayer3, 1, run);
+        payload.AsSpan(0, 9).ToArray().Should().Equal([8, 1, 6, .. run]);
+        payload[9].Should().Be(0);
+        payload[10].Should().Be(30, "the first thing after the leading block is the datagram's length");
+        payload.AsSpan(11, 30).ToArray().Should().Equal(datagram);
     }
 
     [Fact]

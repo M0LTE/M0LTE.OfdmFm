@@ -312,7 +312,7 @@ public class StationReceiveEdgeTests
             if (sentTo)
             {
                 station.Locate(ReceiveRig.Address(7), 7);
-                station.Send(new byte[] { 1 }, ReceiveRig.Address(7), ReceiveRig.Own, new HostTag(1)).Should().Be(SendResult.Accepted);
+                station.Send(new byte[] { 1 }, ReceiveRig.Address(7), ReceiveRig.Own, LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
                 names.Clear();
             }
 
@@ -349,7 +349,7 @@ public class StationReceiveEdgeTests
         var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
         station.SetExternalBusy(true);
         station.Locate(ReceiveRig.Address(5), 5);
-        station.Send(new byte[] { 1 }, ReceiveRig.Address(5), ReceiveRig.Own, new HostTag(1)).Should().Be(SendResult.Accepted);
+        station.Send(new byte[] { 1 }, ReceiveRig.Address(5), ReceiveRig.Own, LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
         var datagrams = new List<byte[]>();
         var events = 0;
         station.Received += e => datagrams.Add(e.Datagram.ToArray());

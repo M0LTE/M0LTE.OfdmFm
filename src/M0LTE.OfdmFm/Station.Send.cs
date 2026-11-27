@@ -43,8 +43,8 @@ public sealed partial class Station
 
     private static readonly int MaxPayloadBytes = ComputeMaxPayloadBytes();
 
-    /// <summary>The most distinct From keys one burst carries (a From item holds up to 63; this leaves room for the For item in the same block).</summary>
-    internal const int MaxFromKeys = 32;
+    /// <summary>The most runs one burst's From item carries (an item's value is at most 253 bytes, 42 runs; this leaves room for the For item in the same block).</summary>
+    internal const int MaxRuns = 40;
 
     private sealed class Pending
     {
@@ -56,6 +56,9 @@ public sealed partial class Station
 
         /// <summary>The key of the address the host sent it from.</summary>
         public uint From;
+
+        /// <summary>Its protocol byte.</summary>
+        public byte Protocol;
     }
 
     /// <summary>What is waiting for one link address (or for everyone), and what the host was last told of the address.</summary>
@@ -75,10 +78,6 @@ public sealed partial class Station
         public readonly List<Pending> Expedited = [];
         public readonly List<Pending> Ordinary = [];
 
-        /// <summary>The distinct keys the queued datagrams were sent from, with how many datagrams each has.</summary>
-        public readonly List<uint> FromKeys = [];
-        public readonly List<int> FromCounts = [];
-
         /// <summary>Bits queued, each datagram counted with its two-byte length.</summary>
         public long Bits;
 
@@ -97,31 +96,32 @@ public sealed partial class Station
         public int ShownFormat;
         public int ShownRoom;
         public LinkKnowledge ShownKnowledge;
+        public double? ShownTold;
 
         public int Count => Expedited.Count + Ordinary.Count;
 
-        public void AddFrom(uint key)
+        /// <summary>The runs the From item of a burst carrying everything queued would need, in the order the datagrams would go (expedited first).</summary>
+        public int Runs()
         {
-            int i = FromKeys.IndexOf(key);
-            if (i < 0)
+            int runs = 0;
+            int length = 0;
+            Pending? last = null;
+            for (int pass = 0; pass < 2; pass++)
             {
-                FromKeys.Add(key);
-                FromCounts.Add(1);
-            }
-            else
-            {
-                FromCounts[i]++;
-            }
-        }
+                foreach (Pending p in pass == 0 ? Expedited : Ordinary)
+                {
+                    if (last is null || last.From != p.From || last.Protocol != p.Protocol || length == 255)
+                    {
+                        runs++;
+                        length = 0;
+                    }
 
-        public void RemoveFrom(uint key)
-        {
-            int i = FromKeys.IndexOf(key);
-            if (i >= 0 && --FromCounts[i] == 0)
-            {
-                FromKeys.RemoveAt(i);
-                FromCounts.RemoveAt(i);
+                    length++;
+                    last = p;
+                }
             }
+
+            return runs;
         }
     }
 
@@ -145,11 +145,11 @@ public sealed partial class Station
         public readonly List<Pending> Items = [];
     }
 
-    private readonly Dictionary<LinkAddress, AddressQueue> _byAddress = [];
+    private readonly Dictionary<uint, AddressQueue> _byKey = [];
+    private AddressQueue? _everyoneQueue;
     private readonly List<AddressQueue> _queueList = [];
     private readonly List<AddressQueue> _affected = [];
-    private readonly List<uint> _burstFroms = [];
-    private readonly byte[] _fromValue = new byte[MaxFromKeys * PayloadCodec.KeyBytes];
+    private readonly byte[] _fromValue = new byte[MaxRuns * PayloadCodec.RunBytes];
     private readonly byte[] _forValue = new byte[PayloadCodec.KeyBytes];
     private readonly ExtensionItem[] _addressItems = new ExtensionItem[2];
     private readonly Stack<Pending> _freePending = new();
@@ -212,14 +212,15 @@ public sealed partial class Station
     /// </para>
     /// </summary>
     /// <param name="datagram">The datagram, 1 to 65535 bytes.</param>
-    /// <param name="to">The link address it is for, or <see cref="LinkAddress.Everyone"/>.</param>
-    /// <param name="from">The link address it is sent from: one of the host's own, not <see cref="LinkAddress.Everyone"/>. Its key goes in the burst's From item.</param>
+    /// <param name="to">The link address it is for, or <see cref="LinkAddress.Everyone"/>. An address made with <see cref="LinkAddress.FromKey"/> does as well as the full one: a host answering a datagram whose sender it knows only by key sends to that.</param>
+    /// <param name="from">The link address it is sent from: one of the host's own, not <see cref="LinkAddress.Everyone"/>. Its key goes in a run of the burst's From item.</param>
+    /// <param name="protocol">The datagram's protocol byte (see <see cref="LinkProtocol"/>), carried in its run and given to the receiving host. The modem does nothing else with it.</param>
     /// <param name="tag">The host's tag, returned in <see cref="Transmitted"/> and <see cref="Dropped"/> and used by <see cref="Cancel(HostTag)"/>. Several datagrams may share one.</param>
     /// <param name="reportWanted">Ask the station the address lives at to answer with a report on the path: set in the prelude of the burst this datagram goes in. For a host with no acknowledgements of its own. No effect while the address is not located.</param>
     /// <param name="priority">Expedited for an acknowledgement or response.</param>
     /// <exception cref="ArgumentException">The datagram is empty or over 65535 bytes, <paramref name="to"/> is empty, or <paramref name="from"/> is empty or everyone.</exception>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    public SendResult Send(ReadOnlyMemory<byte> datagram, LinkAddress to, LinkAddress from, HostTag tag, bool reportWanted = false, SendPriority priority = SendPriority.Ordinary)
+    public SendResult Send(ReadOnlyMemory<byte> datagram, LinkAddress to, LinkAddress from, byte protocol, HostTag tag, bool reportWanted = false, SendPriority priority = SendPriority.Ordinary)
     {
         EnsureNotAdvancing();
         if (datagram.IsEmpty || datagram.Length > 65535)
@@ -246,8 +247,8 @@ public sealed partial class Station
         try
         {
             double now = ClockSeconds(SampleCount);
-            _byAddress.TryGetValue(to, out AddressQueue? q);
-            uint toKey = to.IsEveryone ? 0 : (q?.Key ?? to.Key);
+            AddressQueue? q = FindQueue(to);
+            uint toKey = to.IsEveryone ? 0 : to.Key;
             int number = to.IsEveryone ? 0 : LocatedAt(toKey, now);
             int format = FormatFor(number, now);
             if (datagram.Length > RoomFor(format, number != 0, number == 0 && !to.IsEveryone))
@@ -263,7 +264,15 @@ public sealed partial class Station
             if (q is null)
             {
                 q = new AddressQueue(to);
-                _byAddress[to] = q;
+                if (to.IsEveryone)
+                {
+                    _everyoneQueue = q;
+                }
+                else
+                {
+                    _byKey[toKey] = q;
+                }
+
                 _queueList.Add(q);
                 if (!to.IsEveryone)
                 {
@@ -283,8 +292,9 @@ public sealed partial class Station
             p.ReportWanted = reportWanted;
             p.Expedited = priority == SendPriority.Expedited;
             p.From = from.Key;
+            p.Protocol = protocol;
+            _ownKeys.Add(p.From);
             (p.Expedited ? q.Expedited : q.Ordinary).Add(p);
-            q.AddFrom(p.From);
             q.Bits += (datagram.Length + LengthBytes) * 8L;
             _queuedCount++;
             if (p.Expedited)
@@ -295,7 +305,7 @@ public sealed partial class Station
             if (AirtimeOf(q, number, format) >= QueueLimitSeconds)
             {
                 q.Full = true;
-                Congestion?.Invoke(new CongestionEvent(to, false));
+                Congestion?.Invoke(new CongestionEvent(q.Address, false));
             }
 
             EnsureDataRequest();
@@ -356,7 +366,8 @@ public sealed partial class Station
         _advancing = true;
         try
         {
-            if (!_byAddress.TryGetValue(address, out AddressQueue? q) || q.Count == 0)
+            AddressQueue? q = FindQueue(address);
+            if (q is null || q.Count == 0)
             {
                 return 0;
             }
@@ -400,7 +411,7 @@ public sealed partial class Station
     {
         double now = ClockSeconds(SampleCount);
         _table.Learn(address.Key, number, now);
-        if (_byAddress.TryGetValue(address, out AddressQueue? q))
+        if (FindQueue(address) is { } q)
         {
             RefreshAddress(q, now);
         }
@@ -413,6 +424,13 @@ public sealed partial class Station
     internal AddressTable LearnedAddresses => _table;
 
     // ---- queues ----
+
+    /// <summary>The keys of the addresses the host has sent from: the addresses this station answers for (a burst to everyone for one of them is answered with a report).</summary>
+    private readonly HashSet<uint> _ownKeys = [];
+
+    /// <summary>The queue for an address (by key, so an address made from its key alone finds the same one), or null if the host has not sent to it.</summary>
+    private AddressQueue? FindQueue(LinkAddress address) =>
+        address.IsEveryone ? _everyoneQueue : _byKey.TryGetValue(address.Key, out AddressQueue? q) ? q : null;
 
     /// <summary>The format a burst to station <paramref name="number"/> would go at now (everyone: first contact).</summary>
     private int FormatFor(int number, double now) => number == 0 ? StandardFormats.FirstContact : _link.Choose(number, now).Format;
@@ -427,7 +445,7 @@ public sealed partial class Station
     /// <summary>Airtime of what is queued for an address at the format in use, the block of items one burst needs for the From keys queued included. Bursts to the address that carry a prelude are not counted for it.</summary>
     private static double AirtimeOf(AddressQueue q, int number, int format)
     {
-        long bits = q.Bits + (8L * PayloadCodec.AddressBlockSize(q.FromKeys.Count, number == 0 && !q.Address.IsEveryone));
+        long bits = q.Bits + (8L * PayloadCodec.AddressBlockSize(q.Runs(), number == 0 && !q.Address.IsEveryone));
         return bits / (StandardFormats.Rate(format) * 1000.0);
     }
 
@@ -453,7 +471,6 @@ public sealed partial class Station
     private void Unqueue(AddressQueue q, Pending p)
     {
         q.Bits -= (p.Length + LengthBytes) * 8L;
-        q.RemoveFrom(p.From);
         _queuedCount--;
         if (p.Expedited)
         {
@@ -671,7 +688,9 @@ public sealed partial class Station
         int datagramBytes = 0;
         bool wanted = !everyone && choice.ReportWanted;
         _burst.Items.Clear();
-        _burstFroms.Clear();
+        int runs = 0;
+        int runLength = 0;
+        Pending? previous = null;
         bool full = false;
         for (int pass = 0; pass < 2 && !full; pass++)
         {
@@ -680,20 +699,19 @@ public sealed partial class Station
             while (taken < list.Count)
             {
                 Pending p = list[taken];
-                bool newKey = !_burstFroms.Contains(p.From);
-                int keys = _burstFroms.Count + (newKey ? 1 : 0);
-                int need = overhead + PayloadCodec.AddressBlockSize(keys, withFor) + datagramBytes + LengthBytes + p.Length;
-                if (_burst.Items.Count > 0 && (need > ceiling || keys > MaxFromKeys))
+                bool newRun = previous is null || previous.From != p.From || previous.Protocol != p.Protocol || runLength == 255;
+                int nextRuns = runs + (newRun ? 1 : 0);
+                int need = overhead + PayloadCodec.AddressBlockSize(nextRuns, withFor) + datagramBytes + LengthBytes + p.Length;
+                if (_burst.Items.Count > 0 && (need > ceiling || nextRuns > MaxRuns))
                 {
                     full = true;
                     break;
                 }
 
                 _burst.Items.Add(p);
-                if (newKey)
-                {
-                    _burstFroms.Add(p.From);
-                }
+                runs = nextRuns;
+                runLength = newRun ? 1 : runLength + 1;
+                previous = p;
 
                 datagramBytes += LengthBytes + p.Length;
                 wanted |= !everyone && p.ReportWanted;
@@ -715,14 +733,24 @@ public sealed partial class Station
             Unqueue(q, p);
         }
 
-        // The block of items every data burst carries: From, the keys of the addresses the datagrams were sent from, and For when the burst is for one address the station has not located.
-        for (int i = 0; i < _burstFroms.Count; i++)
+        // The block of items every data burst carries: From, the runs of datagrams in order (the address they were sent from, their protocol, how many), and For when the burst is for one address the station has not located.
+        int written = 0;
+        for (int i = 0; i < _burst.Items.Count;)
         {
-            PayloadCodec.WriteKey(_burstFroms[i], _fromValue.AsSpan(i * PayloadCodec.KeyBytes));
+            Pending first = _burst.Items[i];
+            int count = 1;
+            while (i + count < _burst.Items.Count && count < 255 && _burst.Items[i + count].From == first.From && _burst.Items[i + count].Protocol == first.Protocol)
+            {
+                count++;
+            }
+
+            PayloadCodec.WriteRun(first.From, first.Protocol, count, _fromValue.AsSpan(written));
+            written += PayloadCodec.RunBytes;
+            i += count;
         }
 
         int itemCount = 0;
-        _addressItems[itemCount++] = new ExtensionItem(PayloadCodec.FromTag, _fromValue.AsMemory(0, _burstFroms.Count * PayloadCodec.KeyBytes));
+        _addressItems[itemCount++] = new ExtensionItem(PayloadCodec.FromTag, _fromValue.AsMemory(0, written));
         if (withFor)
         {
             PayloadCodec.WriteKey(q.Key, _forValue);
@@ -734,6 +762,11 @@ public sealed partial class Station
         {
             // The recommendation rides on this burst, so the station has told them: a lone report owed for a drop or a request is not needed (a failed one always goes alone).
             DropCoveredReport(dest);
+        }
+
+        if (!everyone)
+        {
+            RaiseLinkState(dest, now); // what this station has told them may have changed
         }
 
         int length = PayloadCodec.Pack(prelude, _addressItems.AsSpan(0, itemCount), _pack.AsSpan(0, _burst.Items.Count), _payload);
@@ -804,6 +837,11 @@ public sealed partial class Station
         {
             RememberBurst(_burst.Dest, _burst.Queue!.Address, sampleIndex);
         }
+        else if (!_burst.Queue!.Address.IsEveryone)
+        {
+            ForgetFloods(sampleIndex);
+            _floods.Add(new Flood(_burst.Queue.Key, sampleIndex, sampleIndex + AnswerWaitSamples(_burst.Length)));
+        }
 
         double timeOut = ClockSeconds(sampleIndex);
         double airtime = (sampleIndex - _burst.StartedAt) / (double)SampleRate;
@@ -831,6 +869,18 @@ public sealed partial class Station
         _burst.Built = false;
         _burst.Started = false;
         EnsureDataRequest();
+    }
+
+    /// <summary>Drops the floods whose answer wait ran out before <paramref name="before"/>.</summary>
+    private void ForgetFloods(long before)
+    {
+        for (int i = _floods.Count - 1; i >= 0; i--)
+        {
+            if (_floods[i].Due < before)
+            {
+                _floods.RemoveAt(i);
+            }
+        }
     }
 
     private void RescheduleAnswerTimer()
@@ -885,7 +935,7 @@ public sealed partial class Station
     // ---- what the tests read ----
 
     /// <summary>Datagrams queued for a link address, not counting those in a burst.</summary>
-    internal int QueuedFor(LinkAddress address) => _byAddress.TryGetValue(address, out AddressQueue? q) ? q.Count : 0;
+    internal int QueuedFor(LinkAddress address) => FindQueue(address)?.Count ?? 0;
 
     /// <summary>Datagrams queued for every address, not counting those in a burst.</summary>
     internal int QueuedTotal => _queuedCount;
@@ -893,7 +943,7 @@ public sealed partial class Station
     /// <summary>The address's queue's airtime now at the format in use, seconds.</summary>
     internal double QueuedAirtimeFor(LinkAddress address)
     {
-        if (!_byAddress.TryGetValue(address, out AddressQueue? q))
+        if (FindQueue(address) is not { } q)
         {
             return 0;
         }

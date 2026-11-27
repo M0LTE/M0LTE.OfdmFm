@@ -50,10 +50,10 @@ internal sealed class ReceiveRig : IDisposable
         Station.Received += e =>
         {
             Datagrams.Add((Station.HearingSender, e.Addressing != Addressing.ToThisStation, e.Datagram.ToArray()));
-            Log.Add(string.Create(CultureInfo.InvariantCulture, $"rx from {Station.HearingSender} {e.Addressing} for {(e.ForKey is { } k ? k.ToString("X8", CultureInfo.InvariantCulture) : "-")} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
+            Log.Add(string.Create(CultureInfo.InvariantCulture, $"rx from {Station.HearingSender} key {e.FromKey:X8} proto {e.Protocol:X2} {e.Addressing} for {(e.ForKey is { } k ? k.ToString("X8", CultureInfo.InvariantCulture) : "-")} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
         };
         Station.PathReport += e => Log.Add(string.Create(CultureInfo.InvariantCulture, $"path {Text(e.Address)} fmt {e.RecommendedFormat?.ToString(CultureInfo.InvariantCulture) ?? "-"} failed {e.Failed}"));
-        Station.LinkState += e => Log.Add(string.Create(CultureInfo.InvariantCulture, $"link {Text(e.Address)} located {e.Located} fmt {e.Format?.ToString(CultureInfo.InvariantCulture) ?? "-"} rate {e.RateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} room {e.DatagramRoom} {e.Knowledge} age {e.AgeSeconds:R} gone {e.Gone}"));
+        Station.LinkState += e => Log.Add(string.Create(CultureInfo.InvariantCulture, $"link {Text(e.Address)} located {e.Located} fmt {e.Format?.ToString(CultureInfo.InvariantCulture) ?? "-"} rate {e.RateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} told {e.RecommendedRateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} room {e.DatagramRoom} {e.Knowledge} age {e.AgeSeconds:R} gone {e.Gone}"));
         Station.AdaptationCalled = c =>
         {
             Calls.Add(c);
@@ -94,7 +94,7 @@ internal sealed class ReceiveRig : IDisposable
         foreach (int n in numbers)
         {
             Station.Locate(Address(n), n);
-            Station.Send(new byte[] { 1 }, Address(n), Own, new HostTag(n)).Should().Be(SendResult.Accepted);
+            Station.Send(new byte[] { 1 }, Address(n), Own, LinkProtocol.NoLayer3, new HostTag(n)).Should().Be(SendResult.Accepted);
         }
     }
 

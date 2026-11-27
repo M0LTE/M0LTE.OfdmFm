@@ -103,7 +103,10 @@ public static class PayloadCodec
     /// <summary>The most bytes of items an extension block holds (its length is one byte).</summary>
     public const int MaxExtensionBytes = 255;
 
-    /// <summary>The tag of the From item: one or more link address keys (<see cref="KeyBytes"/> each), the addresses the burst's datagrams were sent from. In the extension block of a burst to one station and in the leading block of a burst to everyone.</summary>
+    /// <summary>
+    /// The tag of the From item: one or more runs (<see cref="RunBytes"/> each: a key, a protocol byte and a count). The next count datagrams in the burst were sent from that address and are of that protocol; the runs are in the datagrams' order and their counts add up
+    /// to the number of datagrams. In the extension block of a burst to one station and in the leading block of a burst to everyone.
+    /// </summary>
     public const byte FromTag = 1;
 
     /// <summary>The tag of the For item, in the leading block of a burst to everyone: one key, the address the burst is really for. Absent when the burst is for everyone.</summary>
@@ -111,6 +114,17 @@ public static class PayloadCodec
 
     /// <summary>Bytes of a link address key on the air.</summary>
     public const int KeyBytes = 4;
+
+    /// <summary>Bytes of a run in the From item: a key, a protocol byte and a count (1 to 255).</summary>
+    public const int RunBytes = KeyBytes + 2;
+
+    /// <summary>Writes a run of the From item.</summary>
+    public static void WriteRun(uint key, byte protocol, int count, Span<byte> destination)
+    {
+        WriteKey(key, destination);
+        destination[KeyBytes] = protocol;
+        destination[KeyBytes + 1] = (byte)count;
+    }
 
     /// <summary>Writes <paramref name="key"/> as it travels on the air, most significant byte first.</summary>
     public static void WriteKey(uint key, Span<byte> destination)
@@ -125,10 +139,10 @@ public static class PayloadCodec
     public static uint ReadKey(ReadOnlySpan<byte> source) => ((uint)source[0] << 24) | ((uint)source[1] << 16) | ((uint)source[2] << 8) | source[3];
 
     /// <summary>
-    /// The bytes the block of items that every data burst carries takes in its payload, with a From item of <paramref name="fromKeys"/> keys and, when <paramref name="forKey"/> is set, a For item:
+    /// The bytes the block of items that every data burst carries takes in its payload, with a From item of <paramref name="runs"/> runs and, when <paramref name="forKey"/> is set, a For item:
     /// the block's length byte, the From item (a tag, a length and the keys) and the For item. For a burst to one station this is the whole extension block; for one to everyone, the leading block.
     /// </summary>
-    public static int AddressBlockSize(int fromKeys, bool forKey) => 1 + (fromKeys > 0 ? 2 + (fromKeys * KeyBytes) : 0) + (forKey ? 2 + KeyBytes : 0);
+    public static int AddressBlockSize(int runs, bool forKey) => 1 + (runs > 0 ? 2 + (runs * RunBytes) : 0) + (forKey ? 2 + KeyBytes : 0);
 
     /// <summary>Bytes of prelude and datagrams (lengths included) that a format carries in this many payload symbols. Negative when the burst is too small to hold even its check.</summary>
     public static int Capacity(int format, int payloadSymbols) => (StandardFormats.InfoBits(format, payloadSymbols) - CheckBits) >> 3;
@@ -550,4 +564,26 @@ public static class PayloadCodec
         length = room;
         return true;
     }
+}
+
+/// <summary>
+/// The protocol byte of a datagram, which says what it is so that hosts of different protocols can share a channel. The modem does nothing with it but carry it: no filtering. The values are borrowed from AX.25's PID field, with 0x00 added.
+/// A host may use any other value.
+/// </summary>
+public static class LinkProtocol
+{
+    /// <summary>A whole AX.25 frame (AX.25's PID field has no value for this; 0x00 is added).</summary>
+    public const byte Ax25Frame = 0x00;
+
+    /// <summary>Internet Protocol (AX.25 PID 0xCC).</summary>
+    public const byte Ip = 0xCC;
+
+    /// <summary>Address Resolution Protocol (AX.25 PID 0xCD).</summary>
+    public const byte Arp = 0xCD;
+
+    /// <summary>NET/ROM (AX.25 PID 0xCF).</summary>
+    public const byte NetRom = 0xCF;
+
+    /// <summary>No layer 3 protocol (AX.25 PID 0xF0).</summary>
+    public const byte NoLayer3 = 0xF0;
 }

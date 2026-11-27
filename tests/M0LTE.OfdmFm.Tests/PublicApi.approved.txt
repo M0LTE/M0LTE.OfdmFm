@@ -219,6 +219,7 @@ namespace M0LTE.OfdmFm
         public System.ReadOnlySpan<byte> Bytes { get; }
         public bool IsEmpty { get; }
         public bool IsEveryone { get; }
+        public bool IsKeyOnly { get; }
         public uint Key { get; }
         public static M0LTE.OfdmFm.LinkAddress Everyone { get; }
         public bool Equals(M0LTE.OfdmFm.LinkAddress other) { }
@@ -226,6 +227,7 @@ namespace M0LTE.OfdmFm
         public override int GetHashCode() { }
         public override string ToString() { }
         public static M0LTE.OfdmFm.LinkAddress FromAscii(string text) { }
+        public static M0LTE.OfdmFm.LinkAddress FromKey(uint key) { }
         public static uint KeyOf(System.ReadOnlySpan<byte> bytes) { }
         public static bool operator !=(M0LTE.OfdmFm.LinkAddress left, M0LTE.OfdmFm.LinkAddress right) { }
         public static bool operator ==(M0LTE.OfdmFm.LinkAddress left, M0LTE.OfdmFm.LinkAddress right) { }
@@ -260,6 +262,14 @@ namespace M0LTE.OfdmFm
         public int? Told { get; }
         public int Unanswered { get; }
     }
+    public static class LinkProtocol
+    {
+        public const byte Arp = 205;
+        public const byte Ax25Frame = 0;
+        public const byte Ip = 204;
+        public const byte NetRom = 207;
+        public const byte NoLayer3 = 240;
+    }
     public readonly struct LinkReport : System.IEquatable<M0LTE.OfdmFm.LinkReport>
     {
         public LinkReport(int? Format, bool Failed) { }
@@ -268,7 +278,7 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct LinkStateEvent : System.IEquatable<M0LTE.OfdmFm.LinkStateEvent>
     {
-        public LinkStateEvent(M0LTE.OfdmFm.LinkAddress Address, bool Located, int? Format, double? RateBitsPerSecond, int DatagramRoom, M0LTE.OfdmFm.LinkKnowledge Knowledge, double AgeSeconds, bool Gone) { }
+        public LinkStateEvent(M0LTE.OfdmFm.LinkAddress Address, bool Located, int? Format, double? RateBitsPerSecond, double? RecommendedRateBitsPerSecond, int DatagramRoom, M0LTE.OfdmFm.LinkKnowledge Knowledge, double AgeSeconds, bool Gone) { }
         public M0LTE.OfdmFm.LinkAddress Address { get; init; }
         public double AgeSeconds { get; init; }
         public int DatagramRoom { get; init; }
@@ -277,6 +287,7 @@ namespace M0LTE.OfdmFm
         public M0LTE.OfdmFm.LinkKnowledge Knowledge { get; init; }
         public bool Located { get; init; }
         public double? RateBitsPerSecond { get; init; }
+        public double? RecommendedRateBitsPerSecond { get; init; }
     }
     public readonly struct ModemSentEvent : System.IEquatable<M0LTE.OfdmFm.ModemSentEvent>
     {
@@ -304,7 +315,8 @@ namespace M0LTE.OfdmFm
         public const int KeyBytes = 4;
         public const int MaxCallsignBytes = 16;
         public const int MaxExtensionBytes = 255;
-        public static int AddressBlockSize(int fromKeys, bool forKey) { }
+        public const int RunBytes = 6;
+        public static int AddressBlockSize(int runs, bool forKey) { }
         public static int Capacity(int format, int payloadSymbols) { }
         public static int Capacity(int format, int payloadSymbols, int extensionBlockBytes) { }
         public static void Encode(System.ReadOnlySpan<byte> payload, int infoBits, int sender, int destination, int burstNumber, System.Span<byte> bits) { }
@@ -321,6 +333,7 @@ namespace M0LTE.OfdmFm
         public static bool TryUnpack(System.ReadOnlySpan<byte> payload, bool toEveryone, out M0LTE.OfdmFm.PayloadPrelude prelude, out M0LTE.OfdmFm.ExtensionReader extensions, out M0LTE.OfdmFm.DatagramReader datagrams) { }
         public static bool TryUnpackIdentification(System.ReadOnlySpan<byte> payload, out System.ReadOnlySpan<byte> callsign, out int capability, out M0LTE.OfdmFm.ExtensionReader items) { }
         public static void WriteKey(uint key, System.Span<byte> destination) { }
+        public static void WriteRun(uint key, byte protocol, int count, System.Span<byte> destination) { }
     }
     public readonly struct PayloadPrelude : System.IEquatable<M0LTE.OfdmFm.PayloadPrelude>
     {
@@ -354,10 +367,12 @@ namespace M0LTE.OfdmFm
     }
     public readonly struct ReceivedEvent : System.IEquatable<M0LTE.OfdmFm.ReceivedEvent>
     {
-        public ReceivedEvent(System.ReadOnlyMemory<byte> Datagram, M0LTE.OfdmFm.Addressing Addressing, uint? ForKey, double QualityDb) { }
+        public ReceivedEvent(System.ReadOnlyMemory<byte> Datagram, uint FromKey, byte Protocol, M0LTE.OfdmFm.Addressing Addressing, uint? ForKey, double QualityDb) { }
         public M0LTE.OfdmFm.Addressing Addressing { get; init; }
         public System.ReadOnlyMemory<byte> Datagram { get; init; }
         public uint? ForKey { get; init; }
+        public uint FromKey { get; init; }
+        public byte Protocol { get; init; }
         public double QualityDb { get; init; }
     }
     public enum SendPriority
@@ -415,7 +430,7 @@ namespace M0LTE.OfdmFm
         public void Push(System.ReadOnlySpan<float> samples) { }
         public bool RunOne() { }
         public int RunPending() { }
-        public M0LTE.OfdmFm.SendResult Send(System.ReadOnlyMemory<byte> datagram, M0LTE.OfdmFm.LinkAddress to, M0LTE.OfdmFm.LinkAddress from, M0LTE.OfdmFm.HostTag tag, bool reportWanted = false, M0LTE.OfdmFm.SendPriority priority = 0) { }
+        public M0LTE.OfdmFm.SendResult Send(System.ReadOnlyMemory<byte> datagram, M0LTE.OfdmFm.LinkAddress to, M0LTE.OfdmFm.LinkAddress from, byte protocol, M0LTE.OfdmFm.HostTag tag, bool reportWanted = false, M0LTE.OfdmFm.SendPriority priority = 0) { }
         public void SetExternalBusy(bool busy) { }
         public M0LTE.OfdmFm.IdentityResult SetIdentity(string callsign) { }
         public void Skip(int count) { }

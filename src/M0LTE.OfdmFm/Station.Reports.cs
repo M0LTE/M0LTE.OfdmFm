@@ -365,6 +365,8 @@ public sealed partial class Station
             return false;
         }
 
+        RaiseLinkState(dest, now); // what this station has told them may have changed
+
         FormatSpec spec = StandardFormats.Describe(choice.Format);
         _renderer ??= new BurstRenderer();
         int total = _renderer.ReportSamples(spec.Opening);

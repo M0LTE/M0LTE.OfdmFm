@@ -11,6 +11,8 @@ public readonly struct LinkAddress : IEquatable<LinkAddress>
 
     private readonly byte[]? _bytes;
     private readonly bool _everyone;
+    private readonly bool _keyOnly;
+    private readonly uint _key;
 
     /// <summary>Makes an address from a copy of <paramref name="bytes"/>.</summary>
     /// <exception cref="ArgumentException">There are no bytes, or more than <see cref="MaxBytes"/>.</exception>
@@ -22,7 +24,25 @@ public readonly struct LinkAddress : IEquatable<LinkAddress>
         }
 
         _bytes = bytes.ToArray();
+        _key = KeyOf(bytes);
     }
+
+    private LinkAddress(uint key)
+    {
+        _keyOnly = true;
+        _key = key;
+        _bytes = [];
+    }
+
+    /// <summary>
+    /// An address known only by its <see cref="Key"/>, as a host has when it answers a datagram whose sender it knows from <see cref="ReceivedEvent.FromKey"/> alone. <see cref="Station.Send"/> and <see cref="Station.Cancel(LinkAddress)"/> take it
+    /// in place of the full address: the station keeps one queue for each key, so it reaches the same place. It has no bytes, and is equal only to another made from the same key (the events a station raises carry the address
+    /// that first made the queue, whichever form that was).
+    /// </summary>
+    public static LinkAddress FromKey(uint key) => new(key);
+
+    /// <summary>True for an address made by <see cref="FromKey"/>.</summary>
+    public bool IsKeyOnly => _keyOnly;
 
     private LinkAddress(bool everyone)
     {
@@ -40,7 +60,7 @@ public readonly struct LinkAddress : IEquatable<LinkAddress>
     public bool IsEveryone => _everyone;
 
     /// <summary>True for the value of <c>default</c>, which has no bytes and is no address; <see cref="Station.Send"/> refuses it.</summary>
-    public bool IsEmpty => !_everyone && Bytes.IsEmpty;
+    public bool IsEmpty => !_everyone && !_keyOnly && Bytes.IsEmpty;
 
     /// <summary>The address's bytes (empty for a default value or <see cref="Everyone"/>).</summary>
     public ReadOnlySpan<byte> Bytes => _bytes;
@@ -61,12 +81,12 @@ public readonly struct LinkAddress : IEquatable<LinkAddress>
     {
         get
         {
-            if (_everyone || Bytes.IsEmpty)
+            if (_everyone || (!_keyOnly && Bytes.IsEmpty))
             {
                 throw new InvalidOperationException("Everyone and the empty address have no key.");
             }
 
-            return KeyOf(Bytes);
+            return _key;
         }
     }
 
@@ -86,7 +106,7 @@ public readonly struct LinkAddress : IEquatable<LinkAddress>
     }
 
     /// <inheritdoc />
-    public bool Equals(LinkAddress other) => _everyone == other._everyone && Bytes.SequenceEqual(other.Bytes);
+    public bool Equals(LinkAddress other) => _everyone == other._everyone && _keyOnly == other._keyOnly && (_keyOnly ? _key == other._key : Bytes.SequenceEqual(other.Bytes));
 
     /// <inheritdoc />
     public override bool Equals(object? obj) => obj is LinkAddress other && Equals(other);
@@ -96,12 +116,21 @@ public readonly struct LinkAddress : IEquatable<LinkAddress>
     {
         HashCode hash = default;
         hash.Add(_everyone);
-        hash.AddBytes(Bytes);
+        hash.Add(_keyOnly);
+        if (_keyOnly)
+        {
+            hash.Add(_key);
+        }
+        else
+        {
+            hash.AddBytes(Bytes);
+        }
+
         return hash.ToHashCode();
     }
 
     /// <summary>The bytes in hex, for logs ("everyone" for <see cref="Everyone"/>).</summary>
-    public override string ToString() => _everyone ? "everyone" : Convert.ToHexString(Bytes);
+    public override string ToString() => _everyone ? "everyone" : _keyOnly ? "key " + _key.ToString("X8", System.Globalization.CultureInfo.InvariantCulture) : Convert.ToHexString(Bytes);
 
     /// <summary>Equal when the bytes are equal.</summary>
     public static bool operator ==(LinkAddress left, LinkAddress right) => left.Equals(right);

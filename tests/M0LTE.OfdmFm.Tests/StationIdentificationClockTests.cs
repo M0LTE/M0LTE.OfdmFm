@@ -132,7 +132,7 @@ internal sealed class IdentDriver
     }
 
     public void SendToEveryone(int tag, int length = 30, SendPriority priority = SendPriority.Ordinary) =>
-        Station.Send(TestBurst.Datagram(tag, length), LinkAddress.Everyone, SimRig.Address(1), new HostTag(tag), false, priority).Should().Be(SendResult.Accepted);
+        Station.Send(TestBurst.Datagram(tag, length), LinkAddress.Everyone, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(tag), false, priority).Should().Be(SendResult.Accepted);
 
     public IEnumerable<long> Clocks(string what) => Log.Where(l => l.What == what).Select(l => l.Clock);
 

@@ -116,7 +116,7 @@ internal sealed class SimNode
 }
 
 /// <summary>A datagram a station received.</summary>
-internal sealed record SimReceived(long Clock, int Sender, bool Everyone, Addressing Addressing, uint? ForKey, byte[] Data, double QualityDb);
+internal sealed record SimReceived(long Clock, int Sender, bool Everyone, Addressing Addressing, uint? ForKey, byte[] Data, double QualityDb, uint FromKey = 0, byte Protocol = 0);
 
 /// <summary>A transmit request as the audio layer saw it.</summary>
 internal sealed record SimRequest(long Id, long Clock, int Length, long Checksum);
@@ -756,8 +756,8 @@ internal sealed class SimChannel
 
         s.Received += e =>
         {
-            n.Received.Add(new SimReceived(s.SampleCount, s.HearingSender, e.Addressing == Addressing.ToEveryone || e.Addressing == Addressing.ForAddressNotYetLocated, e.Addressing, e.ForKey, e.Datagram.ToArray(), e.QualityDb));
-            Say(string.Create(CultureInfo.InvariantCulture, $"rx from {s.HearingSender} {e.Addressing} for {(e.ForKey is { } k ? k.ToString("X8", CultureInfo.InvariantCulture) : "-")} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
+            n.Received.Add(new SimReceived(s.SampleCount, s.HearingSender, e.Addressing == Addressing.ToEveryone || e.Addressing == Addressing.ForAddressNotYetLocated, e.Addressing, e.ForKey, e.Datagram.ToArray(), e.QualityDb, e.FromKey, e.Protocol));
+            Say(string.Create(CultureInfo.InvariantCulture, $"rx from {s.HearingSender} key {e.FromKey:X8} proto {e.Protocol:X2} {e.Addressing} for {(e.ForKey is { } k ? k.ToString("X8", CultureInfo.InvariantCulture) : "-")} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
         };
         s.PathReport += e =>
         {
@@ -767,7 +767,7 @@ internal sealed class SimChannel
         s.LinkState += e =>
         {
             n.LinkStates.Add(e);
-            Say(string.Create(CultureInfo.InvariantCulture, $"link {e.Address} located {e.Located} fmt {e.Format?.ToString(CultureInfo.InvariantCulture) ?? "-"} rate {e.RateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} room {e.DatagramRoom} {e.Knowledge} age {e.AgeSeconds:R} gone {e.Gone}"));
+            Say(string.Create(CultureInfo.InvariantCulture, $"link {e.Address} located {e.Located} fmt {e.Format?.ToString(CultureInfo.InvariantCulture) ?? "-"} rate {e.RateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} told {e.RecommendedRateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} room {e.DatagramRoom} {e.Knowledge} age {e.AgeSeconds:R} gone {e.Gone}"));
         };
         s.Transmitted += e =>
         {

@@ -33,10 +33,12 @@ public enum Addressing
 
 /// <summary>A datagram arrived.</summary>
 /// <param name="Datagram">The datagram.</param>
+/// <param name="FromKey">The key of the link address it was sent from (compare <see cref="LinkAddress.Key"/>), from its run in the burst. A host that can answer by key alone gives it to <see cref="LinkAddress.FromKey"/>.</param>
+/// <param name="Protocol">Its protocol byte (see <see cref="LinkProtocol"/>). The modem does nothing with it but carry it: a host ignores datagrams of a protocol it does not speak.</param>
 /// <param name="Addressing">How its burst was addressed.</param>
 /// <param name="ForKey">The key of the address a burst for an address not yet located is for (compare <see cref="LinkAddress.Key"/>), else null.</param>
 /// <param name="QualityDb">How well the burst was received, dB.</param>
-public readonly record struct ReceivedEvent(ReadOnlyMemory<byte> Datagram, Addressing Addressing, uint? ForKey, double QualityDb);
+public readonly record struct ReceivedEvent(ReadOnlyMemory<byte> Datagram, uint FromKey, byte Protocol, Addressing Addressing, uint? ForKey, double QualityDb);
 
 /// <summary>A report came back about the path to a station.</summary>
 /// <param name="Address">The link address the host sent to that lives at the station that sent it.</param>
@@ -54,12 +56,13 @@ public readonly record struct BurstNotDecodedEvent(LinkAddress Address, IReadOnl
 /// <param name="Located">True when the station knows where the address lives; the other fields then describe the link to that station. False when it does not: datagrams for it go to everyone with a For item,
 /// the format and rate are null, <paramref name="Knowledge"/> is <see cref="LinkKnowledge.FirstContact"/>, and <paramref name="DatagramRoom"/> is the room in a burst to everyone for one address.</param>
 /// <param name="Format">The format now used to it, or null if none yet.</param>
-/// <param name="RateBitsPerSecond">That format's rate, bit/s, or null.</param>
+/// <param name="RateBitsPerSecond">That format's rate, bit/s, or null: the rate this station sends to the address at.</param>
+/// <param name="RecommendedRateBitsPerSecond">The rate, bit/s, of the format this station has recommended to the station the address lives at (what it has told them the path from them supports), or null when it has recommended nothing yet, and for an address not located: the rate in the other direction.</param>
 /// <param name="DatagramRoom">The largest datagram, in bytes, one burst to it now carries.</param>
 /// <param name="Knowledge">Where the format came from.</param>
 /// <param name="AgeSeconds">How old that knowledge is.</param>
 /// <param name="Gone">True when the address was located and the station forgot it: the station it lived at went unheard for ten minutes, or three bursts running to it met silence. It is then not located.</param>
-public readonly record struct LinkStateEvent(LinkAddress Address, bool Located, int? Format, double? RateBitsPerSecond, int DatagramRoom, LinkKnowledge Knowledge, double AgeSeconds, bool Gone);
+public readonly record struct LinkStateEvent(LinkAddress Address, bool Located, int? Format, double? RateBitsPerSecond, double? RecommendedRateBitsPerSecond, int DatagramRoom, LinkKnowledge Knowledge, double AgeSeconds, bool Gone);
 
 /// <summary>The channel became busy or clear.</summary>
 /// <param name="Busy">True when busy.</param>

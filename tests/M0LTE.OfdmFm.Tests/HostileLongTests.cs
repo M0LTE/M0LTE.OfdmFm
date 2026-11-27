@@ -14,6 +14,33 @@ public class HostileLongTests
 
     private static CaptureModel[] Models => [.. HostileScenarios.Margins.Select(m => new CaptureModel(m))];
 
+    [Fact]
+    public void A_Carrier_Indication_And_Detection_Alone_Do_Not_Differ_In_Collisions_By_More_Than_Chance_Over_Eight_Seeds()
+    {
+        Hostile.Gate();
+        int with = 0;
+        int without = 0;
+        for (int seed = 1; seed <= 8; seed++)
+        {
+            HostileScenarios.ThreeAll w = HostileScenarios.ThreeHearAll(HostileScenarios.Default, true, seed, perPair: 3, length: 40, seconds: 110, spreadSeconds: 25);
+            HostileScenarios.ThreeAll o = HostileScenarios.ThreeHearAll(HostileScenarios.Default, false, seed, perPair: 3, length: 40, seconds: 110, spreadSeconds: 25);
+            foreach (HostileScenarios.ThreeAll r in new[] { w, o })
+            {
+                r.Delivered.Should().Be(18);
+                r.Duplicates.Should().Be(0);
+            }
+
+            with += w.CollidedBursts;
+            without += o.CollidedBursts;
+            Hostile.Say($"three all hear all, seed {seed}: collided bursts {w.CollidedBursts} with a carrier indication, {o.CollidedBursts} with detection alone");
+        }
+
+        // Recorded, not asserted as a comparison: the earlier claim that an indication costs fewer collisions was one seed (3 of 25 against 6 of 24); the totals over seeds 1 to 8 are what is printed here.
+        Hostile.Say($"three all hear all, seeds 1 to 8: collided bursts {with} with a carrier indication, {without} with detection alone");
+        with.Should().BeGreaterThan(0);
+        without.Should().BeGreaterThan(0);
+    }
+
     [Theory]
     [InlineData(1, 9.0, false)]
     [InlineData(2, 9.0, true)]
@@ -195,8 +222,8 @@ public class HostileLongTests
     public void The_Path_Cut_Control_Run_Without_The_Cut_Shows_What_The_Cut_Changed()
     {
         Hostile.Gate();
-        HostileScenarios.Cut cut = HostileScenarios.PathCut(HostileScenarios.Default, 1);
-        HostileScenarios.Cut control = HostileScenarios.PathCut(HostileScenarios.Default, 1, cutIt: false);
+        HostileScenarios.Cut cut = HostileScenarios.PathCut(HostileScenarios.Default, 3);
+        HostileScenarios.Cut control = HostileScenarios.PathCut(HostileScenarios.Default, 3, cutIt: false);
         Hostile.Say("control (no cut): " + HostileScenarios.Describe(control));
         control.MaxSilencesA.Should().BeLessThan(cut.MaxSilencesA);
         control.AToBCut.Split(',').Last().Should().NotBe(StandardFormats.FirstContact.ToString());

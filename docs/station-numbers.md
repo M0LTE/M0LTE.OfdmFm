@@ -74,10 +74,14 @@ After any of these the next datagram for the address goes to everyone again.
 The host gives a datagram, the address it is for, the address it is from and its protocol byte.
 
 - **The address is known:** the datagram goes in a burst to that station, as now.
-- **The address is not known:** it goes in a burst to everyone, at the first-contact format, with For set. This is the format a first contact uses anyway. There is no prelude, so no report is asked for and none comes back. The answer, when the far host sends one, carries its own From, and the two then address each other.
+- **The address is not known:** it goes in a burst to everyone, at the first-contact format, with For set. This is the format a first contact uses anyway. There is no prelude, so no report is asked for and none comes back. The answer, when the far host sends a datagram, carries its own From, and the two then address each other; and when the address is one the far host has sent from, the far station answers the burst with a report (below).
 - **The address is everyone:** a burst to everyone with no For.
 
 A burst to everyone carries datagrams for one For, or for none. Datagrams waiting for an address follow it when it becomes known or is forgotten.
+
+**A station answers for its own addresses.** It keeps the set of keys its own host has sent from. When it decodes a burst to everyone whose For is one of them, it owes the sender a lone report, as it owes one for a decoded burst addressed to it that dropped its recommendation: the same class, the first slot, carrying its recommendation for the sender (bursts to everyone are measured like any other). If it has nothing to recommend yet it sends none. It sends none for a burst with no For, or with a For that is not its own.
+
+**The sender binds the address from that report.** When a lone report addressed to this station arrives from station N, and this station has exactly one For outstanding (a burst to everyone with that For, sent, its answer wait not yet run out, counted from the burst's end), that For is learned as living at N, and the report is then applied as any report is. With none outstanding, or two different keys, nothing is learned from it. No new wire item and no new burst type. So a flood for an address whose host has sent from it at least once is answered at modem level even if that host never replies: one-way traffic with nothing coming back becomes addressed after one burst and climbs, and an address forgotten after three silences is relearned from the next flood. What remains: a host that has never sent from an address cannot be located, and traffic to it stays at the first-contact format.
 
 ## Receiving
 

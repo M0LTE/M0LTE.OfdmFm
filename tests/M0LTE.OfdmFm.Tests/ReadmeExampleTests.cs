@@ -52,7 +52,7 @@ public class ReadmeExampleTests
         station.TransmitRequest += r => (id, audio) = (r.Id, r.Samples);
         station.Transmitted += sent.Add;
 
-        SendResult accepted = station.Send(datagram, peer, me, new HostTag(1));
+        SendResult accepted = station.Send(datagram, peer, me, LinkProtocol.NoLayer3, new HostTag(1));
         float[] input = new float[4800];                        // the radio's audio, 0.1 s at a time (silence here)
         while (id == 0) station.Push(input);                    // the station listens for 5 s first, then asks to transmit
         station.TransmitStarted(id, station.SampleCount);       // play audio.Span to the radio, and say when it began ...

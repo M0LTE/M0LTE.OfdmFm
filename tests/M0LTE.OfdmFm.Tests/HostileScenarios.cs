@@ -221,21 +221,21 @@ internal static class HostileScenarios
         rig.RunTo(6);
         for (int i = 0; i < 4; i++)
         {
-            rig.Send(1, 2, 100 + i);
+            rig.Send(1, 2, 110 + i);
             rig.Run(7);
-            rig.Send(2, 1, 200 + i);
+            rig.Send(2, 1, 210 + i);
             rig.Run(7);
         }
 
         int format = a.Transmitted[^1].Event.Format;
         rig.Stations[1].Adaptation.TryGetNeighbour(1, out LinkNeighbour? atB).Should().BeTrue();
         int length = 200;
-        while (PayloadCodec.SymbolsFor(format, 4 + 2 + length) is { } s && s < 24 && length < 20000)
+        while (PayloadCodec.SymbolsFor(format, 4 + PayloadCodec.AddressBlockSize(1, false) + 2 + length) is { } s && s < 24 && length < 20000)
         {
             length += 100;
         }
 
-        int symbols = PayloadCodec.SymbolsFor(format, 4 + 2 + length)!.Value;
+        int symbols = PayloadCodec.SymbolsFor(format, 4 + PayloadCodec.AddressBlockSize(1, false) + 2 + length)!.Value;
         int? recBefore = atB!.Recommended;
         double[] estimateBefore = atB.EstimateDb.ToArray();
         double marginBefore = atB.Margin;
@@ -295,7 +295,7 @@ internal static class HostileScenarios
 
     private static SentItem SendDirect(SimRig rig, int from, int to, int seq, int length)
     {
-        rig.Stations[from - 1].Send(Ledger.Bytes(from, seq, 0, length), SimRig.Address(to), SimRig.Address(from), new HostTag(Ledger.TagOf(from, seq, 0))).Should().Be(SendResult.Accepted);
+        rig.Stations[from - 1].Send(Ledger.Bytes(from, seq, 0, length), SimRig.Address(to), SimRig.Address(from), LinkProtocol.NoLayer3, new HostTag(Ledger.TagOf(from, seq, 0))).Should().Be(SendResult.Accepted);
         return new SentItem { From = from, To = to, Seq = seq, Length = length };
     }
 
@@ -321,9 +321,9 @@ internal static class HostileScenarios
         rig.RunTo(6);
         for (int i = 0; i < pairs; i++)
         {
-            rig.Send(1, 2, 100 + i);
+            rig.Send(1, 2, 110 + i);
             rig.Run(8);
-            rig.Send(2, 1, 200 + i);
+            rig.Send(2, 1, 210 + i);
             rig.Run(8);
         }
 

@@ -347,7 +347,7 @@ public sealed partial class Station
 
     private void InitialiseReceive()
     {
-        _link = new LinkAdaptation(StationNumber);
+        _link = new LinkAdaptation();
     }
 
     // ---- feeding audio ----
@@ -665,7 +665,9 @@ public sealed partial class Station
             length = HeaderReader.OpeningSamples(c.Opening);
         }
 
-        if (header.Sender != StationNumber)
+        // A header with this station's own number, that it did not send, means another station holds it: this one moves (docs/station-numbers.md). Everything else is noted as heard from that number.
+        NoteSenderOfHeader(header.Sender);
+        if (header.Sender != _number)
         {
             // Anything heard from a station, whatever it was for: the answer wait of step 5 reads this (sample clock at the read).
             _heardAt[header.Sender] = SampleCount;
@@ -1069,7 +1071,7 @@ public sealed partial class Station
         BurstHeader h = r.Header;
         double now = ClockSeconds(r.End);
         int sender = h.Sender;
-        bool mine = h.Destination == StationNumber;
+        bool mine = _number != 0 && h.Destination == _number;
         bool everyone = h.Destination == 0;
         bool decoded = job.Decoded;
         ReadOnlySpan<double> quality = job.HasQuality ? job.Quality : default;
@@ -1203,7 +1205,7 @@ public sealed partial class Station
     private void ApplyReport(BurstRecord r)
     {
         BurstHeader h = r.Header;
-        if (h.Destination != StationNumber)
+        if (_number == 0 || h.Destination != _number)
         {
             // A report for another station, or for everyone, is read and neither measured nor acted on.
             return;
@@ -1367,7 +1369,7 @@ public sealed partial class Station
 
     /// <summary>
     /// Forgets where every address at station <paramref name="who"/> lives: the station was unheard for ten minutes, or three bursts running to it met silence. Each address the host has sent to
-    /// that lived there is told with <see cref="LinkState"/> (not located, <see cref="LinkStateEvent.Gone"/>); a datagram waiting for it goes to everyone from now on.
+    /// that lived there is told with <see cref="LinkState"/> (not located, <see cref="LinkStateEvent.Gone"/>); a datagram waiting for it goes to everyone from now on. The same for the silence case and for a number whose id changed.
     /// </summary>
     private void ForgetAddressesAt(int who, double now)
     {

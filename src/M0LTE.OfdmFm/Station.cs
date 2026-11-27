@@ -77,6 +77,11 @@ internal enum TransmitState
 /// <b>Identification.</b> The callsign (given by the host with <see cref="SetIdentity"/>; the station does not transmit until it has one: 1 to 16 characters, upper-case letters, digits, '/' and '-') goes on the air, and the clock that decides when runs on the sample clock only while the station transmits:
 /// an identification is due when a transmission of the station's ends and either it has never identified or ten minutes have passed since its last identification started: at once after the first transmission of a quiet station, and after the first transmission to end past the ten-minute mark for a station that keeps transmitting. Transmissions sooner are covered by the last identification, and an idle station never keys to identify. See <c>docs/station-design.md</c>, "Step 7 as built".
 /// </para>
+/// <para>
+/// <b>Numbers.</b> The station's on-air number (1 to 63) and its station id (32 random bits) are its own business: it takes them, from its random source, the first time <see cref="SetIdentity"/> is accepted (a number not heard as a sender in the last ten minutes of the
+/// sample clock), carries the id in every identification burst, takes new ones when it reads a header with its own number that it did not send or decodes a Clash that names its number and id, and, as a third station, resets what it knew of a number whose id changed and sends a
+/// Clash for the later id when the earlier was heard inside ten minutes. No member of the host interface shows a number or an id. A burst built before a move is built again. See docs/station-numbers.md.
+/// </para>
 /// </summary>
 public sealed partial class Station
 {
@@ -101,21 +106,37 @@ public sealed partial class Station
     private long? _transmittingId;
     private bool _advancing;
 
-    /// <summary>Makes a station.</summary>
-    /// <param name="stationNumber">Its on-air station number, 1 to 63.</param>
-    /// <param name="random">The source of every random choice the station makes. The caller seeds it; one seed and the same calls give the same run.</param>
+    /// <summary>Makes a station. It has no number until the host gives it an identity with <see cref="SetIdentity"/>: it then picks one by itself (see <see cref="SetIdentity"/>).</summary>
+    /// <param name="random">The source of every random choice the station makes, its number and station id included. The caller seeds it; one seed and the same calls give the same run.</param>
     /// <param name="runJobsInline">False (the default): header reads and receives are jobs for <see cref="RunOne"/>, run by worker threads the caller owns. True: <see cref="Push"/> runs every job itself, before it returns; for tests and simple hosts that can afford the time (a receive takes a good part of a burst's own length on a slow processor).</param>
-    /// <exception cref="ArgumentOutOfRangeException">The station number is outside 1 to 63.</exception>
-    public Station(int stationNumber, Random random, bool runJobsInline = false)
+    public Station(Random random, bool runJobsInline = false)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(stationNumber, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(stationNumber, 63);
         ArgumentNullException.ThrowIfNull(random);
-        StationNumber = stationNumber;
         _random = random;
         _inline = runJobsInline;
+        Array.Fill(_senderHeardAt, long.MinValue);
+        _onClashReady = EnsureClashRequest;
         InitialiseReceive();
         InitialiseAccess();
+    }
+
+    /// <summary>
+    /// A test's seam: a station whose first number and station id are fixed, taken when it is given its identity, so that a scenario can have stations with the numbers it names (and two with one number). Later numbers (after a clash) are chosen by the rule.
+    /// Not for a host: no host sees or chooses a number.
+    /// </summary>
+    internal Station(int number, uint stationId, Random random, bool runJobsInline = false)
+        : this(random, runJobsInline)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, 63);
+        _forcedNumber = number;
+        _forcedId = stationId;
+    }
+
+    /// <summary>The same, with a station id made from the number (so that stations of different numbers have different ids).</summary>
+    internal Station(int number, Random random, bool runJobsInline = false)
+        : this(number, 0xC0DE0000u | (uint)number, random, runJobsInline)
+    {
     }
 
     /// <summary>The callsign the station identifies with (the transmitter identifier), or null until the host gives it with <see cref="SetIdentity"/>. A station without one is a listener only.</summary>
@@ -125,6 +146,7 @@ public sealed partial class Station
     /// Gives the station the callsign it identifies with. Until it has one the station receives, measures and reports as usual but never transmits: <see cref="Send"/> returns <see cref="SendResult.NoIdentity"/>, no report is owed
     /// and <see cref="TransmitRequest"/> is never raised. The callsign is 1 to 16 characters, upper-case letters, digits, '/' and '-'. Giving the same one again is accepted and changes nothing; a different one is refused
     /// (<see cref="IdentityResult.Different"/>): to change callsign, make a new station. There is no way to clear it. It is not an address: several stations may use the same one.
+    /// The first time it is accepted the station takes its on-air number and makes up its station id (docs/station-numbers.md, "Station numbers"); until then it has neither, and no burst is for it.
     /// </summary>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
     public IdentityResult SetIdentity(string callsign)
@@ -138,14 +160,18 @@ public sealed partial class Station
         if (Callsign is null)
         {
             Callsign = callsign;
+            TakeFirstNumber();
             return IdentityResult.Accepted;
         }
 
         return Callsign == callsign ? IdentityResult.Accepted : IdentityResult.Different;
     }
 
-    /// <summary>The station's on-air number. Not part of the host interface: no host sees a station number.</summary>
-    internal int StationNumber { get; }
+    /// <summary>The station's on-air number, 1 to 63, or 0 while it has no identity. Not part of the host interface: no host sees a station number.</summary>
+    internal int StationNumber => _number;
+
+    /// <summary>The station's id: 32 random bits made up with the number, sent in every identification burst. Zero while it has no identity. Not part of the host interface.</summary>
+    internal uint StationId => _stationId;
 
     /// <summary>The sample clock: receive samples so far, counting those the audio layer reported dropped.</summary>
     public long SampleCount { get; private set; }

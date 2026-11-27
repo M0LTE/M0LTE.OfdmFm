@@ -174,6 +174,10 @@ public sealed partial class Station
         {
             OnReportBurstStarted();
         }
+        else if (ReferenceEquals(request, _clashRequest))
+        {
+            OnClashBurstStarted();
+        }
 
         if (request.Modem is { } modem)
         {
@@ -248,8 +252,12 @@ public sealed partial class Station
             {
                 OnIdentificationBurstEnded();
             }
+            else if (ReferenceEquals(request, _clashRequest))
+            {
+                OnClashBurstEnded();
+            }
 
-            if (!ReferenceEquals(request, _identRequest))
+            if (!ReferenceEquals(request, _identRequest) && !ReferenceEquals(request, _clashRequest))
             {
                 OnOtherTransmissionEnded(sampleIndex);
             }

@@ -573,6 +573,11 @@ public sealed partial class Station
             return PrepareIdentification(request);
         }
 
+        if (ReferenceEquals(request, _clashRequest))
+        {
+            return PrepareClash(request);
+        }
+
         if (!ReferenceEquals(request, _data))
         {
             // A burst that carries its samples already.
@@ -778,7 +783,7 @@ public sealed partial class Station
         int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
         int number = _burstNumber;
         _burstNumber = (_burstNumber + 1) & 15;
-        var header = BurstHeader.Data(StationNumber, dest, format, symbols, number);
+        var header = BurstHeader.Data(_number, dest, format, symbols, number);
         int total = _renderer.SamplesFor(format, symbols);
         float[] audio = RentAudio(total);
         _renderer.RenderData(header, _payload.AsSpan(0, length), audio);

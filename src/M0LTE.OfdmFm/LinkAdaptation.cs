@@ -157,8 +157,22 @@ public sealed class LinkAdaptation
         Number = number;
     }
 
-    /// <summary>This station's number.</summary>
-    public int Number { get; }
+    /// <summary>A station that has no number yet: it measures and learns, and no burst is for it. The station gives it one when it takes its own.</summary>
+    internal LinkAdaptation()
+    {
+    }
+
+    /// <summary>This station's number, 1 to 63. Held by the station that owns the rules: it changes when the station moves to another number (docs/station-numbers.md).</summary>
+    public int Number { get; internal set; }
+
+    /// <summary>Forgets everything held about a neighbour: its number has changed hands. The next burst heard from it starts a new record.</summary>
+    internal void Forget(int who)
+    {
+        if ((uint)who < Neighbours)
+        {
+            near[who] = null;
+        }
+    }
 
     /// <summary>
     /// Decibels by which a burst of format <paramref name="number"/> has more power on each carrier than a full-band burst at full
@@ -210,7 +224,7 @@ public sealed class LinkAdaptation
         }
 
         LinkNeighbour nb = Neighbour(sender, now);
-        bool mine = dest == Number;
+        bool mine = Number != 0 && dest == Number;
         int? droppedFrom = nb.Recommended;
         if (!quality.IsEmpty && !sudden)
         {

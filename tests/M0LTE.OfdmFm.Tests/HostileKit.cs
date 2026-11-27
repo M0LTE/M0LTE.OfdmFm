@@ -26,6 +26,9 @@ internal static class Hostile
 
     public static string Seconds(long samples) => F(samples / 48000.0, "F2");
 
+    /// <summary>True when the gated tier is on (SM_MASK_GATE=1).</summary>
+    public static bool Gated => Environment.GetEnvironmentVariable("SM_MASK_GATE") == "1";
+
     public static void Gate() =>
         Assert.SkipWhen(Environment.GetEnvironmentVariable("SM_MASK_GATE") != "1", "set SM_MASK_GATE=1: minutes of simulated traffic among three stations, and the capture-margin sweeps");
 
@@ -178,7 +181,7 @@ internal sealed class Ledger
         var seen = new List<int>();
         foreach (SimReceived r in _rig.Nodes[receiver - 1].Received)
         {
-            if (r.Data.Length >= 4 && r.Sender == item.From)
+            if (r.Data.Length >= 4 && r.Data[0] == item.From)
             {
                 (int from, int seq, int attempt) = Identify(r.Data);
                 if (from == item.From && seq == item.Seq)
@@ -222,7 +225,7 @@ internal sealed class Ledger
         int count = 0;
         for (int to = 1; to <= _rig.Stations.Count; to++)
         {
-            foreach (IGrouping<int, SimReceived> fromSender in _rig.Nodes[to - 1].Received.Where(r => r.Data.Length >= 4 && !r.Everyone).GroupBy(r => r.Sender))
+            foreach (IGrouping<int, SimReceived> fromSender in _rig.Nodes[to - 1].Received.Where(r => r.Data.Length >= 4 && !r.Everyone).GroupBy(r => (int)r.Data[0]))
             {
                 var order = new List<int>();
                 foreach (SimReceived r in fromSender)

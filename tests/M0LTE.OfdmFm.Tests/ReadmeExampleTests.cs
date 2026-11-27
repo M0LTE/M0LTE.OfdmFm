@@ -42,7 +42,7 @@ public class ReadmeExampleTests
         byte[] datagram = Enumerable.Range(0, 40).Select(i => (byte)(i * 7)).ToArray();
         var sent = new List<TransmittedEvent>();
 
-        var station = new Station(1, new Random(1), runJobsInline: true);
+        var station = new Station(new Random(1), runJobsInline: true);
         station.SetIdentity("M0LTE");                           // the callsign it identifies with; until it has one the station only listens
         var peer = LinkAddress.FromAscii("G9XYZ");
         var me = LinkAddress.FromAscii("M0LTE-1");              // an address of the host's own: datagrams are sent from it

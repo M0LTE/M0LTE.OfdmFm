@@ -112,6 +112,22 @@ public static class PayloadCodec
     /// <summary>The tag of the For item, in the leading block of a burst to everyone: one key, the address the burst is really for. Absent when the burst is for everyone.</summary>
     public const byte ForTag = 2;
 
+    /// <summary>The tag of the Station id item of an identification burst: 4 bytes, the most significant first. In every identification burst.</summary>
+    internal const byte StationIdTag = 1;
+
+    /// <summary>The tag of the Clash item of an identification burst: the number (1 byte) and the station id (4 bytes) that is to move.</summary>
+    internal const byte ClashTag = 2;
+
+    /// <summary>Bytes of a Clash item's value.</summary>
+    internal const int ClashBytes = 1 + KeyBytes;
+
+    /// <summary>Writes a Clash item's value: the number, then the station id.</summary>
+    internal static void WriteClash(int number, uint stationId, Span<byte> destination)
+    {
+        destination[0] = (byte)number;
+        WriteKey(stationId, destination[1..]);
+    }
+
     /// <summary>Bytes of a link address key on the air.</summary>
     public const int KeyBytes = 4;
 

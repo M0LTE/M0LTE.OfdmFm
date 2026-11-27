@@ -520,7 +520,7 @@ public class LinkAddressStationTests
     // ---- the public surface ----
 
     [Fact]
-    public void No_Public_Member_Of_The_Host_Interface_Mentions_A_Station_Number_But_The_Constructor()
+    public void No_Public_Member_Of_The_Host_Interface_Mentions_A_Station_Number_Or_Id()
     {
         Type[] hostTypes = [.. typeof(Station).Assembly.GetExportedTypes().Where(t => t == typeof(Station) || t == typeof(LinkAddress) || t == typeof(HostTag) || t.Name.EndsWith("Event", StringComparison.Ordinal)
             || t == typeof(SendResult) || t == typeof(SendPriority) || t == typeof(DropReason) || t == typeof(LinkKnowledge) || t == typeof(Addressing) || t == typeof(IdentityResult) || t == typeof(ModemSentKind))];
@@ -531,12 +531,7 @@ public class LinkAddressStationTests
         {
             foreach (MemberInfo m in t.GetMembers(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly))
             {
-                if (m is ConstructorInfo && t == typeof(Station))
-                {
-                    continue;
-                }
-
-                if (m.Name.Contains("Number", StringComparison.OrdinalIgnoreCase) || m.Name.Contains("Sender", StringComparison.OrdinalIgnoreCase) || m.Name.Contains("Placeholder", StringComparison.OrdinalIgnoreCase))
+                if (m.Name.Contains("Number", StringComparison.OrdinalIgnoreCase) || m.Name.Contains("Sender", StringComparison.OrdinalIgnoreCase) || m.Name.Contains("Placeholder", StringComparison.OrdinalIgnoreCase) || m.Name.Contains("StationId", StringComparison.OrdinalIgnoreCase))
                 {
                     offending.Add($"{t.Name}.{m.Name}");
                 }
@@ -544,7 +539,7 @@ public class LinkAddressStationTests
                 IEnumerable<ParameterInfo> parameters = m is MethodBase mb ? mb.GetParameters() : [];
                 foreach (ParameterInfo p in parameters)
                 {
-                    if (p.Name!.Contains("number", StringComparison.OrdinalIgnoreCase) && !(m is ConstructorInfo))
+                    if (p.Name!.Contains("number", StringComparison.OrdinalIgnoreCase) || p.Name.Contains("stationId", StringComparison.OrdinalIgnoreCase))
                     {
                         offending.Add($"{t.Name}.{m.Name}({p.Name})");
                     }
@@ -552,8 +547,8 @@ public class LinkAddressStationTests
             }
         }
 
-        offending.Should().BeEmpty("a station number appears nowhere in what a host sees");
-        typeof(Station).GetConstructors().Single().GetParameters().Select(p => p.Name).Should().Contain("stationNumber", "the one exception, until station numbers are made by the stations");
+        offending.Should().BeEmpty("a station number or id appears nowhere in what a host sees, the constructor included");
+        typeof(Station).GetConstructors().Single().GetParameters().Select(p => p.Name).Should().Equal(["random", "runJobsInline"], "the stations make their own numbers");
         typeof(Station).GetMember("Bind").Should().BeEmpty();
         typeof(SendResult).GetEnumNames().Should().NotContain("NotBound");
     }

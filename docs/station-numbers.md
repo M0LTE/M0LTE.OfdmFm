@@ -1,6 +1,6 @@
 # Link addresses and station numbers: the design
 
-Status: agreed by Tom on 2026-11-27 ("so effectively MAC addresses and ARP. OK"), for packet-net/pdn-soundmodem#835. Step one is built (link addresses, the From and For items, learning, sending and receiving by address, the host's events by address: docs/station-design.md, "Link addresses as built"); step two is not (random station numbers, the station id, the Clash item, a number changing hands), and the number is still the constructor's parameter. It replaces the interim arrangement (the station number is a setting, the host binds names to numbers, a heard callsign becomes a number's name). Amended the same day after a review against a draft third-party network stack that would run over the modem (see "Amended" at the end). Two earlier forms of this document were dropped the same day: one kept names in the modem with a question and answer on the air, one had the host send to numbers. "Choices made here" at the end lists what was settled without asking.
+Status: agreed by Tom on 2026-11-27 ("so effectively MAC addresses and ARP. OK"), for packet-net/pdn-soundmodem#835. Both steps are built. Step one: link addresses, the From and For items, learning, sending and receiving by address, the host's events by address (docs/station-design.md, "Link addresses as built"). Step two, 27 November 2026: random station numbers, the station id, the Clash item and a number changing hands (docs/station-design.md, "Station numbers as built"); the constructor no longer takes a number. It replaces the interim arrangement (the station number is a setting, the host binds names to numbers, a heard callsign becomes a number's name). Amended the same day after a review against a draft third-party network stack that would run over the modem (see "Amended" at the end). Two earlier forms of this document were dropped the same day: one kept names in the modem with a question and answer on the air, one had the host send to numbers. "Choices made here" at the end lists what was settled without asking.
 
 ## In one paragraph
 
@@ -90,17 +90,21 @@ The modem does not filter on For. A host that can tell from its own frame whethe
 
 ## Station numbers
 
-**Taking one.** When the host gives the identity, the station picks at random among the numbers it has not heard in the last ten minutes, and makes up its station id. If it has heard all 63 it takes the one unheard longest. It does not wait and listen first.
+**Taking one.** When the host gives the identity, the station picks at random among the numbers it has not heard as the sender of a burst in the last ten minutes of its sample clock, and makes up its station id (32 random bits, from the same source). If it has heard all 63 it takes the one unheard longest. It does not wait and listen first. Until it has an identity a station has no number and no id: no burst is for it, and it still listens, measures and learns.
 
-**Two stations with one number, in hearing of each other.** A station that hears a burst with its own number as the sender, which it did not send, takes a new number and a new id at once. If both notice, both do.
+**The station id on the air.** Every identification burst carries it (item 1). For each number a station remembers the id it last read there and when.
 
-**Two stations with one number, hidden from each other.** A third station finds out when it has heard identification bursts from one number with two different station ids inside ten minutes. It sends an identification burst of its own carrying Clash (the number, and the id heard more recently), by the ordinary access rules. A station that hears Clash with its own number and id takes a new number. A station that was about to send Clash for a number and hears one for it does not send its own. An identification burst sent for this reason does not move the identification clock.
+**Two stations with one number, in hearing of each other.** A station that reads a burst header with its own number as the sender, which it did not send (it is not transmitting and not inside its own mute tail), takes a new number and a new id at once. If both notice, both do. A burst it had built and not yet put on the air has the old number in its header: it is taken back, what it held goes back where it came from, and it is built again.
+
+**A number changes hands, and a hidden clash: one rule.** A station that reads an identification burst whose id differs from the one it last read on that number resets what it knew of the number, exactly as three silences reset a station: the neighbour record, the link addresses it had there and what it owed that station are forgotten, and the host is told the addresses have gone (not located). Datagrams waiting for those addresses stay queued and go as bursts to everyone with For; nothing is dropped for this reason. If the earlier id was heard inside ten minutes it also owes a Clash for the id it has just read. That covers a number held by two stations hidden from each other and a number that has changed hands: they differ only in whether the earlier id is recent.
+
+**The Clash.** An identification burst of the station's own with item 2: the number, then the station id that should move. It is not urgent: when it becomes owed the station waits a random time, 0 to 10 s on its sample clock, and only then asks for the channel by the ordinary rules for ordinary traffic. It does not move the identification clock or make an identification due. A station about to send a Clash for a number that decodes one for that number, from anyone, does not send its own. A station that sends a Clash for a number, or decodes one, forgets the id it had on record for that number, so the next identification heard there is only recorded: a station that stayed is not told to move for being more recent than one that has gone. If the Clash was lost and both stations are still on the number, their later identifications differ again inside ten minutes and a new Clash is owed by the same rule; that is the retry. A station that decodes a Clash with its own number and its own id takes a new number and a new id at once; one with its number and another id is ignored.
 
 **Nobody hears both.** Then nobody is affected.
 
-**A new number is not announced.** To everyone else the old number goes quiet and a stranger appears. Its link addresses are learned again from its next burst, and its path is measured from first contact.
+**A new number is not announced.** To everyone else the old number goes quiet and a stranger appears. Its link addresses are learned again from its next burst, and its path is measured from first contact. What the moving station knows of the others is not touched.
 
-**A number changes hands.** A station that hears an identification burst from a number it knows, with a station id different from the one it had, forgets what it measured for that number and the addresses it had there, and drops anything queued for it.
+**What the build settled.** The ten minutes are the time a neighbour is forgotten after (`LinkAdaptation.ForgetSeconds`). A station leaving a number does not take it again, whatever it has heard. A Clash is one item to a burst, so several owed go one after another; one is owed for a number at a time, a later id replacing an earlier. A station with no identity forgets what it knew of a changed number like any other but owes no Clash, since it cannot transmit. A station hearing its own number while it transmits ignores it. Two stations in hearing of each other with one number do not both notice: the first to be heard is the only one that moves. A lost Clash is retried by the rule above, and which of the two it then names depends on which identified later.
 
 ## What the host sees
 
@@ -110,7 +114,7 @@ The modem does not filter on For. A host that can tell from its own frame whethe
 - **PathReport** and **BurstNotDecoded** name the link address the datagrams were sent to.
 - **Identified**(callsign, capability word). The callsign names nothing.
 - **The key of an address**, as a function, for a host that needs to compare, or to answer a datagram whose sender it knows only by key. Send takes a key in place of an address.
-- No station number appears anywhere.
+- No station number or id appears anywhere, the constructor included.
 
 ## Limits and what is not covered
 
@@ -135,6 +139,10 @@ Settled without being put to Tom, because each is internal or a starting value. 
 9. Nothing is carried across a change of number.
 10. The protocol byte borrows AX.25's PID numbers, with 0x00 added for a whole AX.25 frame.
 11. A station answers a burst For one of its own addresses with an announcement (a data burst with no datagrams and a From run of count 0), which rides on the host's reply if there is one, and every station that hears it learns the address by the ordinary learning. Found in the build: without an answer, one-way traffic never found its station again after an address was forgotten. The first form, a lone report from which the sender bound the address, was withdrawn: a report cannot say what it answers.
+12. One rule for a hidden clash and a number that changed hands: a different id on a known number resets what was known of it, as three silences do; whether a Clash is also owed depends only on whether the earlier id was heard inside ten minutes. Datagrams queued for the forgotten addresses follow them, to everyone with For; nothing is dropped, and the host is told with `Gone`, the same as for silence. Found in the build: a burst already built for that station is taken back and built again as a burst to everyone. `DropReason.LinkForgotten` was removed, nothing can raise it.
+13. A built burst is not patched when the number changes: it is taken back and built again from the queue.
+14. The id record for a number is cleared when a Clash for it is sent or decoded. Found in the build: without it the survivor of a hidden clash was named in a Clash of its own at its next identification, ten minutes later at the earliest, and both stations moved.
+15. A Clash waits a random 0 to 10 s before it asks for the channel. Found in the build: two observers of one clash sent together in 5 of 8 seeds with detection alone and 6 of 8 with a carrier indication, and bursts that overlap decode as neither.
 
 ## Amended (Tom, 27 November 2026)
 

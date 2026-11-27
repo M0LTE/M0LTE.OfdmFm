@@ -74,7 +74,7 @@ internal enum TransmitState
 /// A report heard satisfies the answer wait and, if it says failed, raises <see cref="BurstNotDecoded"/> with the datagrams of the latest burst sent to that station that ended before the report began.
 /// </para>
 /// <para>
-/// <b>Identification.</b> The callsign (a required setting: 1 to 16 characters, upper-case letters, digits, '/' and '-') goes on the air, and the clock that decides when runs on the sample clock only while the station transmits:
+/// <b>Identification.</b> The callsign (given by the host with <see cref="SetIdentity"/>; the station does not transmit until it has one: 1 to 16 characters, upper-case letters, digits, '/' and '-') goes on the air, and the clock that decides when runs on the sample clock only while the station transmits:
 /// an identification is due when ten minutes have passed since the last one (or there was none) and the station has transmitted since: at once after the first transmission of a quiet station, every ten minutes while it keeps transmitting, and once more when the ten minutes are up for a station that sent something since and went quiet. A station that has sent nothing since its last identification never keys. See <c>docs/station-design.md</c>, "Step 7 as built".
 /// </para>
 /// </summary>
@@ -102,25 +102,15 @@ public sealed partial class Station
     private bool _advancing;
 
     /// <summary>Makes a station.</summary>
-    /// <param name="callsign">The station's callsign. Required.</param>
     /// <param name="stationNumber">Its on-air station number, 1 to 63.</param>
     /// <param name="random">The source of every random choice the station makes. The caller seeds it; one seed and the same calls give the same run.</param>
     /// <param name="runJobsInline">False (the default): header reads and receives are jobs for <see cref="RunOne"/>, run by worker threads the caller owns. True: <see cref="Push"/> runs every job itself, before it returns; for tests and simple hosts that can afford the time (a receive takes a good part of a burst's own length on a slow processor).</param>
-    /// <exception cref="ArgumentException">The callsign is empty or white space.</exception>
     /// <exception cref="ArgumentOutOfRangeException">The station number is outside 1 to 63.</exception>
-    public Station(string callsign, int stationNumber, Random random, bool runJobsInline = false)
+    public Station(int stationNumber, Random random, bool runJobsInline = false)
     {
-        ArgumentNullException.ThrowIfNull(callsign);
-        ArgumentException.ThrowIfNullOrWhiteSpace(callsign);
-        if (!PayloadCodec.IsValidCallsign(callsign))
-        {
-            throw new ArgumentException($"A callsign is 1 to {PayloadCodec.MaxCallsignBytes} characters, upper-case letters, digits, '/' and '-': it goes on the air in the identification burst.", nameof(callsign));
-        }
-
         ArgumentOutOfRangeException.ThrowIfLessThan(stationNumber, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(stationNumber, 63);
         ArgumentNullException.ThrowIfNull(random);
-        Callsign = callsign;
         StationNumber = stationNumber;
         _random = random;
         _inline = runJobsInline;
@@ -128,8 +118,31 @@ public sealed partial class Station
         InitialiseAccess();
     }
 
-    /// <summary>The station's callsign.</summary>
-    public string Callsign { get; }
+    /// <summary>The callsign the station identifies with (the transmitter identifier), or null until the host gives it with <see cref="SetIdentity"/>. A station without one is a listener only.</summary>
+    public string? Callsign { get; private set; }
+
+    /// <summary>
+    /// Gives the station the callsign it identifies with. Until it has one the station receives, measures and reports as usual but never transmits: <see cref="Send"/> returns <see cref="SendResult.NoIdentity"/>, no report is owed
+    /// and <see cref="TransmitRequest"/> is never raised. The callsign is 1 to 16 characters, upper-case letters, digits, '/' and '-'. Giving the same one again is accepted and changes nothing; a different one is refused
+    /// (<see cref="IdentityResult.Different"/>): to change callsign, make a new station. There is no way to clear it. It is not an address: several stations may use the same one.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
+    public IdentityResult SetIdentity(string callsign)
+    {
+        EnsureNotAdvancing();
+        if (callsign is null || !PayloadCodec.IsValidCallsign(callsign))
+        {
+            return IdentityResult.Invalid;
+        }
+
+        if (Callsign is null)
+        {
+            Callsign = callsign;
+            return IdentityResult.Accepted;
+        }
+
+        return Callsign == callsign ? IdentityResult.Accepted : IdentityResult.Different;
+    }
 
     /// <summary>The station's on-air number.</summary>
     public int StationNumber { get; }
@@ -337,6 +350,12 @@ public sealed partial class Station
     /// </summary>
     internal long RequestTransmit(ReadOnlyMemory<float> samples, long earliestSample)
     {
+        // The one place a request is put to the audio layer: a station with no identity never transmits. The specific checks (Send, the verdicts, identification) keep it from getting here.
+        if (Callsign is null)
+        {
+            throw new InvalidOperationException("A station with no identity does not transmit: give it one with SetIdentity.");
+        }
+
         long id = _nextRequestId++;
         Request request = _freeRequests.Count > 0 ? _freeRequests.Pop() : new Request();
         request.State = TransmitState.Requested;

@@ -530,7 +530,7 @@ public class StationReportTests
 
     private static Station Make(StreamDriver? _ = null)
     {
-        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true) { IdentificationSuspended = true };
+        var station = (new Station(1, new Random(1), runJobsInline: true) { IdentificationSuspended = true }).WithIdentity("M0LTE");
         station.Bind(StationName.FromAscii("S4"), 4);
         return station;
     }

@@ -76,7 +76,7 @@ public sealed partial class Station
     /// <summary>Anything but the identification burst has started: something has been sent since the last identification.</summary>
     private void OnOtherTransmissionStarted(long sampleIndex)
     {
-        if (_identOwed || IdentificationSuspended)
+        if (_identOwed || IdentificationSuspended || Callsign is null)
         {
             return;
         }
@@ -151,7 +151,7 @@ public sealed partial class Station
 
         int format = StandardFormats.FirstContact;
         _renderer ??= new BurstRenderer();
-        int length = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(Callsign), CapabilityWord, default, _payload);
+        int length = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(Callsign!), CapabilityWord, default, _payload);
         int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
         int number = _burstNumber;
         _burstNumber = (_burstNumber + 1) & 15;
@@ -220,7 +220,7 @@ public sealed partial class Station
         var name = new StationName(callsign);
         string text = System.Text.Encoding.ASCII.GetString(callsign);
         bool renamed = false;
-        if (!_hostBound[sender] && !name.Equals(StationName.FromAscii(Callsign)))
+        if (!_hostBound[sender] && !(Callsign is not null && name.Equals(StationName.FromAscii(Callsign))))
         {
             int holder = NumberOf(name);
             if ((holder == 0 || !_hostBound[holder]) && (_bound[sender] is not { } current || current != name))

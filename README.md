@@ -62,10 +62,11 @@ PayloadReceiveResult result = receiver.Receive(audio, found.Index, read, headerR
 PayloadCodec.TryUnpack(received.AsSpan(0, result.PayloadBytes), toEveryone: true, out _, out DatagramReader datagrams);
 ```
 
-A host sends a datagram through a station (inline, so the example needs no worker threads). The audio layer's part is the three calls that follow the request:
+A host sends a datagram through a station (inline, so the example needs no worker threads). The host gives the station its callsign first: a station with none receives and never transmits. The audio layer's part is the three calls that follow the request:
 
 ```csharp
-var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+var station = new Station(1, new Random(1), runJobsInline: true);
+station.SetIdentity("M0LTE");                           // the callsign it identifies with; until it has one the station only listens
 var peer = StationName.FromAscii("G9XYZ");
 station.Bind(peer, 2);                                  // the interim way a name gets an on-air number
 

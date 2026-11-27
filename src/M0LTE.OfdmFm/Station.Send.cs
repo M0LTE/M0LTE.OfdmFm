@@ -186,7 +186,7 @@ public sealed partial class Station
     /// Queues a datagram for a station, or for everyone, and says whether it was taken. The datagram's bytes are copied: the caller's buffer is its own again when this returns.
     /// Each accepted datagram ends in exactly one <see cref="Transmitted"/> or one <see cref="Dropped"/>. Audio thread, serialised with <see cref="Push"/>; it may raise <see cref="TransmitRequest"/> and <see cref="Congestion"/> before it returns.
     /// <para>
-    /// The result: <see cref="SendResult.NotBound"/> when the name has no number (see <see cref="Bind"/>); <see cref="SendResult.TooLarge"/> when the datagram is larger than one burst to the station carries at the format the station
+    /// The result: <see cref="SendResult.NoIdentity"/> (checked first) when the station has no identity yet (see <see cref="SetIdentity"/>); <see cref="SendResult.NotBound"/> when the name has no number (see <see cref="Bind"/>); <see cref="SendResult.TooLarge"/> when the datagram is larger than one burst to the station carries at the format the station
     /// would use now, which is the longest burst's payload at that format (252 symbols) less the prelude's largest size (4 bytes) and the datagram's own length (2 bytes), the figure <see cref="LinkStateEvent.DatagramRoom"/> gives
     /// (for everyone: the first-contact format and no prelude); <see cref="SendResult.QueueFull"/> when the destination's queue holds 30 s of airtime at that format (see <see cref="Congestion"/>).
     /// A datagram accepted can still be dropped later with <see cref="DropReason.NoLongerFits"/> if the format falls before it goes.
@@ -212,6 +212,11 @@ public sealed partial class Station
         if (datagram.IsEmpty || datagram.Length > 65535)
         {
             throw new ArgumentException("A datagram is 1 to 65535 bytes.", nameof(datagram));
+        }
+
+        if (Callsign is null)
+        {
+            return SendResult.NoIdentity;
         }
 
         int number = destination.IsEveryone ? 0 : NumberOf(destination);

@@ -15,8 +15,8 @@ public class StationIdentificationExchangeTests
     private static (SimChannel Channel, SimNode A, SimNode B) Pair(int seed)
     {
         var channel = new SimChannel(4800, seed);
-        var a = new Station("M0AAA", 1, new Random(seed * 10 + 1), runJobsInline: true) { IdentificationInterval = Interval };
-        var b = new Station("M0BBB", 2, new Random(seed * 10 + 2), runJobsInline: true) { IdentificationInterval = Interval };
+        var a = (new Station(1, new Random(seed * 10 + 1), runJobsInline: true) { IdentificationInterval = Interval }).WithIdentity("M0AAA");
+        var b = (new Station(2, new Random(seed * 10 + 2), runJobsInline: true) { IdentificationInterval = Interval }).WithIdentity("M0BBB");
         SimNode na = channel.Add(a, "A");
         SimNode nb = channel.Add(b, "B");
         channel.Connect(na, nb, 1.0, 0.004);
@@ -204,7 +204,7 @@ public class StationIdentificationExchangeTests
     [Fact]
     public void An_Identification_Header_Not_Addressed_To_Everyone_Is_Noted_And_Not_Received()
     {
-        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
         byte[] bits = new byte[BurstHeaderCodec.HeaderBits];
         station.TakeInHeader(2000, FormatOpening.UpTo1500Hz, new BurstHeader(0, BurstKind.Identification, 3, 5, StandardFormats.FirstContact, 8, 0), bits);
         station.NotedHeaders.Should().ContainSingle().Which.Reason.Should().Be(Station.NoteReason.Invalid);

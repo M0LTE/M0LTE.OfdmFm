@@ -18,7 +18,7 @@ internal sealed class IdentDriver
 
     public IdentDriver(long intervalSamples, string callsign = "M0LTE", int number = 1, int seed = 1)
     {
-        Station = new Station(callsign, number, new Random(seed), runJobsInline: true);
+        Station = new Station(number, new Random(seed), runJobsInline: true).WithIdentity(callsign);
         if (intervalSamples > 0)
         {
             Station.IdentificationInterval = intervalSamples;

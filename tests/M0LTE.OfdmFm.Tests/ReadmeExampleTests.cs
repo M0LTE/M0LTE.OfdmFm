@@ -42,7 +42,8 @@ public class ReadmeExampleTests
         byte[] datagram = Enumerable.Range(0, 40).Select(i => (byte)(i * 7)).ToArray();
         var sent = new List<TransmittedEvent>();
 
-        var station = new Station("M0LTE", 1, new Random(1), runJobsInline: true);
+        var station = new Station(1, new Random(1), runJobsInline: true);
+        station.SetIdentity("M0LTE");                           // the callsign it identifies with; until it has one the station only listens
         var peer = StationName.FromAscii("G9XYZ");
         station.Bind(peer, 2);                                  // the interim way a name gets an on-air number
 

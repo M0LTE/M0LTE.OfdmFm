@@ -1,72 +1,144 @@
-# Sharing a channel: a design
+# Losing bursts, and what to do about it: a design
 
-Status: a proposal, written 2026-11-27, awaiting Tom's agreement. Nothing here is built. It answers packet-net/pdn-soundmodem#914 (tell interference from path loss) and the four faults the simulations found in the access rules (#899, #900, #901, #902), with #892 (the modem setting its own contention window) folded in. Prompted in part by Perry M0PYL's observation that when losses come from other stations and not from a weak path, slowing down is the wrong response.
+Status: a proposal, second form, written 2026-11-27 after Tom's review of the first ("a little simplistic": it treated another station transmitting as the only alternative to a weaker path). Awaiting his agreement. Nothing here is built. It answers packet-net/pdn-soundmodem#914 and the access-rule faults #899, #901 and #902, with #892 folded in. Prompted in part by Perry M0PYL's observations that slowing down is the wrong answer to interference, that speeding up can be the right one, and that trying a faster rate now and then is worth doing.
 
-## The problem in one paragraph
+## What the reading found
 
-The modem was built around path loss. Two of its habits assume that a burst which fails, or goes unanswered, means the path got worse: the receiver widens its safety margin for that sender, and a sender that hears nothing three times running falls to the slowest format. When the real cause is another station transmitting at the same time, both habits make things worse: a slower burst is longer, and a longer burst is hit more often. The simulations show it. Three stations with traffic every few seconds collide on a third to a half of their bursts, and a link that collides slows down and then collides more.
+Two pieces of background reading were done for this, on what a VHF FM channel does to a signal and on rate control when losses have several causes. Most of what came back is textbook and standards material, and some is informed estimate. **No published measurement was found of how real amateur VHF packet losses divide between collisions, noise and weak signal.** So the figures below set the shape of the design, and the design includes measuring (see "Measure before tuning").
 
-## What a station can know
+**The channel.**
 
-A station cannot see a collision directly, but it has evidence the usual rate-control schemes lack, because the receiver measures every burst:
+| Cause | One event lasts | Hits | Shows up as | Same both ways? |
+|---|---|---|---|---|
+| Path weaker: weather, a lift ending, an antenna | minutes to hours | every burst | signal down across the band, burst after burst | mostly |
+| Flutter: aircraft, vehicles, trees | seconds, up to a minute for an aircraft; fades at about 1 to 50 Hz | part of a long burst, or all of a short one | quality rising and falling inside the burst and between bursts | yes |
+| Impulsive noise: ignition, power lines, switching supplies | milliseconds each; a source may run for hours | a few symbols | isolated bad symbols in a clean burst | no, it is local to one receiver |
+| Raised noise floor: broadband hash, a strong signal nearby | as long as the source runs | every burst | noise up on some or all carriers | no |
+| Another station on the frequency, heard or hidden | its transmission: 0.2 s to tens of seconds | part or all | signal unchanged, then errors together from some point on; or the burst never found | no |
+| Something else holding the channel: voice, another mode, a distant station during a lift | seconds to hours | everything while it lasts | the channel busy with nothing readable | no |
+| The radios themselves: key-up or squelch clipping the front | every burst | the opening | openings damaged the same way each time | per radio |
 
-- **The burst was fine and then was not.** Quality collapsed part-way through. Already handled: the estimate is left alone (the "sudden" judgement).
-- **The burst's opening measured as well as ever, and the payload failed.** If a burst at that format, or a faster one, decoded from the same station within the last 30 s, the path has shown it carries that format. The failure is something landing on the payload.
-- **Nothing came back, but the other station is still being heard, as strongly as before.** The path is not dead. The burst was most likely lost at the far end under something this station could not hear.
-- **Nothing came back and nothing has been heard since.** The path may really have gone. This is the case the existing rules were written for, and they stay as they are for it.
+Man-made noise in a town is put at roughly 13 to 17 dB above thermal at 144 MHz and 25 to 30 dB at 50 MHz (ITU-R P.372), so on 6 m the receiver's own noise is rarely what limits it. An FM receiver is captured by the stronger of two signals once it leads by a few dB (figures of 2 to 10 dB are quoted for real radios), so an interferer does not add noise, it replaces the signal. The Reading to Winchester path of the field trial (#917) lies under busy airspace, so aircraft flutter should be expected there.
 
-## The rules proposed
+**Rate control elsewhere.** What was found, and how far each point was checked:
 
-### 1. Always draw a random wait before ordinary traffic
+- **Treating every loss as a weak channel collapses under load**, because a lower rate is on the air longer and collides more. Stated outright in a survey of Wi-Fi rate control (arXiv 1807.02827) and the starting point of every scheme below.
+- **A failed burst can be read at the receiver.** COLLIE (Rayanchu and others, INFOCOM 2008) looks at where the symbol errors fall in a failed frame: a collision gives long unbroken runs. On real hardware it told collisions from weak signal about 60 percent of the time at a 2 percent false-alarm rate with one receiver. SoftRate (Vutukuru, Balakrishnan and Jamieson, SIGCOMM 2009) marks interference by an abrupt jump in estimated error rate part-way through a frame and lowers the rate only for losses that look like fading; it was tested on real hardware. That jump is this modem's existing "sudden" judgement. The lesson from COLLIE's figures: the judgement will sometimes be wrong, so a wrong call must be cheap.
+- **A short probe settles what a lost burst could not.** CARA (Kim, Kim, Choi and Qiao, INFOCOM 2006) sends a short request before a retry: if the short one gets through, the long one failed to the channel; if not, to a collision; and it does not lower the rate for collisions. Shown in simulation only, with hidden stations left out. The "query" below is the same idea.
+- **The nearest relative is the cellular arrangement**: the receiver reports channel quality and an outer loop trims an offset by results, stepping down on a failure and up a little on each success, the ratio of the steps setting the failure rate it settles at. This modem's margin is that loop (half a decibel wider on a failure, a hundredth narrower on a success, so it settles near one failure in fifty). That unpredicted interference drags such a loop down is described in patents and assumed in papers proposing fixes; no measured account was found.
+- **Counting successes at each rate needs traffic a packet channel does not have.** Minstrel, in Linux, samples other rates on about one packet in ten and recomputes ten times a second. Where rates are probed at all, only the neighbours of the current best need trying, because throughput has a single peak across the ordered rates (Combes, Proutiere and others, INFOCOM 2014; simulation and recorded traces).
+- **How busy the channel is can set the random wait directly.** Idle Sense (Heusse and others, SIGCOMM 2005) holds the idle time between transmissions at a target and does not use losses as its signal. A later paper reports that its target does not hold where there are hidden stations.
+- **That a faster rate loses fewer bursts under contention** is argued widely and supported by two test-bed reports that were found but not read in full. No deliberate "speed up on a collision" rule was found proven on real hardware. It is the least tested idea here.
 
-Today the random wait is drawn when the channel was last busy, so on a channel that has been idle a while it has already run out, and two stations given traffic at the same moment both key at once, every time (#899).
+## Two kinds of loss
 
-Proposed: the wait is drawn when a station has ordinary traffic ready and the channel is clear, every time. The cost is a short delay before each burst on a quiet channel: on average about a fifth of a second with a carrier indication, and about half a second to a second by detection alone.
+Every cause in the table harms a burst in one of two ways, and they call for opposite responses.
 
-### 2. The station just spoken to answers first
+- **Too little signal for the format.** Weaker path, raised noise, the bottom of a fade. The answer is a more robust format, which is slower. The modem already does this, from what it measures.
+- **Something landed on it.** An impulse, another station, the bad second of a flutter. These arrive at random in time, so the chance of being hit grows with how long the burst is on the air. The answer is to be on the air for less time: shorter bursts, and a faster format if the signal allows it. Slowing down makes it worse.
 
-So that rule 1 does not slow a two-way exchange: the station a burst was addressed to may send to that sender in the first slot after it, whatever the traffic's class, with no random wait. Everyone else waits out the first slot and then draws. Reports and acknowledgements already work this way; this extends it to any reply. Two stations exchanging data then alternate with no random delay at all, while a third station defers to them.
+So for each neighbour a station keeps two things, where today it keeps one:
 
-### 3. A failure with a good opening, at a format known to work, is not the path's fault
+1. **How much signal there is, and how steady it is.** The estimate it has now, plus a measure of how much successive bursts differ. A path that flutters gets a wider margin because it moves, not because bursts failed.
+2. **How often something lands on a burst**, as hits per second of airtime, from the evidence below. It fades with time, so an old bad spell is forgotten.
 
-When a payload fails, its opening measured within 2 dB of the estimate, and a burst at that format or faster decoded from the same station in the last 30 s: the receiver reports the failure, so the sender's host can resend, but leaves its margin and its cap alone. Otherwise as now.
+The format and the burst length are then chosen together, to carry the most on balance: the first number says which formats will decode, the second says how long a burst can be before it is likely to be hit.
 
-### 4. Silence from a station that is still being heard means try again, not slow down
+## Telling them apart
 
-When a burst that asked for a report gets none, and the sender has heard the other station since, at about the strength it had before: the sender keeps its format and sends again after a wider random wait (rule 5). After three such tries in a row with nothing coming back, the existing rule takes over and it steps down. Where nothing has been heard from the station at all, the existing rule applies from the first silence.
+The receiver has more to go on than a pass or a fail, because it measures every symbol of every burst.
 
-With this, only a report or a burst addressed to this station counts as an answer. Hearing the other station talk to someone else shows it is alive, which matters for the paragraph above, but does not answer the question (#901).
+| What the receiver sees | Read as | What changes |
+|---|---|---|
+| Signal down across the band, at the opening and throughout | weaker path | the estimate follows it, as now |
+| Quality rising and falling within the burst, or burst to burst with no trend | flutter | the steadiness measure, and so the margin |
+| A few isolated bad symbols in an otherwise clean burst | impulse | a hit; nothing else |
+| Clean, then bad from some point to the end (the existing "sudden" judgement) | something landed on it | a hit; nothing else |
+| Opening as good as ever, payload failed, at a format that worked in the last 30 s | something landed on it at the start | a hit; nothing else |
+| Opening as good as ever, payload failed, at a format not shown to work | the format was too ambitious | the margin, as now |
 
-### 5. The random wait widens when bursts are being lost to other stations
+The sender has its own evidence when nothing comes back:
 
-Each time a station puts a loss down to another station (a failed report for a burst sent, under rule 3's conditions as the sender sees them; a silence under rule 4; a "sudden" failure reported back), it doubles the number of slots it draws from, up to eight times the starting number. A burst that gets through resets it. This is the ordinary remedy for a shared channel, and it is what #892 asked for: the window sets itself from what the channel is doing.
+| What the sender sees | Read as | What it does |
+|---|---|---|
+| No answer, but the station is still heard as strongly as before | lost at the far end under something | a hit; ask cheaply (below) |
+| No answer and nothing heard since | cannot tell | ask cheaply (below) |
 
-### 6. Shorter bursts while losses are being put down to other stations
+Only "too ambitious" and "weaker path" move the margin and the estimate. That is the cure for the outer loop being dragged down by losses it did not cause.
 
-While the window of rule 5 is wider than its starting size, a burst carries at most one second of airtime, where the usual ceiling is 2.5 s (one datagram that needs longer still goes whole). Less on the air at once means less to lose and less to hit.
+## Ask cheaply before assuming the worst
 
-### 7. Do not start over the answer that was asked for
+Today three unanswered bursts send a station to the slowest format, where one frame takes eleven seconds. If the path has gone, those bursts are wasted; if it has not, they are the longest target on the channel.
 
-A station that asked for a report holds its next ordinary burst to that station until the report arrives or the time allowed for it has passed (1.5 s from the end of the burst). Today it may start again just as the report keys, and each destroys the other (#902).
+Proposed: when a burst goes unanswered, the next thing sent to that station is a **query**: a header with no payload, a fifth of a second long, that asks for a report. It is the hardest burst to hit and the easiest to decode.
 
-## Left for later
+- **Answered:** the path is there, and the answer carries a fresh measurement. The lost burst is counted as a hit and traffic carries on at what the answer supports.
+- **Not answered:** asked again after a wait that doubles each time. Nothing long is sent into silence. Datagrams wait in the queue and expire as they do now, and the host is told.
 
-- **A stronger burst that begins inside one already being received** (#900) is still thrown away unread. Reading it needs care not to bring back the false starts the present rule prevents. Its own piece of work.
-- **What the layer above knows** (that a datagram is a resend, or was acknowledged): not needed by these rules. Revisit if the evidence above proves too thin.
-- **A host naming the format** (#915): unchanged.
-- **How busy the channel is** (#910) as further evidence: once it exists.
-- **Going faster than recommended** when losses are collisions: the rules above stop the slowing down; whether to go further waits on results.
+This needs one spare bit in the report burst's header to mean "report wanted". It replaces the three-silences rule.
 
-## How it will be judged
+## Speeding up
 
-In the three-station simulation and the soak, over eight seeds each, with and without a carrier indication, and with a hidden station, comparing before and after: datagrams delivered, airtime used, collided bursts, and the rate each link holds. The claim to test is that a busy channel no longer drags its links to the slowest format, and that a quiet two-station link is no slower than it is today. Then on air, which needs a third radio.
+Three ways, all bounded by what the receiver says the signal supports.
+
+1. **Never slow down for a hit.** Follows from the above.
+2. **Use the margin when hits are frequent.** The safety margin trades a little rate for fewer failures from too little signal. When bursts are being lost to hits anyway, a faster burst that is on the air for less time loses fewer, so part of the margin is given back: one rung faster while the hit rate is high.
+3. **Try the next rung up now and then.** On a path that has been steady and successful, about one burst in twenty goes one rung faster than recommended, chosen at random, and only when the burst is short. If it decodes, the receiver has direct evidence its margin is too wide and narrows it faster than the slow creep it uses now. If it fails, nothing is held against the path: the existing rules already ignore the failure of a format faster than the one recommended. This is the receiver's measurement being checked by experiment, not a search across rates.
+
+## Sharing the channel
+
+Kept from the first form:
+
+- **Always draw a random wait before ordinary traffic** (#899). Today two stations given traffic at the same moment on a quiet channel collide every time.
+- **The station just spoken to answers first**, with no random wait, so a two-way exchange is not slowed.
+- **Do not start over an answer that was asked for** (#902).
+- **Only a report or a burst for this station answers the question** (#901).
+
+Changed:
+
+- **The random wait widens with how busy the channel is seen to be**, from the share of time it is occupied (#910), and not from losses, since a loss to an impulse says nothing about contention.
+- **Bursts shorten with the hit rate**, as the two-number choice above gives, in place of a fixed one-second rule.
+
+## What this does not cover
+
+- **A carrier the modem cannot decode**, such as voice on the frequency, is invisible to a station with no carrier indication from its radio. pdn-soundmodem has a detector that judges this from the audio; whether it is quick and sure enough to feed in is a bench question.
+- **A stronger burst that begins inside one already being received** (#900).
+- **A receiver that cannot hear some carriers at all** (#886): that is about which formats exist for a pair of radios, not about losses.
+- **Key-up and squelch clipping** belong to setting up the radios (#826).
+- **What the layer above knows** (a resend, an acknowledgement), and **a host naming the format** (#915): not needed by this design.
+
+## Measure before tuning
+
+Every threshold here is a starting value, and the reading could not supply better ones. Three sources of real figures:
+
+1. **The trace** (#925) should say, for every lost burst, which row of the tables it was put in. A day on the air then gives the split nobody has published.
+2. **Listening.** A receiver left recording a busy 2 m packet frequency gives the impulse rate, how often and for how long others hold the channel, and how the noise floor moves through a day, with no transmitting at all.
+3. **The field trial** (#917), with its aircraft.
+
+In simulation the design is judged as before: eight seeds each, three stations and a hidden station, now with impulses and a fluttering path added to the simulated channel. The claims to test: a busy or noisy channel no longer drags links to the slowest format; a quiet two-station link is no slower than today; and a fluttering path settles at a rate it can hold.
 
 ## Choices made here
 
 Settled without being put to Tom, because each is internal or a starting value. Each is fixed in the design, not a setting.
 
-1. "Known to work" means a decode at that format or faster from the same station within the 30 s the rules already use for freshness.
-2. "As strong as before" means within the 2 dB the rules already use for a drop.
-3. Three tries at the same format before stepping down.
-4. The window doubles up to eight times its starting size.
-5. One second of airtime under contention.
+1. "Shown to work" means a decode at that format or faster from the same station within the 30 s the rules already use for freshness.
+2. "As strongly as before" means within the 2 dB the rules already use for a drop.
+3. A hit is forgotten with a half-life of five minutes.
+4. One burst in twenty tries the next rung, only on a burst of under a second, only after ten successes in a row.
+5. A query is repeated after 2, 4, 8 seconds and so on, up to a minute.
+
+## Sources
+
+Checked against the source or its abstract on 27 November 2026 unless marked.
+
+- Rayanchu, Mishra, Agrawal, Saha, Banerjee, "Diagnosing wireless packet losses in 802.11: separating collision from weak signal", INFOCOM 2008.
+- Vutukuru, Balakrishnan, Jamieson, "Cross-layer wireless bit rate adaptation", SIGCOMM 2009.
+- Kim, Kim, Choi, Qiao, "CARA: collision-aware rate adaptation for IEEE 802.11 WLANs", INFOCOM 2006 (read from a summary, not the paper).
+- Holland, Vaidya, Bahl, "A rate-adaptive MAC protocol for multi-hop wireless networks", MobiCom 2001.
+- Combes, Proutiere, Yun, Ok, Yi, "Optimal rate sampling in 802.11 systems", INFOCOM 2014.
+- Heusse, Rousseau, Guillier, Duda, "Idle Sense: an optimal access method for high throughput and fairness in rate diverse wireless LANs", SIGCOMM 2005.
+- The Linux kernel's documentation of the Minstrel rate control algorithm.
+- "Lessons learned and looking forward", a survey of Wi-Fi rate adaptation, arXiv 1807.02827.
+- ITU-R P.372 (radio noise). The figures quoted were computed from its formula as remembered, not read from the current edition.
+- IK2PIH, "APRS performance and limits", TAPR Digital Communications Conference 2020, which notes that measured collision data for real amateur channels is missing.
+- Not checked, and so not relied on: the outer-loop step formula beyond patents; the twice-the-frame-time exposure to a hidden station (Tobagi and Kleinrock 1975); fade rates and depths for aircraft flutter, which are from amateur accounts and two-ray theory; capture ratios of real radios.

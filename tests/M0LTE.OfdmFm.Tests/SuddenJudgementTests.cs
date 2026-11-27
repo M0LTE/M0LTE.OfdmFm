@@ -158,7 +158,7 @@ public class SuddenJudgementTests
     [Fact]
     public void Measures_The_Old_Rule_And_The_New_At_Three_Formats()
     {
-        // Gated: about 13 000 bursts. The table in the pull request and in docs/station-design.md is this test's output (SM_HOSTILE_OUT=<file> writes it to a file).
+        // Gated: about 15 000 bursts. The table in the pull request and in docs/station-design.md is this test's output (SM_HOSTILE_OUT=<file> writes it to a file).
         Hostile.Gate();
         double[] cleanLevels = [0, 10, 20, 30, 40, SuddenBench.SimClean];
         double[] collideLevels = [10, 25, SuddenBench.SimClean];
@@ -192,7 +192,7 @@ public class SuddenJudgementTests
             {
                 foreach (double fraction in fractions)
                 {
-                    foreach (double rel in new[] { 6.0, -10.0 })
+                    foreach (double rel in new[] { 6.0, -10.0, -20.0 })
                     {
                         for (int k = 0; k < 50; k++)
                         {
@@ -215,7 +215,7 @@ public class SuddenJudgementTests
             cleanRows.Add(Invariant($"| {format} ({threshold:0.0} dB) | ") + string.Join(" | ", cleanLevels.Select(l => $"{Share(clean.Where(t => t.Level == l), t => t.Old)} -> {Share(clean.Where(t => t.Level == l), t => t.New)}")) + " |");
             foreach (double level in collideLevels)
             {
-                foreach (double rel in new[] { 6.0, -10.0 })
+                foreach (double rel in new[] { 6.0, -10.0, -20.0 })
                 {
                     IEnumerable<Trial> Cell(double f) => trials.Where(t => t.Kind == "collide" && t.Level == level && t.RelativeDb == rel && t.Fraction == f);
                     collideRows.Add(Invariant($"| {format} | {Level(level)} | {rel:+0;-0} dB | ") + string.Join(" | ", fractions.Select(f => $"{Share(Cell(f), t => t.Old)} -> {Share(Cell(f), t => t.New)}")) + $" | {Cell(0.25).Concat(Cell(0.5)).Concat(Cell(0.75)).Count(t => t.Decoded)}/{Cell(0.25).Concat(Cell(0.5)).Concat(Cell(0.75)).Count()} |");

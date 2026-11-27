@@ -258,10 +258,12 @@ internal static class HostileScenarios
                 rig.Channel.Interfere(rig.Nodes[2], cut, at);
             }
         };
+        // Reports heard before the burst do not count: since packet-net/pdn-soundmodem#918 the warm-up climbs fast enough to overshoot once and be told so (a failed report in the warm-up), which says nothing of this burst.
+        int reportsBefore = a.PathReports.Count;
         SendDirect(rig, 1, 2, 900, length);
 
         // Until the failed report is heard at A (at most 30 s), then a moment more; everything is compared as it stands then, before A sends anything else.
-        for (int t = 0; t < 120 && !a.PathReports.Any(p => p.Failed) && !Arrived(rig, 900); t++)
+        for (int t = 0; t < 120 && !a.PathReports.Skip(reportsBefore).Any(p => p.Failed) && !Arrived(rig, 900); t++)
         {
             rig.Run(0.25);
         }
@@ -269,7 +271,7 @@ internal static class HostileScenarios
         rig.Run(2);
         bool found = callsAtB.Count > callsBefore;
         Station.AdaptationCall call = found ? callsAtB[callsBefore] : default;
-        PathReportEvent? failedReport = a.PathReports.Where(p => p.Address == SimRig.Address(2) && p.Failed).Cast<PathReportEvent?>().LastOrDefault();
+        PathReportEvent? failedReport = a.PathReports.Skip(reportsBefore).Where(p => p.Address == SimRig.Address(2) && p.Failed).Cast<PathReportEvent?>().LastOrDefault();
         bool decoded = found && call.Decoded;
         int? reportedFormat = failedReport?.RecommendedFormat;
         bool recUnchanged = atB.Recommended == recBefore;

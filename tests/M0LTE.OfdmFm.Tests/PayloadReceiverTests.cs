@@ -30,6 +30,7 @@ public class PayloadReceiverTests
     [Fact]
     public void The_Outcome_Of_Every_Case_Matches_The_Prototype()
     {
+        // The sudden judgement is the receiver's own since packet-net/pdn-soundmodem#898, not the prototype's (PayloadReceiver.IsSudden); on every one of these vectors the two agree, so each verdict is still the prototype's.
         var receiver = new PayloadReceiver();
         var payload = new byte[8000];
         var wrong = new List<string>();

@@ -221,10 +221,9 @@ internal static class HostileScenarios
         rig.RunTo(6);
         for (int i = 0; i < 4; i++)
         {
-            // #898: datagram contents 110 to 113 (originally 100 to 103); with 100 to 103 the receiver judged a clean first-contact burst sudden and the path settled at format 27, not 124.
-            rig.Send(1, 2, 110 + i);
+            rig.Send(1, 2, 100 + i);
             rig.Run(7);
-            rig.Send(2, 1, 210 + i);
+            rig.Send(2, 1, 200 + i);
             rig.Run(7);
         }
 
@@ -322,10 +321,9 @@ internal static class HostileScenarios
         rig.RunTo(6);
         for (int i = 0; i < pairs; i++)
         {
-            // #898: datagram contents 110 to 113 and 210 to 213 (originally 100 to 103 and 200 to 203); with the originals C measured only three of A's four bursts.
-            rig.Send(1, 2, 110 + i);
+            rig.Send(1, 2, 100 + i);
             rig.Run(8);
-            rig.Send(2, 1, 210 + i);
+            rig.Send(2, 1, 200 + i);
             rig.Run(8);
         }
 

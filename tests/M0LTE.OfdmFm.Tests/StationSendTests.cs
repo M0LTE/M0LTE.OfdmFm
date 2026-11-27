@@ -8,45 +8,56 @@ namespace M0LTE.OfdmFm.Tests;
 /// </summary>
 public class StationSendTests
 {
-    private static StationName B => SimRig.Name(2);
+    private static LinkAddress B => SimRig.Address(2);
 
-    private static StationName C => SimRig.Name(3);
+    private static LinkAddress C => SimRig.Address(3);
 
     private static SimRig Solo(int stations = 4) => new(stations, connect: false);
 
-    // ---- names and refusals ----
+    // ---- addresses and refusals ----
 
     [Fact]
-    public void A_Name_That_Is_Not_Bound_Is_Refused()
+    public void An_Address_Nothing_Is_Known_Of_Is_Accepted_And_An_Empty_One_Is_An_Error()
     {
         var rig = new SimRig(2, connect: false);
-        rig.Stations[0].Send(new byte[] { 1 }, StationName.FromAscii("nobody"), new HostTag(1)).Should().Be(SendResult.NotBound);
-        rig.Stations[0].Send(new byte[] { 1 }, default, new HostTag(1)).Should().Be(SendResult.NotBound);
-        rig.Stations[0].Send(new byte[] { 1 }, B, new HostTag(1)).Should().Be(SendResult.Accepted);
-        rig.Stations[0].QueuedFor(2).Should().Be(1);
+        rig.Stations[0].Send(new byte[] { 1 }, LinkAddress.FromAscii("nobody"), SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted, "it goes to everyone, with a For");
+        rig.Stations[0].Send(new byte[] { 1 }, B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
+        rig.Stations[0].QueuedFor(B).Should().Be(1);
+        rig.Stations[0].QueuedFor(LinkAddress.FromAscii("nobody")).Should().Be(1);
+        Action noTo = () => rig.Stations[0].Send(new byte[] { 1 }, default, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        Action noFrom = () => rig.Stations[0].Send(new byte[] { 1 }, B, default, LinkProtocol.NoLayer3, new HostTag(1));
+        Action everyoneFrom = () => rig.Stations[0].Send(new byte[] { 1 }, B, LinkAddress.Everyone, LinkProtocol.NoLayer3, new HostTag(1));
+        noTo.Should().Throw<ArgumentException>();
+        noFrom.Should().Throw<ArgumentException>();
+        everyoneFrom.Should().Throw<ArgumentException>();
     }
 
     [Fact]
     public void A_Datagram_Larger_Than_One_Burst_At_First_Contact_Is_Refused_And_One_That_Fits_Is_Not()
     {
-        // The longest burst at the first-contact format carries 348 bytes; less the prelude's 4 and the datagram's own length of 2 leaves 342 (the room LinkState reports).
+        // The longest burst at the first-contact format carries 348 bytes. To a located address: less the prelude's 4, the block with one run in its From (1 + 2 + 6 = 9) and the datagram's own length of 2 leaves 333 (the room LinkState reports).
         var rig = Solo(2);
         Station a = rig.Stations[0];
         PayloadCodec.Capacity(StandardFormats.FirstContact, StandardFormats.MaxSymbols).Should().Be(348);
-        a.Send(new byte[342], B, new HostTag(1)).Should().Be(SendResult.Accepted);
-        a.Send(new byte[343], B, new HostTag(2)).Should().Be(SendResult.TooLarge);
+        a.Send(new byte[333], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
+        a.Send(new byte[334], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2)).Should().Be(SendResult.TooLarge);
 
-        // For everyone there is no prelude, so two bytes more fit.
-        a.Send(new byte[346], StationName.Everyone, new HostTag(3)).Should().Be(SendResult.Accepted);
-        a.Send(new byte[347], StationName.Everyone, new HostTag(4)).Should().Be(SendResult.TooLarge);
+        // To an address not located there is no prelude but the block also carries a For key (2 + 4 more): 348 - 2 - 15 = 331.
+        LinkAddress x = LinkAddress.FromAscii("X");
+        a.Send(new byte[331], x, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(3)).Should().Be(SendResult.Accepted);
+        a.Send(new byte[332], x, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(4)).Should().Be(SendResult.TooLarge);
+
+        // For everyone, no For and no prelude: 348 - 2 - 9 = 337.
+        a.Send(new byte[337], LinkAddress.Everyone, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(5)).Should().Be(SendResult.Accepted);
+        a.Send(new byte[338], LinkAddress.Everyone, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(6)).Should().Be(SendResult.TooLarge);
     }
 
     [Fact]
     public void An_Empty_Or_Oversized_Datagram_Is_A_Programming_Error()
     {
         var rig = Solo(2);
-        Action empty = () => rig.Stations[0].Send(ReadOnlyMemory<byte>.Empty, B, new HostTag(1));
-        Action huge = () => rig.Stations[0].Send(new byte[65536], B, new HostTag(1));
+        Action empty = () => rig.Stations[0].Send(ReadOnlyMemory<byte>.Empty, B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        Action huge = () => rig.Stations[0].Send(new byte[65536], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
         empty.Should().Throw<ArgumentException>();
         huge.Should().Throw<ArgumentException>();
     }
@@ -61,111 +72,35 @@ public class StationSendTests
         {
             try
             {
-                a.Send(new byte[] { 1 }, B, new HostTag(9));
+                a.Send(new byte[] { 1 }, B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(9));
             }
             catch (InvalidOperationException e)
             {
                 thrown = e;
             }
         };
-        a.Send(new byte[] { 1 }, B, new HostTag(1));
+        a.Send(new byte[] { 1 }, B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
         a.Cancel(new HostTag(1)).Should().Be(1);
         thrown.Should().NotBeNull();
     }
 
-    // ---- Bind ----
-
     [Fact]
-    public void Bind_Is_Checked_And_A_Name_Moves_Between_Numbers()
-    {
-        var rig = Solo(3);
-        Station a = rig.Stations[0];
-        StationName x = StationName.FromAscii("X");
-        Action ownNumber = () => a.Bind(x, 1);
-        Action zero = () => a.Bind(x, 0);
-        Action big = () => a.Bind(x, 64);
-        Action everyone = () => a.Bind(StationName.Everyone, 5);
-        Action empty = () => a.Bind(default, 5);
-        Action placeholder = () => a.Bind(Station.PlaceholderName(7), 5);
-        ownNumber.Should().Throw<ArgumentOutOfRangeException>();
-        zero.Should().Throw<ArgumentOutOfRangeException>();
-        big.Should().Throw<ArgumentOutOfRangeException>();
-        everyone.Should().Throw<ArgumentException>();
-        empty.Should().Throw<ArgumentException>();
-        placeholder.Should().Throw<ArgumentException>();
-
-        a.Bind(x, 5);
-        a.Send(new byte[] { 1 }, x, new HostTag(1)).Should().Be(SendResult.Accepted);
-        a.QueuedFor(5).Should().Be(1);
-
-        // The name moves to another number: the datagram stays queued under the number it was queued for, and the new number is where the name goes now.
-        a.Bind(x, 6);
-        a.Send(new byte[] { 2 }, x, new HostTag(2)).Should().Be(SendResult.Accepted);
-        a.QueuedFor(5).Should().Be(1);
-        a.QueuedFor(6).Should().Be(1);
-
-        // A number has one name: binding another name replaces it.
-        StationName y = StationName.FromAscii("Y");
-        a.Bind(y, 6);
-        a.Send(new byte[] { 3 }, x, new HostTag(3)).Should().Be(SendResult.NotBound);
-        a.Send(new byte[] { 3 }, y, new HostTag(3)).Should().Be(SendResult.Accepted);
-    }
-
-    [Fact]
-    public void A_Station_Bound_After_It_Was_Heard_Is_Announced_Under_The_New_Name_And_Earlier_Events_Keep_The_Placeholder()
-    {
-        // Station 2 hears station 1 by number alone, then is told its name.
-        var rig = new SimRig(2, connect: true);
-        var third = new Station(3, new Random(5), runJobsInline: true).WithIdentity("M0NEW");
-        Station s1 = rig.Stations[0];
-        Station s2 = rig.Stations[1];
-        var heardBy2 = new List<ReceivedEvent>();
-        var links = new List<LinkStateEvent>();
-        var paths = new List<PathReportEvent>();
-        s2.Received += heardBy2.Add;
-        s2.LinkState += links.Add;
-        s2.PathReport += paths.Add;
-
-        // Make 2 forget the binding for 1 by working from a fresh station that never had it.
-        var fresh = new Station(4, new Random(7), runJobsInline: true).WithIdentity("M0FRESH");
-        var channel = new SimChannel(4800, 3);
-        SimNode n1 = channel.Add(s1, "S1");
-        SimNode n4 = channel.Add(fresh, "S4");
-        channel.Connect(n1, n4, 1.0, 0.004);
-        s1.Bind(StationName.FromAscii("S4"), 4);
-        fresh.Received += heardBy2.Add;
-        fresh.LinkState += links.Add;
-        channel.Run(6 * 48000);
-        s1.Send(SimRig.Datagram(1, 30), StationName.FromAscii("S4"), new HostTag(1)).Should().Be(SendResult.Accepted);
-        channel.Run(channel.Clock + (12 * 48000));
-
-        heardBy2.Should().ContainSingle();
-        heardBy2[0].Sender.Should().BeNull("station 1 has not been bound at 4 yet");
-        links.Should().NotBeEmpty();
-        links[^1].Station.Should().Be(Station.PlaceholderName(1));
-        int before = links.Count;
-
-        fresh.Bind(StationName.FromAscii("one"), 1);
-        links.Count.Should().Be(before + 1, "a bind announces a station already heard once more");
-        links[^1].Station.Should().Be(StationName.FromAscii("one"));
-        links[^2].Station.Should().Be(Station.PlaceholderName(1), "events raised before the bind keep the placeholder");
-
-        // After the bind the name is on received datagrams.
-        s1.Send(SimRig.Datagram(2, 30), StationName.FromAscii("S4"), new HostTag(2));
-        channel.Run(channel.Clock + (12 * 48000));
-        heardBy2.Should().HaveCount(2);
-        heardBy2[1].Sender.Should().Be(StationName.FromAscii("one"));
-        _ = third;
-    }
-
-    [Fact]
-    public void Snapshot_Lists_What_Is_Heard_Or_Bound()
+    public void Snapshot_Lists_The_Addresses_Sent_To_In_The_Order_They_Were_First_Sent_To()
     {
         var rig = new SimRig(3, connect: false);
         Station a = rig.Stations[0];
+        a.Snapshot().Should().BeEmpty("the host has sent to nobody");
+        LinkAddress x = LinkAddress.FromAscii("X");
+        a.Send(new byte[] { 1 }, C, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        a.Send(new byte[] { 2 }, x, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2));
+        a.Send(new byte[] { 3 }, B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(3));
+        a.Send(new byte[] { 4 }, C, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(4));
+        a.Send(new byte[] { 5 }, LinkAddress.Everyone, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(5));
         IReadOnlyList<LinkStateEvent> snap = a.Snapshot();
-        snap.Select(s => s.Station).Should().Equal(SimRig.Name(2), SimRig.Name(3));
-        snap.Should().OnlyContain(s => s.Format == null && s.Knowledge == LinkKnowledge.FirstContact && s.DatagramRoom == 342 && !s.Gone);
+        snap.Select(s => s.Address).Should().Equal(C, x, B);
+        snap.Select(s => s.Located).Should().Equal(true, false, true);
+        snap.Should().OnlyContain(s => s.Format == null && s.Knowledge == LinkKnowledge.FirstContact && !s.Gone);
+        snap.Select(s => s.DatagramRoom).Should().Equal(333, 331, 333);
     }
 
     // ---- queues ----
@@ -180,15 +115,15 @@ public class StationSendTests
         a.Congestion += congestion.Add;
         for (int i = 1; i <= 9; i++)
         {
-            a.Send(new byte[100], B, new HostTag(i)).Should().Be(SendResult.Accepted);
+            a.Send(new byte[100], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(i)).Should().Be(SendResult.Accepted);
         }
 
         congestion.Should().BeEmpty();
-        a.QueuedAirtimeFor(2).Should().BeApproximately(28.85, 0.01);
-        a.Send(new byte[100], B, new HostTag(10)).Should().Be(SendResult.Accepted, "the queue was not yet full, and this one takes it past the limit");
+        a.QueuedAirtimeFor(B).Should().BeApproximately(7416 / 254.5, 0.01);
+        a.Send(new byte[100], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(10)).Should().Be(SendResult.Accepted, "the queue was not yet full, and this one takes it past the limit");
         congestion.Should().Equal(new CongestionEvent(B, false));
-        a.Send(new byte[100], B, new HostTag(11)).Should().Be(SendResult.QueueFull);
-        a.Send(new byte[1], C, new HostTag(12)).Should().Be(SendResult.Accepted, "the bound is for each station's queue");
+        a.Send(new byte[100], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(11)).Should().Be(SendResult.QueueFull);
+        a.Send(new byte[1], C, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(12)).Should().Be(SendResult.Accepted, "the bound is for each address's queue");
 
         // Dropping five leaves five, 16 s, still full; the sixth takes it under 15 s and the queue is writable again, once.
         for (int i = 1; i <= 5; i++)
@@ -199,7 +134,7 @@ public class StationSendTests
         congestion.Should().Equal(new CongestionEvent(B, false));
         a.Cancel(new HostTag(6)).Should().Be(1);
         congestion.Should().Equal(new CongestionEvent(B, false), new CongestionEvent(B, true));
-        a.Send(new byte[100], B, new HostTag(13)).Should().Be(SendResult.Accepted);
+        a.Send(new byte[100], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(13)).Should().Be(SendResult.Accepted);
     }
 
     [Fact]
@@ -210,7 +145,7 @@ public class StationSendTests
         SimNode node = rig.Nodes[0];
         for (int i = 1; i <= 10; i++)
         {
-            a.Send(new byte[100], B, new HostTag(i));
+            a.Send(new byte[100], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(i));
         }
 
         node.Congestion.Should().Equal(new CongestionEvent(B, false));
@@ -223,16 +158,16 @@ public class StationSendTests
     // ---- cancelling ----
 
     [Fact]
-    public void Cancel_By_Tag_And_By_Name_Drops_What_Is_Queued_And_Raises_Dropped_For_Each()
+    public void Cancel_By_Tag_And_By_Address_Drops_What_Is_Queued_And_Raises_Dropped_For_Each()
     {
         var rig = Solo(3);
         Station a = rig.Stations[0];
         SimNode node = rig.Nodes[0];
-        a.Send(new byte[10], B, new HostTag(1));
-        a.Send(new byte[10], B, new HostTag(2));
-        a.Send(new byte[10], B, new HostTag(2), priority: SendPriority.Expedited);
-        a.Send(new byte[10], C, new HostTag(3));
-        a.Send(new byte[10], B, new HostTag(4));
+        a.Send(new byte[10], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        a.Send(new byte[10], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2));
+        a.Send(new byte[10], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2), priority: SendPriority.Expedited);
+        a.Send(new byte[10], C, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(3));
+        a.Send(new byte[10], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(4));
 
         a.Cancel(new HostTag(2)).Should().Be(2, "two datagrams share the tag");
         a.Cancel(new HostTag(99)).Should().Be(0);
@@ -240,10 +175,10 @@ public class StationSendTests
 
         a.Cancel(B).Should().Be(2);
         node.Dropped.Skip(2).Select(d => d.Tag.Value).Should().Equal(1L, 4L);
-        a.Cancel(StationName.FromAscii("nobody")).Should().Be(0);
+        a.Cancel(LinkAddress.FromAscii("nobody")).Should().Be(0);
         a.Cancel(B).Should().Be(0);
-        a.QueuedFor(2).Should().Be(0);
-        a.QueuedFor(3).Should().Be(1);
+        a.QueuedFor(B).Should().Be(0);
+        a.QueuedFor(C).Should().Be(1);
 
         // What is left still goes.
         rig.RunTo(60);
@@ -256,14 +191,14 @@ public class StationSendTests
         var rig = Solo(2);
         Station a = rig.Stations[0];
         SimNode node = rig.Nodes[0];
-        a.Send(new byte[20], B, new HostTag(1));
-        a.Send(new byte[342], B, new HostTag(2));
+        a.Send(new byte[20], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        a.Send(new byte[333], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2));
         while (!a.BurstBuilt)
         {
             rig.Run(0.1);
         }
 
-        a.QueuedFor(2).Should().Be(1, "the second datagram is too big to share the first one's burst");
+        a.QueuedFor(B).Should().Be(1, "the second datagram is too big to share the first one's burst");
         a.Cancel(new HostTag(1)).Should().Be(0);
         a.Cancel(B).Should().Be(1, "only the one still queued");
         rig.Run(30);
@@ -274,15 +209,15 @@ public class StationSendTests
     // ---- order ----
 
     [Fact]
-    public void Expedited_Datagrams_Go_Ahead_Of_Ordinary_Ones_To_The_Same_Station()
+    public void Expedited_Datagrams_Go_Ahead_Of_Ordinary_Ones_To_The_Same_Address()
     {
         var rig = Solo(2);
         Station a = rig.Stations[0];
         SimNode node = rig.Nodes[0];
-        a.Send(new byte[8], B, new HostTag(1));
-        a.Send(new byte[8], B, new HostTag(2));
-        a.Send(new byte[8], B, new HostTag(3), priority: SendPriority.Expedited);
-        a.Send(new byte[8], B, new HostTag(4), priority: SendPriority.Expedited);
+        a.Send(new byte[8], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        a.Send(new byte[8], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2));
+        a.Send(new byte[8], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(3), priority: SendPriority.Expedited);
+        a.Send(new byte[8], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(4), priority: SendPriority.Expedited);
         rig.RunTo(40);
         node.Transmitted.Select(t => t.Event.Tag.Value).Should().Equal(3L, 4L, 1L, 2L);
         node.Transmitted.Select(t => t.Event.Burst).Distinct().Should().HaveCount(1, "they share one burst");
@@ -292,10 +227,10 @@ public class StationSendTests
     public void An_Expedited_Datagram_Takes_The_First_Slot_And_An_Ordinary_One_Waits_For_The_Priority_Window()
     {
         var expedited = Solo(2);
-        expedited.Stations[0].Send(new byte[8], B, new HostTag(1), priority: SendPriority.Expedited);
+        expedited.Stations[0].Send(new byte[8], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1), priority: SendPriority.Expedited);
         expedited.RunTo(20);
         var ordinary = Solo(2);
-        ordinary.Stations[0].Send(new byte[8], B, new HostTag(1));
+        ordinary.Stations[0].Send(new byte[8], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
         ordinary.RunTo(20);
 
         // Nothing goes in the first 5 s; then the first slot is 50 ms of clear channel, and ordinary traffic waits 0.8 s and a slot's draw more.
@@ -304,32 +239,32 @@ public class StationSendTests
     }
 
     [Fact]
-    public void An_Expedited_Datagram_Sent_After_An_Ordinary_One_To_Another_Station_Goes_First()
+    public void An_Expedited_Datagram_Sent_After_An_Ordinary_One_To_Another_Address_Goes_First()
     {
         var rig = Solo(3);
         Station a = rig.Stations[0];
-        a.Send(new byte[8], B, new HostTag(1));
-        a.Send(new byte[8], C, new HostTag(2), priority: SendPriority.Expedited);
+        a.Send(new byte[8], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        a.Send(new byte[8], C, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2), priority: SendPriority.Expedited);
         rig.RunTo(40);
         rig.Nodes[0].Transmitted.Select(t => t.Event.Tag.Value).Should().Equal(2L, 1L);
         rig.Nodes[0].Transmissions[0].Start.Should().Be(ChannelAccess.StartUpListen + ChannelAccess.FirstSlotClear, "the waiting request took the expedited class");
     }
 
     [Fact]
-    public void Stations_With_Traffic_Take_Turns_The_One_Served_Longest_Ago_First_And_Order_Within_One_Is_First_In_First_Out()
+    public void Addresses_With_Traffic_Take_Turns_The_One_Served_Longest_Ago_First_And_Order_Within_One_Is_First_In_First_Out()
     {
         var rig = Solo(4);
         Station a = rig.Stations[0];
-        StationName d = SimRig.Name(4);
+        LinkAddress d = SimRig.Address(4);
         // 50 bytes: one to a burst at first contact (a burst holds 57), so each is a turn.
-        a.Send(new byte[50], B, new HostTag(1));
-        a.Send(new byte[50], B, new HostTag(2));
-        a.Send(new byte[50], C, new HostTag(3));
-        a.Send(new byte[50], C, new HostTag(4));
-        a.Send(new byte[50], d, new HostTag(5));
+        a.Send(new byte[50], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        a.Send(new byte[50], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2));
+        a.Send(new byte[50], C, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(3));
+        a.Send(new byte[50], C, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(4));
+        a.Send(new byte[50], d, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(5));
         rig.RunTo(90);
         rig.Nodes[0].Transmitted.Select(t => t.Event.Tag.Value).Should().Equal(1L, 3L, 5L, 2L, 4L);
-        rig.Nodes[0].Transmitted.Select(t => t.Event.Station).Should().Equal(B, C, d, B, C);
+        rig.Nodes[0].Transmitted.Select(t => t.Event.Address).Should().Equal(B, C, d, B, C);
     }
 
     // ---- what a burst holds ----
@@ -337,18 +272,18 @@ public class StationSendTests
     [Fact]
     public void A_Burst_Takes_Datagrams_In_Order_While_They_Fit_Up_To_The_Ceiling_Of_Airtime()
     {
-        // The first-contact format at the ceiling (2.5 s, 44 payload symbols) carries 57 bytes; the prelude is 4 and each 8-byte datagram 10, so five go (54) and the sixth (64) starts the next burst.
+        // The first-contact format at the ceiling (2.5 s, 44 payload symbols) carries 57 bytes; the prelude is 4, the block with its one run 9 and each 8-byte datagram 10, so four go (53) and the fifth (63) starts the next burst.
         var rig = Solo(2);
         Station a = rig.Stations[0];
         for (int i = 1; i <= 6; i++)
         {
-            a.Send(new byte[8], B, new HostTag(i));
+            a.Send(new byte[8], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(i));
         }
 
         rig.RunTo(40);
         List<TransmittedEvent> sent = [.. rig.Nodes[0].Transmitted.Select(t => t.Event)];
         sent.Select(t => t.Tag.Value).Should().Equal(1L, 2L, 3L, 4L, 5L, 6L);
-        sent.GroupBy(t => t.Burst).Select(g => g.Count()).Should().Equal(5, 1);
+        sent.GroupBy(t => t.Burst).Select(g => g.Count()).Should().Equal(4, 2);
         sent[0].AirtimeSeconds.Should().BeLessThan(2.6);
     }
 
@@ -357,8 +292,8 @@ public class StationSendTests
     {
         var rig = Solo(2);
         Station a = rig.Stations[0];
-        a.Send(new byte[100], B, new HostTag(1));
-        a.Send(new byte[2], B, new HostTag(2));
+        a.Send(new byte[100], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1));
+        a.Send(new byte[2], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(2));
         rig.RunTo(60);
         List<TransmittedEvent> sent = [.. rig.Nodes[0].Transmitted.Select(t => t.Event)];
         sent.Select(t => t.Burst).Should().Equal(0, 1);
@@ -372,7 +307,7 @@ public class StationSendTests
         Station a = rig.Stations[0];
         for (int i = 1; i <= 18; i++)
         {
-            a.Send(new byte[50], B, new HostTag(i));
+            a.Send(new byte[50], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(i));
         }
 
         rig.RunTo(200);
@@ -380,15 +315,15 @@ public class StationSendTests
     }
 
     [Fact]
-    public void Transmitted_Says_Station_Format_Rate_Airtime_And_When()
+    public void Transmitted_Says_Address_Format_Rate_Airtime_And_When()
     {
         var rig = Solo(2);
-        rig.Stations[0].Send(new byte[10], B, new HostTag(7));
+        rig.Stations[0].Send(new byte[10], B, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(7));
         rig.RunTo(30);
         (long clock, TransmittedEvent e) = rig.Nodes[0].Transmitted.Should().ContainSingle().Subject;
         SimTransmission tx = rig.Nodes[0].Transmissions.Single();
         e.Tag.Should().Be(new HostTag(7));
-        e.Station.Should().Be(B);
+        e.Address.Should().Be(B);
         e.Burst.Should().Be(0);
         e.Format.Should().Be(StandardFormats.FirstContact);
         e.RateBitsPerSecond.Should().Be(StandardFormats.Rate(StandardFormats.FirstContact) * 1000.0);
@@ -402,7 +337,7 @@ public class StationSendTests
     {
         // One station and a bare audio layer (no simulation around it, which allocates its own copies). The same datagram a few times: the first sends grow every pool and buffer; later ones allocate nothing.
         var station = (new Station(1, new Random(3), runJobsInline: true) { IdentificationSuspended = true }).WithIdentity("M0ALLOC");
-        station.Bind(B, 2);
+        station.Locate(B, 2);
         long id = 0;
         long earliest = 0;
         int length = 0;
@@ -416,12 +351,13 @@ public class StationSendTests
         byte[] datagram = new byte[40];
         const int warmUp = 3;
         SendResult[] results = new SendResult[warmUp + AllocationMeasure.Attempts];
-        StationName b = B;
+        LinkAddress b = B;
+        LinkAddress me = SimRig.Address(1);
         int next = 0;
         void Round()
         {
             int round = next++;
-            results[round] = station.Send(datagram, b, new HostTag(round));
+            results[round] = station.Send(datagram, b, me, LinkProtocol.NoLayer3, new HostTag(round));
             id = 0;
             while (id == 0)
             {
@@ -457,9 +393,9 @@ public class StationSendTests
         var rig = Solo(2);
         Station a = rig.Stations[0];
         rig.RunTo(1);
-        a.Enqueue(new float[2000], TransmitClass.Report, new ModemSentEvent(ModemSentKind.Report, B, 12));
+        a.Enqueue(new float[2000], TransmitClass.Report, new ModemSentEvent(ModemSentKind.Report, 12));
         rig.RunTo(7);
-        rig.Nodes[0].ModemSent.Should().Equal(new ModemSentEvent(ModemSentKind.Report, B, 12));
+        rig.Nodes[0].ModemSent.Should().Equal(new ModemSentEvent(ModemSentKind.Report, 12));
         rig.Nodes[0].Transmitted.Should().BeEmpty("it carried no datagram");
     }
 }

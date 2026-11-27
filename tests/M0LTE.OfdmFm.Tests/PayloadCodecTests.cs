@@ -21,9 +21,22 @@ public class PayloadCodecTests
         {
             bool everyone = c.GetProperty("everyone").GetBoolean();
             PayloadPrelude? pre = everyone ? null : new PayloadPrelude(c.GetProperty("wanted").GetBoolean(), OptInt(c.GetProperty("recommended")), c.GetProperty("failed").GetBoolean(), OptInt(c.GetProperty("capability")));
-            var buffer = new byte[c.GetProperty("room").GetInt32()];
+            var buffer = new byte[c.GetProperty("room").GetInt32() + (everyone ? 1 : 0)];
             int n = PayloadCodec.Pack(pre, Grams(c.GetProperty("datagrams")), buffer);
-            Convert.ToHexString(buffer.AsSpan(0, n)).ToLowerInvariant().Should().Be(c.GetProperty("packed").GetString());
+            string vector = c.GetProperty("packed").GetString()!;
+            if (everyone)
+            {
+                // The prototype's payload to everyone is the datagrams alone. Ours begins with the leading block of link addresses, here empty (one length byte, 00):
+                // the datagram bytes after it are what the prototype packed, and are what this checks. The bits below are those of the prototype's payload, which exercises the unchanged scrambler and check.
+                buffer.AsSpan(0, n).ToArray().Should().StartWith([(byte)0]);
+                Convert.ToHexString(buffer.AsSpan(1, n - 1)).ToLowerInvariant().Should().Be(vector);
+                buffer = Convert.FromHexString(vector);
+                n = buffer.Length;
+            }
+            else
+            {
+                Convert.ToHexString(buffer.AsSpan(0, n)).ToLowerInvariant().Should().Be(vector);
+            }
 
             int info = c.GetProperty("info_bit_count").GetInt32();
             int fmt = c.GetProperty("format").GetInt32(), symbols = c.GetProperty("symbols").GetInt32();
@@ -48,7 +61,9 @@ public class PayloadCodecTests
             Convert.ToHexString(payload).ToLowerInvariant().Should().StartWith(c.GetProperty("packed").GetString());
 
             var u = c.GetProperty("unpacked");
-            PayloadCodec.TryUnpack(payload, c.GetProperty("everyone").GetBoolean(), out PayloadPrelude pre, out DatagramReader reader).Should().BeTrue();
+            // The prototype's payload to everyone has no leading block: put the empty one in front of it, and the datagrams that follow are the prototype's.
+            bool toEveryone = c.GetProperty("everyone").GetBoolean();
+            PayloadCodec.TryUnpack(toEveryone ? [0, .. payload] : payload, toEveryone, out PayloadPrelude pre, out DatagramReader reader).Should().BeTrue();
             pre.Wanted.Should().Be(u.GetProperty("wanted").GetBoolean());
             pre.Recommended.Should().Be(OptInt(u.GetProperty("recommended")));
             pre.Failed.Should().Be(u.GetProperty("failed").GetBoolean());
@@ -95,7 +110,9 @@ public class PayloadCodecTests
         foreach (var c in Vectors.GetProperty("odd").EnumerateArray())
         {
             byte[] p = Convert.FromHexString(c.GetProperty("payload").GetString()!);
-            PayloadCodec.TryUnpack(p, c.GetProperty("everyone").GetBoolean(), out PayloadPrelude pre, out DatagramReader reader).Should().BeTrue();
+            // As above: the prototype's payload to everyone has no leading block, so the empty one goes in front.
+            bool toEveryone = c.GetProperty("everyone").GetBoolean();
+            PayloadCodec.TryUnpack(toEveryone ? [0, .. p] : p, toEveryone, out PayloadPrelude pre, out DatagramReader reader).Should().BeTrue();
             pre.Wanted.Should().Be(c.GetProperty("wanted").GetBoolean());
             pre.Recommended.Should().Be(OptInt(c.GetProperty("recommended")));
             pre.Failed.Should().Be(c.GetProperty("failed").GetBoolean());
@@ -191,8 +208,8 @@ public class PayloadCodecTests
     public void Packing_Reports_When_It_Does_Not_Fit()
     {
         var one = new ReadOnlyMemory<byte>[] { new byte[10] };
-        PayloadCodec.Pack(null, one, new byte[11]).Should().Be(-1);
-        PayloadCodec.Pack(null, one, new byte[12]).Should().Be(12);
+        PayloadCodec.Pack(null, one, new byte[12]).Should().Be(-1);
+        PayloadCodec.Pack(null, one, new byte[13]).Should().Be(13);
         PayloadCodec.Pack(new PayloadPrelude(false, null, false, 1), [], new byte[3]).Should().Be(-1);
     }
 }

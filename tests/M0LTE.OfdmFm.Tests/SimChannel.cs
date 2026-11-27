@@ -52,8 +52,14 @@ internal sealed class SimNode
 
     // ---- what the tests read ----
 
-    /// <summary>Every datagram received: the clock, the sender's number, whether it was for everyone, the bytes and the quality.</summary>
+    /// <summary>Every datagram received: the clock, the sender's number (read from the station by the test seam: no host sees it), whether it was for everyone (with or without a For), how it was addressed, the For key, the bytes and the quality.</summary>
     public List<SimReceived> Received { get; } = [];
+
+    /// <summary>Every data burst that ended on air: the sample it ended at, the station number it went to (0 for everyone), whether it asked for a report and the address its datagrams were for. Read from the station by a test seam.</summary>
+    public List<(long End, int Dest, bool Asked, LinkAddress Address)> BurstsSent { get; } = [];
+
+    /// <summary>Every silence counted: the clock, the station number and the count after it.</summary>
+    public List<(long Clock, int Dest, int Count)> SilenceCounts { get; } = [];
 
     /// <summary>Every <see cref="Station.Transmitted"/> event, in order, with the clock.</summary>
     public List<(long Clock, TransmittedEvent Event)> Transmitted { get; } = [];
@@ -67,11 +73,14 @@ internal sealed class SimNode
     /// <summary>Every <see cref="Station.ModemSent"/> event.</summary>
     public List<ModemSentEvent> ModemSent { get; } = [];
 
+    /// <summary>The number of the station each <see cref="ModemSent"/> burst was for (0 for everyone), in step with it: read from the station by the test seam, as no host sees it.</summary>
+    public List<int> ModemSentTo { get; } = [];
+
     /// <summary>Every <see cref="Station.PathReport"/> event.</summary>
     public List<PathReportEvent> PathReports { get; } = [];
 
     /// <summary>Every <see cref="Station.BurstNotDecoded"/> event: the clock, the station and the tags.</summary>
-    public List<(long Clock, StationName Station, long[] Tags)> NotDecoded { get; } = [];
+    public List<(long Clock, LinkAddress Address, long[] Tags)> NotDecoded { get; } = [];
 
     /// <summary>Every <see cref="Station.LinkState"/> event.</summary>
     public List<LinkStateEvent> LinkStates { get; } = [];
@@ -80,7 +89,7 @@ internal sealed class SimNode
     public List<(long Clock, IdentificationDueEvent Event)> IdentificationsDue { get; } = [];
 
     /// <summary>Each identification heard from another station, with the clock it was raised at.</summary>
-    public List<(long Clock, IdentifiedEvent Event)> Identified { get; } = [];
+    public List<(long Clock, IdentifiedEvent Event, int Sender)> Identified { get; } = [];
 
     /// <summary>The bursts this station put on air: the samples-start clock, the length, and the request id.</summary>
     public List<SimTransmission> Transmissions { get; } = [];
@@ -113,7 +122,7 @@ internal sealed class SimNode
 }
 
 /// <summary>A datagram a station received.</summary>
-internal sealed record SimReceived(long Clock, int Sender, bool Everyone, byte[] Data, double QualityDb);
+internal sealed record SimReceived(long Clock, int Sender, bool Everyone, Addressing Addressing, uint? ForKey, byte[] Data, double QualityDb, uint FromKey = 0, byte Protocol = 0);
 
 /// <summary>A transmit request as the audio layer saw it.</summary>
 internal sealed record SimRequest(long Id, long Clock, int Length, long Checksum);
@@ -753,23 +762,25 @@ internal sealed class SimChannel
 
         s.Received += e =>
         {
-            n.Received.Add(new SimReceived(s.SampleCount, e.SenderNumber, e.ToEveryone, e.Datagram.ToArray(), e.QualityDb));
-            Say(string.Create(CultureInfo.InvariantCulture, $"rx from {e.SenderNumber} name {(e.Sender is { } who ? who.ToString() : "-")} everyone {e.ToEveryone} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
+            n.Received.Add(new SimReceived(s.SampleCount, s.HearingSender, e.Addressing == Addressing.ToEveryone || e.Addressing == Addressing.ForAddressNotYetLocated, e.Addressing, e.ForKey, e.Datagram.ToArray(), e.QualityDb, e.FromKey, e.Protocol));
+            Say(string.Create(CultureInfo.InvariantCulture, $"rx from {s.HearingSender} key {e.FromKey:X8} proto {e.Protocol:X2} {e.Addressing} for {(e.ForKey is { } k ? k.ToString("X8", CultureInfo.InvariantCulture) : "-")} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
         };
+        s.DataBurstSent += (dest, asked, end, address) => n.BurstsSent.Add((end, dest, asked, address));
+        s.SilenceCounted += (dest, count) => n.SilenceCounts.Add((s.SampleCount, dest, count));
         s.PathReport += e =>
         {
             n.PathReports.Add(e);
-            Say(string.Create(CultureInfo.InvariantCulture, $"path {e.Station} fmt {e.RecommendedFormat?.ToString(CultureInfo.InvariantCulture) ?? "-"} failed {e.Failed}"));
+            Say(string.Create(CultureInfo.InvariantCulture, $"path {e.Address} fmt {e.RecommendedFormat?.ToString(CultureInfo.InvariantCulture) ?? "-"} failed {e.Failed}"));
         };
         s.LinkState += e =>
         {
             n.LinkStates.Add(e);
-            Say(string.Create(CultureInfo.InvariantCulture, $"link {e.Station} fmt {e.Format?.ToString(CultureInfo.InvariantCulture) ?? "-"} rate {e.RateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} room {e.DatagramRoom} {e.Knowledge} age {e.AgeSeconds:R} gone {e.Gone}"));
+            Say(string.Create(CultureInfo.InvariantCulture, $"link {e.Address} located {e.Located} fmt {e.Format?.ToString(CultureInfo.InvariantCulture) ?? "-"} rate {e.RateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} told {e.RecommendedRateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} room {e.DatagramRoom} {e.Knowledge} age {e.AgeSeconds:R} gone {e.Gone}"));
         };
         s.Transmitted += e =>
         {
             n.Transmitted.Add((s.SampleCount, e));
-            Say(string.Create(CultureInfo.InvariantCulture, $"transmitted tag {e.Tag.Value} to {e.Station} burst {e.Burst} fmt {e.Format} rate {e.RateBitsPerSecond:R} airtime {e.AirtimeSeconds:R} out {e.TimeOutSeconds:R}"));
+            Say(string.Create(CultureInfo.InvariantCulture, $"transmitted tag {e.Tag.Value} to {e.Address} burst {e.Burst} fmt {e.Format} rate {e.RateBitsPerSecond:R} airtime {e.AirtimeSeconds:R} out {e.TimeOutSeconds:R}"));
         };
         s.Dropped += e =>
         {
@@ -779,12 +790,13 @@ internal sealed class SimChannel
         s.Congestion += e =>
         {
             n.Congestion.Add(e);
-            Say($"congestion {e.Station} writable {e.Writable}");
+            Say($"congestion {e.Address} writable {e.Writable}");
         };
         s.ModemSent += e =>
         {
             n.ModemSent.Add(e);
-            Say($"modem sent {e.Kind} to {(e.Station is { } to ? to.ToString() : "-")} fmt {e.Format}");
+            n.ModemSentTo.Add(s.ModemSentTo);
+            Say($"modem sent {e.Kind} fmt {e.Format}");
         };
         s.IdentificationDue += e =>
         {
@@ -793,14 +805,14 @@ internal sealed class SimChannel
         };
         s.Identified += e =>
         {
-            n.Identified.Add((s.SampleCount, e));
-            Say(string.Create(CultureInfo.InvariantCulture, $"identified {e.StationNumber} {e.Callsign} cap {e.Capability} name {e.Name}"));
+            n.Identified.Add((s.SampleCount, e, s.HearingSender));
+            Say(string.Create(CultureInfo.InvariantCulture, $"identified {s.HearingSender} {e.Callsign} cap {e.Capability}"));
         };
         s.BurstNotDecoded += e =>
         {
             long[] tags = [.. e.Tags.Select(t => t.Value)];
-            n.NotDecoded.Add((s.SampleCount, e.Station, tags));
-            Say($"notdecoded {e.Station} tags {string.Join(",", tags)}");
+            n.NotDecoded.Add((s.SampleCount, e.Address, tags));
+            Say($"notdecoded {e.Address} tags {string.Join(",", tags)}");
         };
         s.ChannelBusy += e => Say($"busy {e.Busy}");
         s.TransmitRequest += e =>

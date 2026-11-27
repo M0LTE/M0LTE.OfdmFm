@@ -15,9 +15,12 @@ internal static class HostileScenarios
     public static readonly double[] Margins = [3.0, 1.0, 6.0];
 
     /// <summary>A rig of <paramref name="stations"/> stations with no paths yet (connect them with <see cref="Pair"/>).</summary>
-    public static SimRig Make(int stations, int seed, CaptureModel? capture, bool indication, Func<int, int, bool>? binds = null)
+    /// <summary>Lone reports a station sent to station <paramref name="to"/>.</summary>
+    private static int Reports(SimNode n, int to) => n.ModemSent.Where((m, i) => m.Kind == ModemSentKind.Report && n.ModemSentTo[i] == to).Count();
+
+    public static SimRig Make(int stations, int seed, CaptureModel? capture, bool indication, Func<int, int, bool>? locates = null)
     {
-        var rig = new SimRig(stations, 4800, seed, connect: false, binds: binds);
+        var rig = new SimRig(stations, 4800, seed, connect: false, locates: locates);
         rig.Channel.Capture = capture;
         if (indication)
         {
@@ -153,7 +156,7 @@ internal static class HostileScenarios
         SimNode b = rig.Nodes[1];
         return new Hidden(
             Label(capture) + (indication ? ", carrier indication" : ", detection alone"), name, rounds, rounds, dA, dC, rig.Nodes[0].Transmissions.Count, rig.Nodes[2].Transmissions.Count, cb,
-            b.ModemSent.Count(m => m.Kind == ModemSentKind.Report && m.Station == SimRig.Name(1)), b.ModemSent.Count(m => m.Kind == ModemSentKind.Report && m.Station == SimRig.Name(3)),
+            Reports(b, 1), Reports(b, 3),
             rig.Nodes[0].PathReports.Count(p => p.Failed), rig.Nodes[2].PathReports.Count(p => p.Failed), rig.Nodes[0].NotDecoded.Count, rig.Nodes[2].NotDecoded.Count,
             a2?.Silences ?? -1, c2?.Silences ?? -1, Formats(rig.Nodes[0]), Formats(rig.Nodes[2]), rig.Channel.Log);
     }
@@ -189,7 +192,7 @@ internal static class HostileScenarios
         rig.Stations[2].Adaptation.TryGetNeighbour(2, out LinkNeighbour? c2);
         string heard = callsAtB.Count == 0 ? "nothing" : string.Join("; ", callsAtB.Select(x => $"from {x.Sender} fmt {x.Format} decoded {x.Decoded} sudden {x.Sudden} returned {x.Returned?.ToString() ?? "-"}"));
         return new HiddenRound(
-            name, ledger.Delivered(a), ledger.Delivered(c), heard, b.ModemSent.Count(m => m.Kind == ModemSentKind.Report && m.Station == SimRig.Name(1)), b.ModemSent.Count(m => m.Kind == ModemSentKind.Report && m.Station == SimRig.Name(3)),
+            name, ledger.Delivered(a), ledger.Delivered(c), heard, Reports(b, 1), Reports(b, 3),
             rig.Nodes[0].PathReports.Any(p => p.Failed), rig.Nodes[2].PathReports.Any(p => p.Failed), rig.Nodes[0].NotDecoded.Count, rig.Nodes[2].NotDecoded.Count, a2?.Silences ?? -1, c2?.Silences ?? -1,
             bOfA?.Recommended, bOfA?.Margin, bOfC?.Margin, bOfA?.Cap, bOfA?.Recommended, rig.Nodes[0].Transmissions.FirstOrDefault()?.Start / 48000.0 ?? -1, rig.Nodes[2].Transmissions.FirstOrDefault()?.Start / 48000.0 ?? -1, rig.Channel.Log);
     }
@@ -218,21 +221,22 @@ internal static class HostileScenarios
         rig.RunTo(6);
         for (int i = 0; i < 4; i++)
         {
-            rig.Send(1, 2, 100 + i);
+            // #898: datagram contents 110 to 113 (originally 100 to 103); with 100 to 103 the receiver judged a clean first-contact burst sudden and the path settled at format 27, not 124.
+            rig.Send(1, 2, 110 + i);
             rig.Run(7);
-            rig.Send(2, 1, 200 + i);
+            rig.Send(2, 1, 210 + i);
             rig.Run(7);
         }
 
         int format = a.Transmitted[^1].Event.Format;
         rig.Stations[1].Adaptation.TryGetNeighbour(1, out LinkNeighbour? atB).Should().BeTrue();
         int length = 200;
-        while (PayloadCodec.SymbolsFor(format, 4 + 2 + length) is { } s && s < 24 && length < 20000)
+        while (PayloadCodec.SymbolsFor(format, 4 + PayloadCodec.AddressBlockSize(1, false) + 2 + length) is { } s && s < 24 && length < 20000)
         {
             length += 100;
         }
 
-        int symbols = PayloadCodec.SymbolsFor(format, 4 + 2 + length)!.Value;
+        int symbols = PayloadCodec.SymbolsFor(format, 4 + PayloadCodec.AddressBlockSize(1, false) + 2 + length)!.Value;
         int? recBefore = atB!.Recommended;
         double[] estimateBefore = atB.EstimateDb.ToArray();
         double marginBefore = atB.Margin;
@@ -241,7 +245,7 @@ internal static class HostileScenarios
         int callsBefore = callsAtB.Count;
 
         // The interfering burst is another station's data burst for everyone, at the same format (so the same drive), cut off at the end of A's burst and put on from its first training sample.
-        TestBurst other = TestBurst.Data(3, 0, format, [Ledger.Bytes(3, 0, 0, 30)], symbols: 252);
+        TestBurst other = TestBurst.Data(3, 0, format, [Ledger.Bytes(3, 0, 0, Ledger.DefaultLength)], symbols: 252);
         bool armed = true;
         rig.Channel.TransmissionStarted += (node, tx) =>
         {
@@ -266,7 +270,7 @@ internal static class HostileScenarios
         rig.Run(2);
         bool found = callsAtB.Count > callsBefore;
         Station.AdaptationCall call = found ? callsAtB[callsBefore] : default;
-        PathReportEvent? failedReport = a.PathReports.Where(p => p.Station == SimRig.Name(2) && p.Failed).Cast<PathReportEvent?>().LastOrDefault();
+        PathReportEvent? failedReport = a.PathReports.Where(p => p.Address == SimRig.Address(2) && p.Failed).Cast<PathReportEvent?>().LastOrDefault();
         bool decoded = found && call.Decoded;
         int? reportedFormat = failedReport?.RecommendedFormat;
         bool recUnchanged = atB.Recommended == recBefore;
@@ -279,7 +283,7 @@ internal static class HostileScenarios
 
         // A's next datagram, as soon as it has heard the report (well inside the 30 s a report stays fresh).
         int nextCount = a.Transmitted.Count;
-        SendDirect(rig, 1, 2, 901, 30);
+        SendDirect(rig, 1, 2, 901, Ledger.DefaultLength);
         rig.Run(20);
         int? nextFormat = a.Transmitted.Count > nextCount ? a.Transmitted[nextCount].Event.Format : null;
         bool nextDelivered = Arrived(rig, 901);
@@ -292,7 +296,7 @@ internal static class HostileScenarios
 
     private static SentItem SendDirect(SimRig rig, int from, int to, int seq, int length)
     {
-        rig.Stations[from - 1].Send(Ledger.Bytes(from, seq, 0, length), SimRig.Name(to), new HostTag(Ledger.TagOf(from, seq, 0))).Should().Be(SendResult.Accepted);
+        rig.Stations[from - 1].Send(Ledger.Bytes(from, seq, 0, length), SimRig.Address(to), SimRig.Address(from), LinkProtocol.NoLayer3, new HostTag(Ledger.TagOf(from, seq, 0))).Should().Be(SendResult.Accepted);
         return new SentItem { From = from, To = to, Seq = seq, Length = length };
     }
 
@@ -318,9 +322,10 @@ internal static class HostileScenarios
         rig.RunTo(6);
         for (int i = 0; i < pairs; i++)
         {
-            rig.Send(1, 2, 100 + i);
+            // #898: datagram contents 110 to 113 and 210 to 213 (originally 100 to 103 and 200 to 203); with the originals C measured only three of A's four bursts.
+            rig.Send(1, 2, 110 + i);
             rig.Run(8);
-            rig.Send(2, 1, 200 + i);
+            rig.Send(2, 1, 210 + i);
             rig.Run(8);
         }
 
@@ -358,7 +363,7 @@ internal static class HostileScenarios
 
         var ledger = new Ledger(rig);
         rig.RunTo(6);
-        SentItem item = ledger.Send(1, 0, 30, reportWanted: true);
+        SentItem item = ledger.Send(1, 0, Ledger.DefaultLength, reportWanted: true);
         rig.Run(40);
         var decoded = new bool[gainsDb.Length];
         var copies = new int[gainsDb.Length];
@@ -379,13 +384,13 @@ internal static class HostileScenarios
 
     public sealed record Cut(
         double CutStart, double CutEnd, string AToBBefore, string AToBCut, string AToBAfter, string BToABefore, string BToACut, string BToAAfter, string AToCBefore, string AToCCut, string AToCAfter, string BToCCut,
-        int[] DeliveredByPeriod, int[] SentByPeriod, int SilencesAtCutEnd, int MaxSilencesA, int MaxSilencesB, int CRecommendsForABefore, int CRecommendsForAAfterCut, int? BurstsToRecover, double? SecondsToRecover, double PreCutRateKbit, int[] BurstsByPeriod, int[] CollidedByPeriod, int ToCSentInCut, int ToCDeliveredInCut, List<string> Log);
+        int[] DeliveredByPeriod, int[] SentByPeriod, int SilencesAtCutEnd, int MaxSilencesA, int MaxSilencesB, int CRecommendsForABefore, int CRecommendsForAAfterCut, int? BurstsToRecover, double? SecondsToRecover, double PreCutRateKbit, int[] BurstsByPeriod, int[] CollidedByPeriod, int ToCSentInCut, int ToCDeliveredInCut, List<string> Log, List<string>? Trace = null, int Misaddressed = 0);
 
     /// <summary>
     /// Every <paramref name="spacing"/> seconds A sends B and C and B sends A and C, each datagram at a seeded moment within the round (C only answers). Warm-up for <paramref name="warm"/> rounds, then A and B cannot hear each other
     /// for <paramref name="cutRounds"/> rounds, then the path is restored for <paramref name="after"/> rounds.
     /// </summary>
-    public static Cut PathCut(CaptureModel? capture, int seed, int warm = 5, int cutRounds = 5, int after = 7, double spacing = 15, bool cutIt = true)
+    public static Cut PathCut(CaptureModel? capture, int seed, int warm = 5, int cutRounds = 8, int after = 12, double spacing = 15, bool cutIt = true)
     {
         SimRig rig = Make(3, seed, capture, false);
         Pair(rig, 1, 2, 1.0);
@@ -407,6 +412,8 @@ internal static class HostileScenarios
             }
         }
 
+        // C's host sends A one datagram at the start, so that C owns its address: a station answers for the addresses its host has sent from, and without that a burst for C lost to a collision early on can never be answered or relearned.
+        plan.Add(new Ledger.Plan(t0 + 20000, 3, 1, Ledger.DefaultLength));
         plan.Sort((x, y) => x.Clock.CompareTo(y.Clock));
         ledger.Schedule(plan);
         int maxA = 0;
@@ -450,7 +457,7 @@ internal static class HostileScenarios
         ledger.RunWithHost(((end - rig.Channel.Clock) / 48000.0) + 30, 0.5, null, Watch);
 
         string Fmts(SimNode n, int to, long from, long until) =>
-            string.Join(",", n.Transmitted.Where(t => t.Event.Station == SimRig.Name(to) && t.Clock >= from && t.Clock < until).Select(t => t.Event.Format));
+            string.Join(",", n.Transmitted.Where(t => t.Event.Address == SimRig.Address(to) && t.Clock >= from && t.Clock < until).Select(t => t.Event.Format));
         var delivered = new int[3];
         var sent = new int[3];
         foreach (SentItem item in ledger.Items)
@@ -464,11 +471,11 @@ internal static class HostileScenarios
         }
 
         // The rate A was sending B at before the cut (its best of the warm-up), and how long after the restoration it takes to be back at nine tenths of it.
-        double pre = rig.Nodes[0].Transmitted.Where(t => t.Event.Station == SimRig.Name(2) && t.Clock < cutStart).Select(t => t.Event.RateBitsPerSecond).DefaultIfEmpty(0).Max();
+        double pre = rig.Nodes[0].Transmitted.Where(t => t.Event.Address == SimRig.Address(2) && t.Clock < cutStart).Select(t => t.Event.RateBitsPerSecond).DefaultIfEmpty(0).Max();
         int bursts = 0;
         int? burstsToRecover = null;
         double? secondsToRecover = null;
-        foreach ((long clock, TransmittedEvent e) in rig.Nodes[0].Transmitted.Where(t => t.Event.Station == SimRig.Name(2) && t.Clock >= cutEnd))
+        foreach ((long clock, TransmittedEvent e) in rig.Nodes[0].Transmitted.Where(t => t.Event.Address == SimRig.Address(2) && t.Clock >= cutEnd))
         {
             bursts++;
             if (e.RateBitsPerSecond >= 0.9 * pre)
@@ -486,7 +493,28 @@ internal static class HostileScenarios
             cutStart / 48000.0, cutEnd / 48000.0, Fmts(rig.Nodes[0], 2, 0, cutStart), Fmts(rig.Nodes[0], 2, cutStart, cutEnd), Fmts(rig.Nodes[0], 2, cutEnd, long.MaxValue),
             Fmts(rig.Nodes[1], 1, 0, cutStart), Fmts(rig.Nodes[1], 1, cutStart, cutEnd), Fmts(rig.Nodes[1], 1, cutEnd, long.MaxValue),
             Fmts(rig.Nodes[0], 3, 0, cutStart), Fmts(rig.Nodes[0], 3, cutStart, cutEnd), Fmts(rig.Nodes[0], 3, cutEnd, long.MaxValue), Fmts(rig.Nodes[1], 3, cutStart, cutEnd),
-            delivered, sent, silencesAtEnd, maxA, maxB, cRecBefore, cRecAfterCut, burstsToRecover, secondsToRecover, pre / 1000.0, bursts3, collided3, ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd), ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd && ledger.Delivered(i)), rig.Channel.Log);
+            delivered, sent, silencesAtEnd, maxA, maxB, cRecBefore, cRecAfterCut, burstsToRecover, secondsToRecover, pre / 1000.0, bursts3, collided3, ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd), ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd && ledger.Delivered(i)), rig.Channel.Log, CutTrace(rig, cutStart, cutEnd), rig.Nodes.Sum(n => n.BurstsSent.Count(b => b.Dest != 0 && b.Address != SimRig.Address(b.Dest))));
+    }
+
+    /// <summary>What each of A and B did towards the other inside the cut: every burst that went to the other station or to everyone (when, which, whether it asked for a report), and each silence counted.</summary>
+    private static List<string> CutTrace(SimRig rig, long cutStart, long cutEnd)
+    {
+        var lines = new List<string>();
+        foreach ((int node, string name, int other) in new[] { (0, "A", 2), (1, "B", 1) })
+        {
+            SimNode n = rig.Nodes[node];
+            foreach ((long end, int dest, bool asked, LinkAddress address) in n.BurstsSent.Where(b => b.End >= cutStart && b.End < cutEnd + (30 * 48000L) && b.Address == SimRig.Address(other)))
+            {
+                lines.Add($"{name} burst ended {(end - cutStart) / 48000.0:F1} s into the cut, for the other, {(dest == 0 ? "to everyone (address forgotten)" : $"addressed to station {dest}")}, asked for a report {asked}");
+            }
+
+            foreach ((long clock, int dest, int count) in n.SilenceCounts.Where(c => c.Clock >= cutStart && c.Clock < cutEnd + (30 * 48000L) && c.Dest == other))
+            {
+                lines.Add($"{name} silence {count} counted {(clock - cutStart) / 48000.0:F1} s into the cut");
+            }
+        }
+
+        return lines;
     }
 
     public static string Describe(Cut r) =>
@@ -521,11 +549,11 @@ internal static class HostileScenarios
         var plan = new List<Ledger.Plan>();
         for (long t = 5L * 48000 + 24000; t < (seconds - 20) * 48000; t += 20L * 48000)
         {
-            plan.Add(new Ledger.Plan(t, 1, 2, 30));
-            plan.Add(new Ledger.Plan(t + (10L * 48000) + 12345, 2, 1, 30));
+            plan.Add(new Ledger.Plan(t, 1, 2, Ledger.DefaultLength));
+            plan.Add(new Ledger.Plan(t + (10L * 48000) + 12345, 2, 1, Ledger.DefaultLength));
         }
 
-        plan.Add(new Ledger.Plan(60L * 48000 + 777, 3, 1, 30));
+        plan.Add(new Ledger.Plan(60L * 48000 + 777, 3, 1, Ledger.DefaultLength));
         plan.Sort((x, y) => x.Clock.CompareTo(y.Clock));
         rig.RunTo(5.5);
         ledger.RunWithHost(seconds - 5.5, 0.5, plan);
@@ -570,8 +598,8 @@ internal static class HostileScenarios
             }
         }
 
-        string[][] heard = [.. rig.Nodes.Select(n => n.Identified.Select(i => i.Event.Callsign + "@" + i.Event.StationNumber).ToArray())];
-        string[][] names = [.. rig.Nodes.Select(n => n.Identified.Select(i => i.Event.Name.ToString()).ToArray())];
+        string[][] heard = [.. rig.Nodes.Select(n => n.Identified.Select(i => i.Event.Callsign + "@" + i.Sender).ToArray())];
+        string[][] names = [.. rig.Nodes.Select(n => n.Identified.Select(i => i.Event.Callsign).ToArray())];
         double[][] starts = [.. rig.Nodes.Select(n => idents.Where(i => i.Node == n.Index).Select(i => i.T.Start / 48000.0).ToArray())];
         int[] deliveredToAll = [.. rig.Nodes.Select(n => n.Received.Count)];
         return new Idents(
@@ -634,7 +662,7 @@ internal static class HostileScenarios
                 maxFlight = Math.Max(maxFlight, st.BurstsInFlight);
                 maxCand = Math.Max(maxCand, st.CandidatesWaiting);
                 maxTimers = Math.Max(maxTimers, st.PendingTimers);
-                int queued = Enumerable.Range(0, 64).Sum(n => st.QueuedFor(n));
+                int queued = st.QueuedTotal;
                 maxQueued = Math.Max(maxQueued, queued);
                 long now = rig.Channel.Clock;
                 if (rig.Nodes[i].Transmissions.Count != seenTransmissions[i] || queued == 0)
@@ -687,9 +715,9 @@ internal static class HostileScenarios
         int wrongHints = 0;
         foreach (SimNode n in rig.Nodes)
         {
-            foreach ((long _, StationName who, long[] tags) in n.NotDecoded)
+            foreach ((long _, LinkAddress who, long[] tags) in n.NotDecoded)
             {
-                int number = Enumerable.Range(1, 3).First(k => SimRig.Name(k) == who);
+                int number = Enumerable.Range(1, 3).First(k => SimRig.Address(k) == who);
                 foreach (long tag in tags)
                 {
                     SentItem? item = ledger.ItemOf(tag);
@@ -713,9 +741,9 @@ internal static class HostileScenarios
                     continue;
                 }
 
-                int heard = rig.Nodes[x - 1].PathReports.Count(p => p.Station == SimRig.Name(y));
-                int sentLone = rig.Nodes[y - 1].ModemSent.Count(m => m.Kind == ModemSentKind.Report && m.Station == SimRig.Name(x));
-                int sentData = rig.Nodes[y - 1].Transmitted.Where(t => t.Event.Station == SimRig.Name(x)).Select(t => t.Clock).Distinct().Count();
+                int heard = rig.Nodes[x - 1].PathReports.Count(p => p.Address == SimRig.Address(y));
+                int sentLone = Reports(rig.Nodes[y - 1], x);
+                int sentData = rig.Nodes[y - 1].Transmitted.Where(t => t.Event.Address == SimRig.Address(x)).Select(t => t.Clock).Distinct().Count();
                 if (heard > sentLone + sentData)
                 {
                     misattributed++;
@@ -723,7 +751,7 @@ internal static class HostileScenarios
             }
         }
 
-        int stillQueued = Enumerable.Range(0, 3).Sum(i => Enumerable.Range(0, 64).Sum(n => rig.Stations[i].QueuedFor(n)));
+        int stillQueued = Enumerable.Range(0, 3).Sum(i => rig.Stations[i].QueuedTotal);
         return new Soak(
             ledger.Items.Count, ledger.Refused.Count, accepted, transmitted, ledger.DroppedCount(), stillQueued, delivered, lost, lostOverlap, lost - lostOverlap, ledger.Duplicates().Count, ledger.DeliveredWithoutTransmittedEvent(),
             rig.Nodes.Sum(n => n.Transmissions.Count), cb, bytes, maxWait, maxFlight, maxCand, maxTimers, maxQueued, rig.Nodes[1].Received.Count, Formats(rig.Nodes[0], 40), rig.Nodes.Sum(n => n.NotDecoded.Count), wrongHints, misattributed, rig.Nodes.Sum(n => n.Congestion.Count), ledger.Reordered(), Ledger.ClocksGoingBackwards(rig.Channel.Log), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.Cancelled)), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.NoLongerFits)), rig.Channel.Log);
@@ -783,7 +811,7 @@ internal static class HostileScenarios
 
             rig.Run(0.5);
             ledger.HostStep();
-            int queued = rig.Stations[0].QueuedFor(2);
+            int queued = rig.Stations[0].QueuedFor(SimRig.Address(2));
             maxQueued = Math.Max(maxQueued, queued);
             if (offered >= count && queued == 0 && drainedAt < 0)
             {
@@ -794,6 +822,6 @@ internal static class HostileScenarios
         SimNode a = rig.Nodes[0];
         return new Flood(
             ledger.Items.Count, ledger.Items.Count - ledger.Refused.Count, ledger.Refused.Count, ledger.Items.Count(i => i.TransmittedClocks.Count > 0), ledger.DroppedCount(), ledger.Items.Count(ledger.Delivered),
-            a.Congestion.Count(c => !c.Writable), a.Congestion.Count(c => c.Writable), rig.Stations[0].QueuedFor(2), drainedAt < 0 ? -1 : drainedAt / 48000.0, maxQueued);
+            a.Congestion.Count(c => !c.Writable), a.Congestion.Count(c => c.Writable), rig.Stations[0].QueuedFor(SimRig.Address(2)), drainedAt < 0 ? -1 : drainedAt / 48000.0, maxQueued);
     }
 }

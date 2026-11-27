@@ -25,8 +25,11 @@ internal sealed class TestBurst
     /// <summary>The datagrams a data burst carries.</summary>
     public byte[][] Datagrams { get; private init; } = [];
 
+    /// <summary>The key of the address recorded bursts are from unless they say otherwise.</summary>
+    public static readonly uint DefaultFrom = LinkAddress.FromAscii("TEST").Key;
+
     /// <summary>A data burst. <paramref name="symbols"/> of 0 picks the fewest the datagrams need.</summary>
-    public static TestBurst Data(int sender, int destination, int format, byte[][] datagrams, PayloadPrelude? prelude = null, int burstNumber = 0, int symbols = 0)
+    public static TestBurst Data(int sender, int destination, int format, byte[][] datagrams, PayloadPrelude? prelude = null, int burstNumber = 0, int symbols = 0, uint[]? from = null, uint? forKey = null, ExtensionItem[]? extra = null, byte[]? protocols = null, bool noFrom = false)
     {
         if (destination != 0 && prelude is null)
         {
@@ -39,7 +42,42 @@ internal sealed class TestBurst
         }
 
         var packed = new byte[200_000];
-        int length = PayloadCodec.Pack(prelude, [.. datagrams.Select(d => new ReadOnlyMemory<byte>(d))], packed);
+        // The block of link addresses a station always sends: From (the keys the datagrams were sent from) and, to everyone, For. A recording that gives neither has an empty block (to everyone) or none (to one station).
+        var items = new List<ExtensionItem>();
+        if (!noFrom && datagrams.Length > 0)
+        {
+            // One run for each stretch of datagrams sent from one address with one protocol. `from` gives one key for them all or one for each datagram; the default is one address, DefaultFrom.
+            var runs = new List<byte>();
+            int start = 0;
+            for (int i = 1; i <= datagrams.Length; i++)
+            {
+                uint KeyAt(int n) => from is null ? DefaultFrom : from.Length == 1 ? from[0] : from[n];
+                byte ProtocolAt(int n) => protocols is null ? LinkProtocol.NoLayer3 : protocols[n];
+                if (i == datagrams.Length || KeyAt(i) != KeyAt(start) || ProtocolAt(i) != ProtocolAt(start) || i - start == 255)
+                {
+                    var run = new byte[PayloadCodec.RunBytes];
+                    PayloadCodec.WriteRun(KeyAt(start), ProtocolAt(start), i - start, run);
+                    runs.AddRange(run);
+                    start = i;
+                }
+            }
+
+            items.Add(new ExtensionItem(PayloadCodec.FromTag, runs.ToArray()));
+        }
+
+        if (forKey is { } key)
+        {
+            var value = new byte[PayloadCodec.KeyBytes];
+            PayloadCodec.WriteKey(key, value);
+            items.Add(new ExtensionItem(PayloadCodec.ForTag, value));
+        }
+
+        if (extra is not null)
+        {
+            items.AddRange(extra);
+        }
+
+        int length = PayloadCodec.Pack(prelude, [.. items], [.. datagrams.Select(d => new ReadOnlyMemory<byte>(d))], packed);
         if (length < 0)
         {
             throw new ArgumentException("The datagrams do not fit.");

@@ -1,10 +1,10 @@
 namespace M0LTE.OfdmFm;
 
-// Step 5 of docs/station-design.md: the host's side of the interface (Bind, Send, Cancel, Snapshot) and the bursts that carry what it sends.
+// Step 5 of docs/station-design.md: the host's side of the interface (Send, Cancel, Snapshot) and the bursts that carry what it sends.
 //
-// The shape: datagrams wait in one queue per destination (two first-in-first-out lists in it, expedited and ordinary). While anything is queued the station keeps one transmit request with the channel-access rules,
+// The shape: datagrams wait in one queue per link address they are for (two first-in-first-out lists in it, expedited and ordinary). While anything is queued the station keeps one transmit request with the channel-access rules,
 // of the class its most urgent datagram needs. The request carries no audio until the rules grant it: at that moment (the channel is free) the station picks a destination, asks the adaptation rules
-// what format to use (Choose), takes datagrams for it, writes the prelude, packs, renders and hands the samples over. A burst is built once: if the channel turns busy and the request is withdrawn, the burst keeps
+// what format to use (Choose), takes datagrams for it, writes the prelude and the From item, packs, renders and hands the samples over. An address the station has not located goes in a burst to everyone with a For item. A burst is built once: if the channel turns busy and the request is withdrawn, the burst keeps
 // what it was built with and is handed over again unchanged (see "Withdrawal" in docs/station-design.md, "Step 5 as built").
 
 public sealed partial class Station
@@ -43,6 +43,9 @@ public sealed partial class Station
 
     private static readonly int MaxPayloadBytes = ComputeMaxPayloadBytes();
 
+    /// <summary>The most runs one burst's From item carries (an item's value is at most 253 bytes, 42 runs; this leaves room for the For item in the same block).</summary>
+    internal const int MaxRuns = 40;
+
     private sealed class Pending
     {
         public byte[] Data = [];
@@ -50,10 +53,28 @@ public sealed partial class Station
         public HostTag Tag;
         public bool ReportWanted;
         public bool Expedited;
+
+        /// <summary>The key of the address the host sent it from.</summary>
+        public uint From;
+
+        /// <summary>Its protocol byte.</summary>
+        public byte Protocol;
     }
 
-    private sealed class DestQueue
+    /// <summary>What is waiting for one link address (or for everyone), and what the host was last told of the address.</summary>
+    private sealed class AddressQueue
     {
+        public AddressQueue(LinkAddress address)
+        {
+            Address = address;
+            Key = address.IsEveryone ? 0 : address.Key;
+        }
+
+        public readonly LinkAddress Address;
+
+        /// <summary>The address's key (0 for everyone, which has none).</summary>
+        public readonly uint Key;
+
         public readonly List<Pending> Expedited = [];
         public readonly List<Pending> Ordinary = [];
 
@@ -62,17 +83,58 @@ public sealed partial class Station
 
         public bool Full;
 
-        /// <summary>When the destination was last given a burst, on a counter; the smallest goes next (the fair rule).</summary>
+        /// <summary>When the address was last given a burst, on a counter; the smallest goes next (the fair rule).</summary>
         public long LastServed;
 
+        /// <summary>True once the station has located the address and then forgotten it, until it is located again.</summary>
+        public bool Forgotten;
+
+        // What the host was last told by <see cref="LinkState"/>.
+        public bool Shown;
+        public bool ShownLocated;
+        public bool ShownGone;
+        public int ShownFormat;
+        public int ShownRoom;
+        public LinkKnowledge ShownKnowledge;
+        public double? ShownTold;
+
         public int Count => Expedited.Count + Ordinary.Count;
+
+        /// <summary>The runs the From item of a burst carrying everything queued would need, in the order the datagrams would go (expedited first).</summary>
+        public int Runs()
+        {
+            int runs = 0;
+            int length = 0;
+            Pending? last = null;
+            for (int pass = 0; pass < 2; pass++)
+            {
+                foreach (Pending p in pass == 0 ? Expedited : Ordinary)
+                {
+                    if (last is null || last.From != p.From || last.Protocol != p.Protocol || length == 255)
+                    {
+                        runs++;
+                        length = 0;
+                    }
+
+                    length++;
+                    last = p;
+                }
+            }
+
+            return runs;
+        }
     }
 
     /// <summary>The burst the station has built and not finished with: handed to the audio layer, on air, or withdrawn and waiting to be handed over again.</summary>
     private sealed class Burst
     {
         public bool Built;
+
+        /// <summary>The station it goes to, or 0 for everyone.</summary>
         public int Dest;
+
+        /// <summary>The address the datagrams are for.</summary>
+        public AddressQueue? Queue;
         public int Format;
         public int BurstNumber;
         public bool AskedReport;
@@ -83,7 +145,13 @@ public sealed partial class Station
         public readonly List<Pending> Items = [];
     }
 
-    private readonly DestQueue?[] _queues = new DestQueue?[64];
+    private readonly Dictionary<uint, AddressQueue> _byKey = [];
+    private AddressQueue? _everyoneQueue;
+    private readonly List<AddressQueue> _queueList = [];
+    private readonly List<AddressQueue> _affected = [];
+    private readonly byte[] _fromValue = new byte[MaxRuns * PayloadCodec.RunBytes];
+    private readonly byte[] _forValue = new byte[PayloadCodec.KeyBytes];
+    private readonly ExtensionItem[] _addressItems = new ExtensionItem[2];
     private readonly Stack<Pending> _freePending = new();
     private readonly Stack<float[]> _freeAudio = new();
     private readonly Burst _burst = new();
@@ -122,90 +190,37 @@ public sealed partial class Station
     // ---- the host's operations ----
 
     /// <summary>
-    /// Gives a station name a station number: the interim way a name gets a number (docs/station-design.md I). From now on events about that number carry the name and not the placeholder (<see cref="PlaceholderName"/>),
-    /// <see cref="Send"/> accepts the name, and a station heard before it was bound is announced once more in a <see cref="LinkState"/> event under its new name. Events raised earlier keep the placeholder they carried.
-    /// A name has one number and a number one name: binding a name already bound to another number moves it (the old number goes back to its placeholder), and binding a number that has another name replaces that name.
-    /// Datagrams already queued stay where they are, queued by number. Bindings are never dropped, not when the link is forgotten after ten minutes of silence either. Audio thread, serialised with <see cref="Push"/>.
-    /// </summary>
-    /// <param name="name">The host's name for the station: opaque bytes, not empty, not <see cref="StationName.Everyone"/>, and not a placeholder ("#" and a number).</param>
-    /// <param name="number">The station's on-air number, 1 to 63 and not this station's own.</param>
-    /// <exception cref="ArgumentException">The name is empty, everyone, or looks like a placeholder.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">The number is outside 1 to 63 or is this station's.</exception>
-    /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    public void Bind(StationName name, int number)
-    {
-        EnsureNotAdvancing();
-        if (name.IsEmpty || name.IsEveryone)
-        {
-            throw new ArgumentException("A name must have at least one byte and cannot be everyone.", nameof(name));
-        }
-
-        ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(number, 63);
-        if (number == StationNumber)
-        {
-            throw new ArgumentOutOfRangeException(nameof(number), "A station does not bind its own number.");
-        }
-
-        for (int n = 0; n < _placeholders.Length; n++)
-        {
-            if (_placeholders[n] == name)
-            {
-                throw new ArgumentException("A placeholder name cannot be bound.", nameof(name));
-            }
-        }
-
-        _advancing = true;
-        try
-        {
-            int moved = NumberOf(name);
-            if (moved == number)
-            {
-                return;
-            }
-
-            _bound[number] = name;
-            _hostBound[number] = true;
-            if (moved != 0)
-            {
-                _bound[moved] = null;
-                _hostBound[moved] = false;
-                AnnounceLink(moved);
-            }
-
-            AnnounceLink(number);
-        }
-        finally
-        {
-            _advancing = false;
-        }
-    }
-
-    /// <summary>
-    /// Queues a datagram for a station, or for everyone, and says whether it was taken. The datagram's bytes are copied: the caller's buffer is its own again when this returns.
-    /// Each accepted datagram ends in exactly one <see cref="Transmitted"/> or one <see cref="Dropped"/>. Audio thread, serialised with <see cref="Push"/>; it may raise <see cref="TransmitRequest"/> and <see cref="Congestion"/> before it returns.
+    /// Queues a datagram for a link address, or for everyone, and says whether it was taken. The datagram's bytes are copied: the caller's buffer is its own again when this returns.
+    /// Each accepted datagram ends in exactly one <see cref="Transmitted"/> or one <see cref="Dropped"/>. Audio thread, serialised with <see cref="Push"/>; it may raise <see cref="TransmitRequest"/>, <see cref="LinkState"/> and <see cref="Congestion"/> before it returns.
     /// <para>
-    /// The result: <see cref="SendResult.NoIdentity"/> (checked first) when the station has no identity yet (see <see cref="SetIdentity"/>); <see cref="SendResult.NotBound"/> when the name has no number (see <see cref="Bind"/>); <see cref="SendResult.TooLarge"/> when the datagram is larger than one burst to the station carries at the format the station
-    /// would use now, which is the longest burst's payload at that format (252 symbols) less the prelude's largest size (4 bytes) and the datagram's own length (2 bytes), the figure <see cref="LinkStateEvent.DatagramRoom"/> gives
-    /// (for everyone: the first-contact format and no prelude); <see cref="SendResult.QueueFull"/> when the destination's queue holds 30 s of airtime at that format (see <see cref="Congestion"/>).
-    /// A datagram accepted can still be dropped later with <see cref="DropReason.NoLongerFits"/> if the format falls before it goes.
+    /// The result: <see cref="SendResult.NoIdentity"/> (checked first) when the station has no identity yet (see <see cref="SetIdentity"/>); <see cref="SendResult.TooLarge"/> when the datagram is larger than one burst to the address carries at the format the station
+    /// would use now, which is the longest burst's payload at that format (252 symbols) less what the burst needs besides the datagram (the prelude when the address is located, the block of items with one From key, a For key when it is not) and the datagram's own length (2 bytes),
+    /// the figure <see cref="LinkStateEvent.DatagramRoom"/> gives; <see cref="SendResult.QueueFull"/> when the address's queue holds 30 s of airtime at that format (see <see cref="Congestion"/>).
+    /// A datagram accepted can still be dropped later with <see cref="DropReason.NoLongerFits"/> if the format falls, or the address is forgotten, before it goes.
     /// </para>
     /// <para>
-    /// Order: first in first out, expedited ahead of ordinary ones to the same destination, and an expedited datagram goes in the first slot after a burst. Several destinations take turns, the one served longest ago first,
-    /// expedited traffic before ordinary. A datagram for everyone goes at the first-contact format with no prelude and no report; <paramref name="reportWanted"/> is ignored for it.
+    /// Where it goes: the queue is for the address. When a burst is built the station looks up where the address lives. If it has located it, the burst goes to that station, at the format the adaptation rules give, with a prelude (and a report if the rules or the host want one).
+    /// If not, the burst goes to everyone at the first-contact format with a For item and no prelude: "report wanted" has no effect and no answer is waited for. A datagram for everyone goes the same way with no For. The station that
+    /// the address lives at can change between Send and the burst, and the datagram follows it.
     /// </para>
     /// <para>
-    /// Allocation: the copy goes into a buffer taken from the station's own pool, which grows to the largest datagram seen and is refilled when the datagram has gone or been dropped, so a steady flow of datagrams allocates nothing.
+    /// Order: first in first out, expedited ahead of ordinary ones to the same address, and an expedited datagram goes in the first slot after a burst. Several addresses take turns, the one served longest ago first,
+    /// expedited traffic before ordinary. A burst carries datagrams for one address and from any of the host's: the From item lists the distinct addresses they were sent from.
+    /// </para>
+    /// <para>
+    /// Allocation: the copy goes into a buffer taken from the station's own pool, which grows to the largest datagram seen and is refilled when the datagram has gone or been dropped, so a steady flow of datagrams to addresses already sent to allocates nothing.
     /// </para>
     /// </summary>
     /// <param name="datagram">The datagram, 1 to 65535 bytes.</param>
-    /// <param name="destination">The station's bound name, or <see cref="StationName.Everyone"/>.</param>
+    /// <param name="to">The link address it is for, or <see cref="LinkAddress.Everyone"/>. An address made with <see cref="LinkAddress.FromKey"/> does as well as the full one: a host answering a datagram whose sender it knows only by key sends to that.</param>
+    /// <param name="from">The link address it is sent from: one of the host's own, not <see cref="LinkAddress.Everyone"/>. Its key goes in a run of the burst's From item.</param>
+    /// <param name="protocol">The datagram's protocol byte (see <see cref="LinkProtocol"/>), carried in its run and given to the receiving host. The modem does nothing else with it.</param>
     /// <param name="tag">The host's tag, returned in <see cref="Transmitted"/> and <see cref="Dropped"/> and used by <see cref="Cancel(HostTag)"/>. Several datagrams may share one.</param>
-    /// <param name="reportWanted">Ask the station to answer with a report on the path: set in the prelude of the burst this datagram goes in. For a host with no acknowledgements of its own.</param>
+    /// <param name="reportWanted">Ask the station the address lives at to answer with a report on the path: set in the prelude of the burst this datagram goes in. For a host with no acknowledgements of its own. No effect while the address is not located.</param>
     /// <param name="priority">Expedited for an acknowledgement or response.</param>
-    /// <exception cref="ArgumentException">The datagram is empty or over 65535 bytes.</exception>
+    /// <exception cref="ArgumentException">The datagram is empty or over 65535 bytes, <paramref name="to"/> is empty, or <paramref name="from"/> is empty or everyone.</exception>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    public SendResult Send(ReadOnlyMemory<byte> datagram, StationName destination, HostTag tag, bool reportWanted = false, SendPriority priority = SendPriority.Ordinary)
+    public SendResult Send(ReadOnlyMemory<byte> datagram, LinkAddress to, LinkAddress from, byte protocol, HostTag tag, bool reportWanted = false, SendPriority priority = SendPriority.Ordinary)
     {
         EnsureNotAdvancing();
         if (datagram.IsEmpty || datagram.Length > 65535)
@@ -213,31 +228,56 @@ public sealed partial class Station
             throw new ArgumentException("A datagram is 1 to 65535 bytes.", nameof(datagram));
         }
 
+        if (to.IsEmpty)
+        {
+            throw new ArgumentException("A datagram needs an address to go to.", nameof(to));
+        }
+
+        if (from.IsEmpty || from.IsEveryone)
+        {
+            throw new ArgumentException("A datagram needs one of the host's own addresses to be sent from.", nameof(from));
+        }
+
         if (Callsign is null)
         {
             return SendResult.NoIdentity;
-        }
-
-        int number = destination.IsEveryone ? 0 : NumberOf(destination);
-        if (!destination.IsEveryone && number == 0)
-        {
-            return SendResult.NotBound;
         }
 
         _advancing = true;
         try
         {
             double now = ClockSeconds(SampleCount);
+            AddressQueue? q = FindQueue(to);
+            uint toKey = to.IsEveryone ? 0 : to.Key;
+            int number = to.IsEveryone ? 0 : LocatedAt(toKey, now);
             int format = FormatFor(number, now);
-            if (datagram.Length > RoomFor(format, number == 0))
+            if (datagram.Length > RoomFor(format, number != 0, number == 0 && !to.IsEveryone))
             {
                 return SendResult.TooLarge;
             }
 
-            DestQueue q = QueueFor(number);
-            if (q.Full)
+            if (q is { Full: true })
             {
                 return SendResult.QueueFull;
+            }
+
+            if (q is null)
+            {
+                q = new AddressQueue(to);
+                if (to.IsEveryone)
+                {
+                    _everyoneQueue = q;
+                }
+                else
+                {
+                    _byKey[toKey] = q;
+                }
+
+                _queueList.Add(q);
+                if (!to.IsEveryone)
+                {
+                    RefreshAddress(q, now);
+                }
             }
 
             Pending p = _freePending.Count > 0 ? _freePending.Pop() : new Pending();
@@ -249,8 +289,11 @@ public sealed partial class Station
             datagram.Span.CopyTo(p.Data);
             p.Length = datagram.Length;
             p.Tag = tag;
-            p.ReportWanted = reportWanted && number != 0;
+            p.ReportWanted = reportWanted;
             p.Expedited = priority == SendPriority.Expedited;
+            p.From = from.Key;
+            p.Protocol = protocol;
+            _ownKeys.Add(p.From);
             (p.Expedited ? q.Expedited : q.Ordinary).Add(p);
             q.Bits += (datagram.Length + LengthBytes) * 8L;
             _queuedCount++;
@@ -259,10 +302,10 @@ public sealed partial class Station
                 _expeditedCount++;
             }
 
-            if (AirtimeOf(q, format) >= QueueLimitSeconds)
+            if (AirtimeOf(q, number, format) >= QueueLimitSeconds)
             {
                 q.Full = true;
-                Congestion?.Invoke(new CongestionEvent(NameOfDestination(number), false));
+                Congestion?.Invoke(new CongestionEvent(q.Address, false));
             }
 
             EnsureDataRequest();
@@ -286,10 +329,10 @@ public sealed partial class Station
         try
         {
             int count = 0;
-            for (int n = 0; n < _queues.Length; n++)
+            for (int n = 0; n < _queueList.Count; n++)
             {
-                DestQueue? q = _queues[n];
-                if (q is null || q.Count == 0)
+                AddressQueue q = _queueList[n];
+                if (q.Count == 0)
                 {
                     continue;
                 }
@@ -298,7 +341,7 @@ public sealed partial class Station
                 count += CancelWhere(q, tag, null);
                 if (count != before)
                 {
-                    AfterRemoval(n, q);
+                    AfterRemoval(q);
                 }
             }
 
@@ -315,28 +358,22 @@ public sealed partial class Station
         }
     }
 
-    /// <summary>As <see cref="Cancel(HostTag)"/> for everything queued for a station (or for everyone), in the order it would have gone; returns how many. A name that is not bound drops nothing.</summary>
+    /// <summary>As <see cref="Cancel(HostTag)"/> for everything queued for a link address (or for everyone), in the order it would have gone; returns how many. An address nothing was sent to drops nothing.</summary>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
-    public int Cancel(StationName station)
+    public int Cancel(LinkAddress address)
     {
         EnsureNotAdvancing();
-        int number = station.IsEveryone ? 0 : NumberOf(station);
-        if (!station.IsEveryone && number == 0)
-        {
-            return 0;
-        }
-
         _advancing = true;
         try
         {
-            DestQueue? q = _queues[number];
+            AddressQueue? q = FindQueue(address);
             if (q is null || q.Count == 0)
             {
                 return 0;
             }
 
             int count = CancelWhere(q, default, true);
-            AfterRemoval(number, q);
+            AfterRemoval(q);
             EnsureDataRequest();
             return count;
         }
@@ -347,8 +384,8 @@ public sealed partial class Station
     }
 
     /// <summary>
-    /// What the station knows of every station it has heard or been bound to, in station-number order, as <see cref="LinkStateEvent"/> values taken now: a station bound and never heard is at first contact (format null), and one not heard
-    /// for ten minutes has <see cref="LinkStateEvent.Gone"/> set. Audio thread, serialised with <see cref="Push"/>. Allocates the list.
+    /// What the station knows of every link address the host has sent to, in the order they were first sent to, as <see cref="LinkStateEvent"/> values taken now: an address not located has <see cref="LinkStateEvent.Located"/> false
+    /// (and <see cref="LinkStateEvent.Gone"/> set when it was located and has been forgotten). Audio thread, serialised with <see cref="Push"/>. Allocates the list.
     /// </summary>
     /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
     public IReadOnlyList<LinkStateEvent> Snapshot()
@@ -356,84 +393,82 @@ public sealed partial class Station
         EnsureNotAdvancing();
         double now = ClockSeconds(SampleCount);
         var list = new List<LinkStateEvent>();
-        for (int who = 1; who < _bound.Length; who++)
+        foreach (AddressQueue q in _queueList)
         {
-            if (who == StationNumber)
+            if (!q.Address.IsEveryone)
             {
-                continue;
-            }
-
-            bool heard = _link.TryGetNeighbour(who, out LinkNeighbour? nb) && nb?.LastHeard is not null;
-            if (!heard && _bound[who] is null)
-            {
-                continue;
-            }
-
-            if (heard && now - nb!.LastHeard!.Value > LinkAdaptation.ForgetSeconds)
-            {
-                list.Add(new LinkStateEvent(NameFor(who), null, null, DatagramRoomFor(StandardFormats.FirstContact), LinkKnowledge.FirstContact, 0, true));
-            }
-            else if (heard && DescribeLink(who, now, out LinkStateEvent link, out _))
-            {
-                list.Add(link);
-            }
-            else
-            {
-                list.Add(new LinkStateEvent(NameFor(who), null, null, DatagramRoomFor(StandardFormats.FirstContact), LinkKnowledge.FirstContact, 0, false));
+                list.Add(DescribeAddress(q, now, out _));
             }
         }
 
         return list;
     }
 
-    // ---- names ----
-
-    private int NumberOf(StationName name)
+    /// <summary>
+    /// A test's way of putting an address where a conversation would have told the station it lives, so that a scenario can start from stations that know each other. Not a host operation: a host never says where an address lives.
+    /// </summary>
+    internal void Locate(LinkAddress address, int number)
     {
-        for (int n = 1; n < _bound.Length; n++)
+        double now = ClockSeconds(SampleCount);
+        _table.Learn(address.Key, number, now);
+        if (FindQueue(address) is { } q)
         {
-            if (_bound[n] is { } bound && bound == name)
-            {
-                return n;
-            }
+            RefreshAddress(q, now);
         }
-
-        return 0;
     }
 
-    private StationName NameOfDestination(int number) => number == 0 ? StationName.Everyone : NameFor(number);
+    /// <summary>Where the station has the address, or 0 (for a test).</summary>
+    internal int LocatedNow(LinkAddress address) => address.IsEveryone ? 0 : LocatedAt(address.Key, ClockSeconds(SampleCount));
 
-    /// <summary>Announces a station that has been heard under whatever name it has now (after a bind), once.</summary>
-    private void AnnounceLink(int number)
-    {
-        _shown[number] = default;
-        RaiseLinkState(number, ClockSeconds(SampleCount));
-    }
+    /// <summary>The learning table, for a test.</summary>
+    internal AddressTable LearnedAddresses => _table;
 
     // ---- queues ----
 
-    private DestQueue QueueFor(int number) => _queues[number] ??= new DestQueue();
+    /// <summary>The keys of the addresses the host has sent from: the addresses this station answers for (a burst to everyone for one of them is answered with a report).</summary>
+    private readonly HashSet<uint> _ownKeys = [];
 
-    /// <summary>The format a burst to <paramref name="number"/> would go at now (everyone: first contact).</summary>
+    /// <summary>The queue for an address (by key, so an address made from its key alone finds the same one), or null if the host has not sent to it.</summary>
+    private AddressQueue? FindQueue(LinkAddress address) =>
+        address.IsEveryone ? _everyoneQueue : _byKey.TryGetValue(address.Key, out AddressQueue? q) ? q : null;
+
+    /// <summary>The format a burst to station <paramref name="number"/> would go at now (everyone: first contact).</summary>
     private int FormatFor(int number, double now) => number == 0 ? StandardFormats.FirstContact : _link.Choose(number, now).Format;
 
-    private static int RoomFor(int format, bool everyone) => Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - LengthBytes - (everyone ? 0 : PreludeBytes));
+    /// <summary>
+    /// The largest datagram one burst carries: the longest burst's payload at the format, less the datagram's length and what the burst needs besides: a prelude and a block with one From key when it goes to a station,
+    /// a block with one From key (and a For key when <paramref name="withFor"/>) when it goes to everyone.
+    /// </summary>
+    private static int RoomFor(int format, bool located, bool withFor) =>
+        Math.Max(0, PayloadCodec.Capacity(format, StandardFormats.MaxSymbols) - LengthBytes - (located ? PreludeBytes : 0) - PayloadCodec.AddressBlockSize(1, !located && withFor));
 
-    private static double AirtimeOf(DestQueue q, int format) => q.Bits / (StandardFormats.Rate(format) * 1000.0);
+    /// <summary>Airtime of what is queued for an address at the format in use, the block of items one burst needs for the From keys queued included. Bursts to the address that carry a prelude are not counted for it.</summary>
+    private static double AirtimeOf(AddressQueue q, int number, int format)
+    {
+        long bits = q.Bits + (8L * PayloadCodec.AddressBlockSize(q.Runs(), number == 0 && !q.Address.IsEveryone));
+        return bits / (StandardFormats.Rate(format) * 1000.0);
+    }
 
     /// <summary>Called after datagrams left a queue: a full queue that has drained below the resume mark is writable again, and the totals the data request depends on are brought up to date by the caller.</summary>
-    private void AfterRemoval(int number, DestQueue q)
+    private void AfterRemoval(AddressQueue q)
     {
-        if (q.Full && AirtimeOf(q, FormatFor(number, ClockSeconds(SampleCount))) < QueueLimitSeconds * QueueResumeFraction)
+        if (!q.Full)
+        {
+            return;
+        }
+
+        double now = ClockSeconds(SampleCount);
+        int number = q.Address.IsEveryone ? 0 : LocatedAt(q.Key, now);
+        if (AirtimeOf(q, number, FormatFor(number, now)) < QueueLimitSeconds * QueueResumeFraction)
         {
             q.Full = false;
-            Congestion?.Invoke(new CongestionEvent(NameOfDestination(number), true));
+            Congestion?.Invoke(new CongestionEvent(q.Address, true));
         }
     }
 
     private void Release(Pending p) => _freePending.Push(p);
 
-    private void Unqueue(DestQueue q, Pending p)
+    private void Unqueue(AddressQueue q, Pending p)
     {
         q.Bits -= (p.Length + LengthBytes) * 8L;
         _queuedCount--;
@@ -444,7 +479,7 @@ public sealed partial class Station
     }
 
     /// <summary>Drops what matches (a tag, or everything when <paramref name="all"/> is set), expedited first, raising <see cref="Dropped"/> for each. Returns how many.</summary>
-    private int CancelWhere(DestQueue q, HostTag tag, bool? all)
+    private int CancelWhere(AddressQueue q, HostTag tag, bool? all)
     {
         int count = 0;
         for (int pass = 0; pass < 2; pass++)
@@ -469,6 +504,22 @@ public sealed partial class Station
         }
 
         return count;
+    }
+
+    /// <summary>True when anything is queued for an address that lives at station <paramref name="number"/> now (expedited only, when <paramref name="expeditedOnly"/>).</summary>
+    private bool HasQueuedAt(int number, bool expeditedOnly)
+    {
+        double now = ClockSeconds(SampleCount);
+        for (int i = 0; i < _queueList.Count; i++)
+        {
+            AddressQueue q = _queueList[i];
+            if ((expeditedOnly ? q.Expedited.Count : q.Count) > 0 && !q.Address.IsEveryone && LocatedAt(q.Key, now) == number)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -536,13 +587,13 @@ public sealed partial class Station
         double now = ClockSeconds(SampleCount);
         while (_queuedCount > 0)
         {
-            int dest = PickDestination(request.Class);
-            if (dest < 0)
+            AddressQueue? q = PickQueue(request.Class);
+            if (q is null)
             {
                 break;
             }
 
-            if (TryBuild(dest, request, now))
+            if (TryBuild(q, request, now))
             {
                 return true;
             }
@@ -552,35 +603,35 @@ public sealed partial class Station
     }
 
     /// <summary>
-    /// The fair rule: among the destinations with something queued of the granted class (expedited, for an expedited grant), the one served longest ago, and the lowest number on a tie (everyone first). A grant of ordinary traffic
+    /// The fair rule: among the addresses with something queued of the granted class (expedited, for an expedited grant), the one served longest ago, and the one sent to first on a tie. A grant of ordinary traffic
     /// that finds only expedited datagrams, or the other way round, takes whoever has anything.
     /// </summary>
-    private int PickDestination(TransmitClass cls)
+    private AddressQueue? PickQueue(TransmitClass cls)
     {
         for (int pass = 0; pass < 2; pass++)
         {
-            int best = -1;
-            for (int n = 0; n < _queues.Length; n++)
+            AddressQueue? best = null;
+            for (int n = 0; n < _queueList.Count; n++)
             {
-                DestQueue? q = _queues[n];
-                if (q is null || q.Count == 0 || (pass == 0 && cls == TransmitClass.Expedited && q.Expedited.Count == 0))
+                AddressQueue q = _queueList[n];
+                if (q.Count == 0 || (pass == 0 && cls == TransmitClass.Expedited && q.Expedited.Count == 0))
                 {
                     continue;
                 }
 
-                if (best < 0 || q.LastServed < _queues[best]!.LastServed)
+                if (best is null || q.LastServed < best.LastServed)
                 {
-                    best = n;
+                    best = q;
                 }
             }
 
-            if (best >= 0)
+            if (best is not null)
             {
                 return best;
             }
         }
 
-        return -1;
+        return null;
     }
 
     /// <summary>The most payload symbols a burst of several datagrams may have at this format: the airtime ceiling, at least 4.</summary>
@@ -600,21 +651,23 @@ public sealed partial class Station
         return symbols;
     }
 
-    private bool TryBuild(int dest, ChannelAccess.Request request, double now)
+    private bool TryBuild(AddressQueue q, ChannelAccess.Request request, double now)
     {
-        DestQueue q = _queues[dest]!;
+        int dest = q.Address.IsEveryone ? 0 : LocatedAt(q.Key, now);
         bool everyone = dest == 0;
+        bool withFor = everyone && !q.Address.IsEveryone;
         _renderer ??= new BurstRenderer();
         LinkChoice choice = everyone ? new LinkChoice(StandardFormats.FirstContact, false) : _link.Choose(dest, now);
         int format = choice.Format;
         int overhead = everyone ? 0 : PreludeBytes;
 
-        // A datagram accepted when the link was faster may not fit one burst now: it is dropped, and the host sees the new room in LinkState.
+        // A datagram accepted when the link was faster, or the address located, may not fit one burst now: it is dropped, and the host sees the new room in LinkState.
         int largest = PayloadCodec.Capacity(format, StandardFormats.MaxSymbols);
+        int aloneBlock = PayloadCodec.AddressBlockSize(1, withFor);
         for (;;)
         {
             Pending? head = q.Expedited.Count > 0 ? q.Expedited[0] : q.Ordinary.Count > 0 ? q.Ordinary[0] : null;
-            if (head is null || head.Length + LengthBytes + overhead <= largest)
+            if (head is null || head.Length + LengthBytes + overhead + aloneBlock <= largest)
             {
                 break;
             }
@@ -627,14 +680,17 @@ public sealed partial class Station
 
         if (q.Count == 0)
         {
-            AfterRemoval(dest, q);
+            AfterRemoval(q);
             return false;
         }
 
         int ceiling = PayloadCodec.Capacity(format, CeilingSymbols(format));
-        int used = overhead;
+        int datagramBytes = 0;
         bool wanted = !everyone && choice.ReportWanted;
         _burst.Items.Clear();
+        int runs = 0;
+        int runLength = 0;
+        Pending? previous = null;
         bool full = false;
         for (int pass = 0; pass < 2 && !full; pass++)
         {
@@ -643,16 +699,22 @@ public sealed partial class Station
             while (taken < list.Count)
             {
                 Pending p = list[taken];
-                int need = used + LengthBytes + p.Length;
-                if (_burst.Items.Count > 0 && need > ceiling)
+                bool newRun = previous is null || previous.From != p.From || previous.Protocol != p.Protocol || runLength == 255;
+                int nextRuns = runs + (newRun ? 1 : 0);
+                int need = overhead + PayloadCodec.AddressBlockSize(nextRuns, withFor) + datagramBytes + LengthBytes + p.Length;
+                if (_burst.Items.Count > 0 && (need > ceiling || nextRuns > MaxRuns))
                 {
                     full = true;
                     break;
                 }
 
                 _burst.Items.Add(p);
-                used = need;
-                wanted |= p.ReportWanted;
+                runs = nextRuns;
+                runLength = newRun ? 1 : runLength + 1;
+                previous = p;
+
+                datagramBytes += LengthBytes + p.Length;
+                wanted |= !everyone && p.ReportWanted;
                 taken++;
             }
 
@@ -671,6 +733,35 @@ public sealed partial class Station
             Unqueue(q, p);
         }
 
+        if (dest != 0)
+        {
+            CoverAnnouncements(dest);
+        }
+
+        // The block of items every data burst carries: From, the runs of datagrams in order (the address they were sent from, their protocol, how many), and For when the burst is for one address the station has not located.
+        int written = 0;
+        for (int i = 0; i < _burst.Items.Count;)
+        {
+            Pending first = _burst.Items[i];
+            int count = 1;
+            while (i + count < _burst.Items.Count && count < 255 && _burst.Items[i + count].From == first.From && _burst.Items[i + count].Protocol == first.Protocol)
+            {
+                count++;
+            }
+
+            PayloadCodec.WriteRun(first.From, first.Protocol, count, _fromValue.AsSpan(written));
+            written += PayloadCodec.RunBytes;
+            i += count;
+        }
+
+        int itemCount = 0;
+        _addressItems[itemCount++] = new ExtensionItem(PayloadCodec.FromTag, _fromValue.AsMemory(0, written));
+        if (withFor)
+        {
+            PayloadCodec.WriteKey(q.Key, _forValue);
+            _addressItems[itemCount++] = new ExtensionItem(PayloadCodec.ForTag, _forValue);
+        }
+
         PayloadPrelude? prelude = everyone ? null : new PayloadPrelude(wanted, _link.ReportFor(dest), false, wanted ? CapabilityWord : null);
         if (prelude is { Recommended: not null })
         {
@@ -678,7 +769,12 @@ public sealed partial class Station
             DropCoveredReport(dest);
         }
 
-        int length = PayloadCodec.Pack(prelude, _pack.AsSpan(0, _burst.Items.Count), _payload);
+        if (!everyone)
+        {
+            RaiseLinkState(dest, now); // what this station has told them may have changed
+        }
+
+        int length = PayloadCodec.Pack(prelude, _addressItems.AsSpan(0, itemCount), _pack.AsSpan(0, _burst.Items.Count), _payload);
         int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
         int number = _burstNumber;
         _burstNumber = (_burstNumber + 1) & 15;
@@ -690,6 +786,7 @@ public sealed partial class Station
 
         _burst.Built = true;
         _burst.Dest = dest;
+        _burst.Queue = q;
         _burst.Format = format;
         _burst.BurstNumber = number;
         _burst.AskedReport = !everyone && wanted;
@@ -699,7 +796,7 @@ public sealed partial class Station
         request.Samples = audio.AsMemory(0, total);
         _served++;
         q.LastServed = _served;
-        AfterRemoval(dest, q);
+        AfterRemoval(q);
         return true;
     }
 
@@ -743,16 +840,17 @@ public sealed partial class Station
 
         if (_burst.Dest != 0)
         {
-            RememberBurst(_burst.Dest, sampleIndex);
+            RememberBurst(_burst.Dest, _burst.Queue!.Address, sampleIndex);
         }
 
+        DataBurstSent?.Invoke(_burst.Dest, _burst.AskedReport, sampleIndex, _burst.Queue!.Address);
         double timeOut = ClockSeconds(sampleIndex);
         double airtime = (sampleIndex - _burst.StartedAt) / (double)SampleRate;
         double rate = StandardFormats.Rate(_burst.Format) * 1000.0;
-        StationName name = NameOfDestination(_burst.Dest);
+        LinkAddress address = _burst.Queue!.Address;
         foreach (Pending p in _burst.Items)
         {
-            Transmitted?.Invoke(new TransmittedEvent(p.Tag, name, _burst.BurstNumber, _burst.Format, rate, airtime, timeOut));
+            Transmitted?.Invoke(new TransmittedEvent(p.Tag, address, _burst.BurstNumber, _burst.Format, rate, airtime, timeOut));
             Release(p);
         }
 
@@ -773,6 +871,12 @@ public sealed partial class Station
         _burst.Started = false;
         EnsureDataRequest();
     }
+
+    /// <summary>A data burst has ended on air: the station number it went to (0 for everyone), whether it asked for a report, the sample it ended at and the address its datagrams were for. For tests: no host sees it.</summary>
+    internal event Action<int, bool, long, LinkAddress>? DataBurstSent;
+
+    /// <summary>A silence was counted against a station: its number and the count now. For tests.</summary>
+    internal event Action<int, int>? SilenceCounted;
 
     private void RescheduleAnswerTimer()
     {
@@ -810,6 +914,13 @@ public sealed partial class Station
             if (_heardAt[dest] <= ended)
             {
                 _link.NoAnswer(dest);
+                SilenceCounted?.Invoke(dest, _link.TryGetNeighbour(dest, out LinkNeighbour? counted) && counted is not null ? counted.Silences : -1);
+                if (_link.TryGetNeighbour(dest, out LinkNeighbour? nb) && nb is { Silences: >= 3 })
+                {
+                    // Three bursts running have met silence: the station falls back to first contact, and what is known of where its addresses live goes with it.
+                    ForgetAddressesAt(dest, ClockSeconds(due));
+                }
+
                 RaiseLinkState(dest, ClockSeconds(due));
             }
         }
@@ -819,11 +930,24 @@ public sealed partial class Station
 
     // ---- what the tests read ----
 
-    /// <summary>Datagrams queued for a station (0 for everyone), not counting those in a burst.</summary>
-    internal int QueuedFor(int number) => _queues[number]?.Count ?? 0;
+    /// <summary>Datagrams queued for a link address, not counting those in a burst.</summary>
+    internal int QueuedFor(LinkAddress address) => FindQueue(address)?.Count ?? 0;
 
-    /// <summary>The queue's airtime now at the format in use, seconds.</summary>
-    internal double QueuedAirtimeFor(int number) => _queues[number] is { } q ? AirtimeOf(q, FormatFor(number, ClockSeconds(SampleCount))) : 0;
+    /// <summary>Datagrams queued for every address, not counting those in a burst.</summary>
+    internal int QueuedTotal => _queuedCount;
+
+    /// <summary>The address's queue's airtime now at the format in use, seconds.</summary>
+    internal double QueuedAirtimeFor(LinkAddress address)
+    {
+        if (FindQueue(address) is not { } q)
+        {
+            return 0;
+        }
+
+        double now = ClockSeconds(SampleCount);
+        int number = address.IsEveryone ? 0 : LocatedAt(q.Key, now);
+        return AirtimeOf(q, number, FormatFor(number, now));
+    }
 
     /// <summary>True while a burst has been built and not finished: handed to the audio layer, on air, or withdrawn and waiting.</summary>
     internal bool BurstBuilt => _burst.Built;

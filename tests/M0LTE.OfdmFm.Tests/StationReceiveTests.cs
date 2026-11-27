@@ -22,6 +22,7 @@ public class StationReceiveTests
         int format = FormatOfOpening[which];
         OpeningOf(format).Should().Be((FormatOpening)which);
         using var rig = new ReceiveRig(0);
+        rig.SendTo(7); // the host has sent to the address that lives at station 7, so what is known of it is told
         byte[] datagram = TestBurst.Datagram(3, 60);
         var builder = new StreamBuilder().Silence(1.5);
         Placed placed = builder.Add(TestBurst.Data(7, destination, format, [datagram]));
@@ -33,13 +34,14 @@ public class StationReceiveTests
         rig.Datagrams.Should().HaveCount(1);
         rig.Datagrams[0].Sender.Should().Be(7);
         rig.Datagrams[0].Everyone.Should().Be(destination == 0);
+        rig.Log.Single(l => l.StartsWith("rx ", StringComparison.Ordinal)).Should().Contain(destination == 0 ? "ToEveryone" : "ToThisStation");
         rig.Datagrams[0].Data.Should().Equal(datagram);
         rig.Calls.Should().ContainSingle().Which.Should().Match<Station.AdaptationCall>(c => c.Decoded && c.Sender == 7 && c.Dest == destination && !c.IsReport);
         rig.Calls[0].Now.Should().BeApproximately(placed.End / 48000.0, 4.0 / 48000);
         rig.Station.Adaptation.TryGetNeighbour(7, out LinkNeighbour? nb).Should().BeTrue();
         nb!.LastHeard.Should().BeApproximately(placed.End / 48000.0, 4.0 / 48000);
         rig.Log.Count(l => l.StartsWith("rx ", StringComparison.Ordinal)).Should().Be(1);
-        rig.Log.Where(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().ContainSingle().Which.Should().StartWith("link #7 ");
+        rig.Log.Where(l => l.StartsWith("link ", StringComparison.Ordinal)).Should().HaveCount(2, "once when the host first sent, at first contact, and once when the burst was heard").And.OnlyContain(l => l.StartsWith("link #7 located True ", StringComparison.Ordinal));
     }
 
     [Theory]

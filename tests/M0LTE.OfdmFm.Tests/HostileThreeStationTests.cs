@@ -46,11 +46,18 @@ public class HostileThreeStationTests
     }
 
     [Fact]
-    public void A_Carrier_Indication_Costs_Fewer_Collisions_Than_Detection_Alone_On_The_Same_Traffic()
+    public void Both_Ways_Of_Noticing_A_Carrier_Deliver_Everything_Once_Whatever_The_Seed()
     {
-        var with = Run(true);
-        var without = Run(false);
-        with.CollidedBursts.Should().BeLessThan(without.CollidedBursts);
+        // What holds on every seed tried (1 to 4 here, 1 to 8 in the gated test below): every datagram arrives, none twice. How many bursts collided is a seeded figure, kept for seed 1 above, and is not compared between the two:
+        // over seeds 1 to 8 the totals do not differ by more than chance (see HostileLongTests).
+        foreach (int seed in new[] { 2, 3, 4 })
+        {
+            foreach (bool indication in new[] { true, false })
+            {
+                HostileScenarios.ThreeAll r = HostileScenarios.ThreeHearAll(HostileScenarios.Default, indication, seed, perPair: 3, length: 40, seconds: 110, spreadSeconds: 25);
+                Check(r);
+            }
+        }
     }
 
     [Fact]

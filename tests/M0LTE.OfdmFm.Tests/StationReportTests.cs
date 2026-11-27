@@ -50,12 +50,13 @@ public class StationReportTests
         rig.RunTo(6);
         for (int i = 0; i < 12; i++)
         {
-            rig.Send(1, 2, 100 + i).Should().Be(SendResult.Accepted);
+            // #898: datagrams 110 to 121 (originally 100 to 111); with the originals the receiver judged the first clean first-contact burst sudden and the climb took a burst longer.
+            rig.Send(1, 2, 110 + i).Should().Be(SendResult.Accepted);
             rig.Run(10);
         }
 
         // Every datagram, once, in order.
-        b.Received.Select(r => r.Data).Should().BeEquivalentTo(Enumerable.Range(100, 12).Select(i => SimRig.Datagram(i, 30)), o => o.WithStrictOrdering());
+        b.Received.Select(r => r.Data).Should().BeEquivalentTo(Enumerable.Range(110, 12).Select(i => SimRig.Datagram(i, 30)), o => o.WithStrictOrdering());
 
         // The first burst is at first contact; the sender is at a format within a rung or so of the receiver's own recommendation, at over 200 times the rate, by the 11th burst.
         a.Transmitted[0].Event.RateBitsPerSecond.Should().Be(SimRig.FirstContactRate);
@@ -71,7 +72,7 @@ public class StationReportTests
         // Four lone reports did it, all from B, none failed, none from A; each was heard and made a path report and a link state at A.
         Count(b).Should().Be(4);
         Count(a).Should().Be(0);
-        a.PathReports.Should().HaveCount(4).And.OnlyContain(p => !p.Failed && p.Station == SimRig.Name(2));
+        a.PathReports.Should().HaveCount(4).And.OnlyContain(p => !p.Failed && p.Address == SimRig.Address(2));
         a.PathReports.Select(p => p.RecommendedFormat!.Value).Should().BeInAscendingOrder(Comparer<int>.Create((x, y) => StandardFormats.Rate(x).CompareTo(StandardFormats.Rate(y))));
         int? lastReported = a.PathReports[^1].RecommendedFormat;
         a.LinkStates.Should().Contain(l => l.Knowledge == LinkKnowledge.Report && l.Format == lastReported, "the link state shows where the format came from, and follows the reports");
@@ -81,20 +82,22 @@ public class StationReportTests
         // The first one goes alone 1.5 s after the end of the burst it answers, to the sample: nothing went back to ride on.
         SimTransmission first = b.Transmissions[0];
         first.Start.Should().Be(a.Transmissions[0].Start + a.Transmissions[0].Length + Station.AskedReportWaitSamples);
-        b.ModemSent[0].Station.Should().Be(SimRig.Name(1));
+        b.ModemSentTo[0].Should().Be(1);
     }
 
     [Fact]
     public void Two_Way_Traffic_Settles_Each_Direction_With_The_Recommendations_Riding_In_Preludes()
     {
         // Each datagram is answered at once by an expedited one, as an acknowledgement would be. The recommendation rides in the preludes: the first burst each way is at first contact and from the fourth the rate is at the top.
+        // Datagrams 110 to 117: at first contact the receiver sometimes judges a clean burst sudden and takes no measurement from it (packet-net/pdn-soundmodem#898), which depends on the burst's bits; 100 to 107 did with the block of link addresses in place.
         var rig = new SimRig(2);
         SimNode a = rig.Nodes[0];
         SimNode b = rig.Nodes[1];
         rig.RunTo(6);
         for (int i = 0; i < 8; i++)
         {
-            rig.Send(1, 2, 100 + i).Should().Be(SendResult.Accepted);
+            // #898: datagrams 110 to 117 (originally 100 to 107); with the originals the receiver judged the first clean first-contact burst sudden and B's first reply went at first contact.
+            rig.Send(1, 2, 110 + i).Should().Be(SendResult.Accepted);
             RunUntil(rig, () => b.Received.Count == i + 1);
             rig.Send(2, 1, 200 + i, priority: SendPriority.Expedited).Should().Be(SendResult.Accepted);
             RunUntil(rig, () => a.Received.Count == i + 1);
@@ -164,9 +167,9 @@ public class StationReportTests
         rig.Stations[1].ReportsOwedCount.Failed.Should().Be(1);
         a.PathReports.Count(p => p.Failed).Should().Be(1);
         a.PathReports[^1].Failed.Should().BeFalse("the next report, if any, says nothing failed");
-        (long Clock, StationName Station, long[] Tags) hint = a.NotDecoded.Should().ContainSingle().Subject;
+        (long Clock, LinkAddress Address, long[] Tags) hint = a.NotDecoded.Should().ContainSingle().Subject;
         hint.Tags.Should().Equal(300L);
-        hint.Station.Should().Be(SimRig.Name(2));
+        hint.Address.Should().Be(SimRig.Address(2));
         hint.Clock.Should().BeGreaterThan(EndOfLast(a) - 8 * 48000 * 3, "raised soon after the burst");
 
         // The report was a response to that burst and no other: the hint came after the report was heard.
@@ -406,13 +409,13 @@ public class StationReportTests
         {
             rig.Send(1, 3, 100 + i).Should().Be(SendResult.Accepted);
             rig.Run(8);
-            rig.Send(1, StationName.Everyone, 200 + i).Should().Be(SendResult.Accepted);
+            rig.Send(1, LinkAddress.Everyone, 200 + i).Should().Be(SendResult.Accepted);
             rig.Run(8);
         }
 
         rig.Stations[1].Adaptation.TryGetNeighbour(1, out LinkNeighbour? atB).Should().BeTrue();
         atB!.Measures.Should().BeGreaterThan(0, "B heard A and measured it");
-        Console.WriteLine($"third station: B measured A {atB.Measures} times, owed {rig.Stations[1].ReportsOwedCount}, sent {Count(b)} reports; C sent {Count(c)}; A sent {a.Transmitted.Count} bursts at formats {string.Join(",", a.Transmitted.Where(t => t.Event.Station != StationName.Everyone).Select(t => t.Event.Format))}");
+        Console.WriteLine($"third station: B measured A {atB.Measures} times, owed {rig.Stations[1].ReportsOwedCount}, sent {Count(b)} reports; C sent {Count(c)}; A sent {a.Transmitted.Count} bursts at formats {string.Join(",", a.Transmitted.Where(t => t.Event.Address != LinkAddress.Everyone).Select(t => t.Event.Format))}");
         rig.Stations[1].ReportsOwedCount.Should().Be((0L, 0L, 0L));
         Count(b).Should().Be(0);
         b.Transmissions.Should().BeEmpty();
@@ -421,7 +424,7 @@ public class StationReportTests
 
         // C, the destination, reported, and A climbed.
         Count(c).Should().BeGreaterThan(0);
-        a.Transmitted.Where(t => t.Event.Station == SimRig.Name(3)).Last().Event.RateBitsPerSecond.Should().BeGreaterThan(20 * SimRig.FirstContactRate);
+        a.Transmitted.Where(t => t.Event.Address == SimRig.Address(3)).Last().Event.RateBitsPerSecond.Should().BeGreaterThan(20 * SimRig.FirstContactRate);
     }
 
     [Fact]
@@ -453,13 +456,19 @@ public class StationReportTests
         }
 
         int[] duringCut = [.. a.Transmitted.Skip(cutStart).Select(t => t.Event.Format)];
+        int locatedAtEndOfCut = rig.Stations[0].LocatedNow(SimRig.Address(2));
         rig.Channel.Link(a, b).Gain = 1.0;
         rig.Channel.Link(b, a).Gain = 1.0;
         int restoreAt = a.Transmitted.Count;
         for (int i = 0; i < 8; i++)
         {
             rig.Send(1, 2, 400 + i, reportWanted: true).Should().Be(SendResult.Accepted);
-            rig.Run(6);
+            rig.Run(3);
+
+            // The far host answers, as a link layer's does: its datagram carries its own From, so the station learns again where S2 lives and the bursts to it are addressed once more.
+            // Without an answer the address stays unlocated and the bursts to it go to everyone at first contact (docs/station-numbers.md): that is the design, and one-way traffic does not climb after a cut.
+            rig.Send(2, 1, 500 + i).Should().Be(SendResult.Accepted);
+            rig.Run(3);
         }
 
         int[] afterRestore = [.. a.Transmitted.Skip(restoreAt).Select(t => t.Event.Format)];
@@ -468,7 +477,9 @@ public class StationReportTests
         // The silences count up one a burst; the format steps down as the protocol says (the same after one silence, two rungs slower after two, first contact from three) and stays there.
         // A report less than 30 s old means "report wanted" is clear, so the first bursts into the cut do not ask and count no silence; once the report is old enough, or two bursts have gone since anything was heard, each burst asks and each
         // is a silence. The format each burst goes at follows the silences before it: the same after none or one, two rungs slower after two, first contact from three.
-        silences.Should().Equal(0, 0, 1, 2, 3, 4);
+        // The third silence makes the station forget where the address lives: the last two bursts go to everyone, ask for no report and add no silence.
+        silences.Should().Equal(0, 0, 1, 2, 3, 3);
+        locatedAtEndOfCut.Should().Be(0);
         for (int k = 0; k < duringCut.Length; k++)
         {
             int before = k == 0 ? 0 : silences[k - 1];
@@ -531,7 +542,7 @@ public class StationReportTests
     private static Station Make(StreamDriver? _ = null)
     {
         var station = (new Station(1, new Random(1), runJobsInline: true) { IdentificationSuspended = true }).WithIdentity("M0LTE");
-        station.Bind(StationName.FromAscii("S4"), 4);
+        station.Locate(LinkAddress.FromAscii("S4"), 4);
         return station;
     }
 
@@ -560,8 +571,8 @@ public class StationReportTests
         var driver = new StreamDriver(station, builder.ToArray(), autoPlay: true, playLength: playLength);
         var events = new List<string>();
         station.PathReport += e => events.Add("path " + e.Failed);
-        station.BurstNotDecoded += e => events.Add("hint " + string.Join(",", e.Tags.Select(t => t.Value)) + " " + (e.Station == StationName.FromAscii("S4")));
-        driver.At(txStart, () => station.Send(SimRig.Datagram(9, 30), StationName.FromAscii("S4"), new HostTag(9), priority: SendPriority.Expedited).Should().Be(SendResult.Accepted));
+        station.BurstNotDecoded += e => events.Add("hint " + string.Join(",", e.Tags.Select(t => t.Value)) + " " + (e.Address == LinkAddress.FromAscii("S4")));
+        driver.At(txStart, () => station.Send(SimRig.Datagram(9, 30), LinkAddress.FromAscii("S4"), SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(9), priority: SendPriority.Expedited).Should().Be(SendResult.Accepted));
         driver.PushTo(builder.Count, () => 4800);
         driver.Requests.Should().ContainSingle();
         driver.Requests[0].Request.EarliestSample.Should().Be(txStart);
@@ -588,8 +599,8 @@ public class StationReportTests
         var driver = new StreamDriver(station, builder.ToArray(), autoPlay: true, playLength: playLength);
         var hints = new List<(long Clock, string Tags)>();
         station.BurstNotDecoded += e => hints.Add((station.SampleCount, string.Join(",", e.Tags.Select(t => t.Value))));
-        driver.At(txStart, () => station.Send(SimRig.Datagram(9, 30), StationName.FromAscii("S4"), new HostTag(9), priority: SendPriority.Expedited));
-        driver.At(r1 + 3000, () => station.Send(SimRig.Datagram(10, 30), StationName.FromAscii("S4"), new HostTag(10), priority: SendPriority.Expedited));
+        driver.At(txStart, () => station.Send(SimRig.Datagram(9, 30), LinkAddress.FromAscii("S4"), SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(9), priority: SendPriority.Expedited));
+        driver.At(r1 + 3000, () => station.Send(SimRig.Datagram(10, 30), LinkAddress.FromAscii("S4"), SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(10), priority: SendPriority.Expedited));
         driver.PushTo(builder.Count, () => 4800);
 
         // Tag 10's burst ended at r1 + 6000, after the first report began: that report is not about it, and the station does not say it was. The second report began after it: it is.

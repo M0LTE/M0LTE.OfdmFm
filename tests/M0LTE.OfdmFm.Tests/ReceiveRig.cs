@@ -49,11 +49,11 @@ internal sealed class ReceiveRig : IDisposable
         Station.SetExternalBusy(true);
         Station.Received += e =>
         {
-            Datagrams.Add((e.SenderNumber, e.ToEveryone, e.Datagram.ToArray()));
-            Log.Add(string.Create(CultureInfo.InvariantCulture, $"rx from {e.SenderNumber} name {(e.Sender is { } n ? n.ToString() : "-")} everyone {e.ToEveryone} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
+            Datagrams.Add((Station.HearingSender, e.Addressing != Addressing.ToThisStation, e.Datagram.ToArray()));
+            Log.Add(string.Create(CultureInfo.InvariantCulture, $"rx from {Station.HearingSender} key {e.FromKey:X8} proto {e.Protocol:X2} {e.Addressing} for {(e.ForKey is { } k ? k.ToString("X8", CultureInfo.InvariantCulture) : "-")} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
         };
-        Station.PathReport += e => Log.Add(string.Create(CultureInfo.InvariantCulture, $"path {Text(e.Station)} fmt {e.RecommendedFormat?.ToString(CultureInfo.InvariantCulture) ?? "-"} failed {e.Failed}"));
-        Station.LinkState += e => Log.Add(string.Create(CultureInfo.InvariantCulture, $"link {Text(e.Station)} fmt {e.Format?.ToString(CultureInfo.InvariantCulture) ?? "-"} rate {e.RateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} room {e.DatagramRoom} {e.Knowledge} age {e.AgeSeconds:R} gone {e.Gone}"));
+        Station.PathReport += e => Log.Add(string.Create(CultureInfo.InvariantCulture, $"path {Text(e.Address)} fmt {e.RecommendedFormat?.ToString(CultureInfo.InvariantCulture) ?? "-"} failed {e.Failed}"));
+        Station.LinkState += e => Log.Add(string.Create(CultureInfo.InvariantCulture, $"link {Text(e.Address)} located {e.Located} fmt {e.Format?.ToString(CultureInfo.InvariantCulture) ?? "-"} rate {e.RateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} told {e.RecommendedRateBitsPerSecond?.ToString("R", CultureInfo.InvariantCulture) ?? "-"} room {e.DatagramRoom} {e.Knowledge} age {e.AgeSeconds:R} gone {e.Gone}"));
         Station.AdaptationCalled = c =>
         {
             Calls.Add(c);
@@ -79,6 +79,25 @@ internal sealed class ReceiveRig : IDisposable
     /// <summary>The station.</summary>
     public Station Station { get; }
 
+    /// <summary>The address of the host's neighbour at station number <paramref name="number"/>: "#" and the number, as text.</summary>
+    public static LinkAddress Address(int number) => LinkAddress.FromAscii("#" + number.ToString(CultureInfo.InvariantCulture));
+
+    /// <summary>The address of the host's own, which its datagrams are sent from.</summary>
+    public static LinkAddress Own { get; } = LinkAddress.FromAscii("OWN");
+
+    /// <summary>
+    /// The host sends one small datagram to the address of each station number given, which the station has located there (as a conversation would have), so that events about those stations are raised by address.
+    /// The station never transmits (the carrier indication is held), so the datagrams stay queued.
+    /// </summary>
+    public void SendTo(params int[] numbers)
+    {
+        foreach (int n in numbers)
+        {
+            Station.Locate(Address(n), n);
+            Station.Send(new byte[] { 1 }, Address(n), Own, LinkProtocol.NoLayer3, new HostTag(n)).Should().Be(SendResult.Accepted);
+        }
+    }
+
     /// <summary>Every event and every call on the adaptation rules, as text, in the order they happened.</summary>
     public List<string> Log { get; } = [];
 
@@ -92,7 +111,7 @@ internal sealed class ReceiveRig : IDisposable
     public List<Station.AdaptationCall> Calls { get; } = [];
 
     /// <summary>Bytes of an event's station name as text.</summary>
-    private static string Text(StationName name) => System.Text.Encoding.ASCII.GetString(name.Bytes);
+    private static string Text(LinkAddress name) => System.Text.Encoding.ASCII.GetString(name.Bytes);
 
     private static string Hash(double[] values)
     {

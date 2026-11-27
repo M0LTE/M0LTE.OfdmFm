@@ -11,7 +11,7 @@ public class HostilePathCutTests
     // One run, shared by the tests that read it (it is deterministic, so sharing it changes nothing but the time).
     private static readonly Lazy<HostileScenarios.Cut> Shared = new(() =>
     {
-        HostileScenarios.Cut r = HostileScenarios.PathCut(HostileScenarios.Default, 3); // seed 3: the scenario is seed-sensitive (over seeds 1 to 8 only 3, 7 and 8 reach three silences at both ends and a first-contact last burst each way)
+        HostileScenarios.Cut r = HostileScenarios.PathCut(HostileScenarios.Default, 3); // seed 3, left as it was while a fault in the binding rule is looked at: with a cut of 5 rounds the claims below do not hold on seeds 1, 2, 4, 5 and 6 because the cut is too short for a station to count three silences and then send once more (docs/station-design.md, Link addresses as built); with a cut of 8 rounds they hold except where a lone report from the third station binds the other station's address to it (seeds 5, 6 and 7)
         Hostile.Say(HostileScenarios.Describe(r));
         return r;
     });

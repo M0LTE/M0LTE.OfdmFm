@@ -55,6 +55,12 @@ internal sealed class SimNode
     /// <summary>Every datagram received: the clock, the sender's number (read from the station by the test seam: no host sees it), whether it was for everyone (with or without a For), how it was addressed, the For key, the bytes and the quality.</summary>
     public List<SimReceived> Received { get; } = [];
 
+    /// <summary>Every data burst that ended on air: the sample it ended at, the station number it went to (0 for everyone), whether it asked for a report and the address its datagrams were for. Read from the station by a test seam.</summary>
+    public List<(long End, int Dest, bool Asked, LinkAddress Address)> BurstsSent { get; } = [];
+
+    /// <summary>Every silence counted: the clock, the station number and the count after it.</summary>
+    public List<(long Clock, int Dest, int Count)> SilenceCounts { get; } = [];
+
     /// <summary>Every <see cref="Station.Transmitted"/> event, in order, with the clock.</summary>
     public List<(long Clock, TransmittedEvent Event)> Transmitted { get; } = [];
 
@@ -759,6 +765,8 @@ internal sealed class SimChannel
             n.Received.Add(new SimReceived(s.SampleCount, s.HearingSender, e.Addressing == Addressing.ToEveryone || e.Addressing == Addressing.ForAddressNotYetLocated, e.Addressing, e.ForKey, e.Datagram.ToArray(), e.QualityDb, e.FromKey, e.Protocol));
             Say(string.Create(CultureInfo.InvariantCulture, $"rx from {s.HearingSender} key {e.FromKey:X8} proto {e.Protocol:X2} {e.Addressing} for {(e.ForKey is { } k ? k.ToString("X8", CultureInfo.InvariantCulture) : "-")} q {e.QualityDb:R} data {Convert.ToHexString(e.Datagram.Span)}"));
         };
+        s.DataBurstSent += (dest, asked, end, address) => n.BurstsSent.Add((end, dest, asked, address));
+        s.SilenceCounted += (dest, count) => n.SilenceCounts.Add((s.SampleCount, dest, count));
         s.PathReport += e =>
         {
             n.PathReports.Add(e);

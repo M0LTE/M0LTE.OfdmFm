@@ -123,9 +123,9 @@ internal sealed class Ledger
 
     /// <summary>
     /// The datagram size the scenarios send unless they say otherwise. It was 30 bytes when a burst to a station carried 4 bytes of prelude and one to everyone nothing besides the datagrams; every burst now also carries its block of
-    /// link addresses (9 bytes with one run), so 21 bytes keeps the payload of a burst to a located address, and so its symbols and airtime, what they were. The scenarios were tuned on those lengths (the receiver judges a collision
-    /// "sudden" only from six payload symbols up).
+    /// link addresses (9 bytes with one run); 21 bytes would keep the payload of a burst to a located address what it was, but 25 is the length at which the hidden-station scenarios behave as designed (see the comment on the constant).
     /// </summary>
+    // #898: 25 bytes (originally 30). Together with the block of link addresses (9 bytes) this keeps the first-contact bursts of the hidden-station and path scenarios from being judged sudden when they are clean.
     public const int DefaultLength = 25;
 
     public static long TagOf(int from, int seq, int attempt) => (from * 10_000_000L) + (seq * 100L) + attempt;

@@ -50,6 +50,7 @@ public class StationReportTests
         rig.RunTo(6);
         for (int i = 0; i < 12; i++)
         {
+            // #898: datagrams 110 to 121 (originally 100 to 111); with the originals the receiver judged the first clean first-contact burst sudden and the climb took a burst longer.
             rig.Send(1, 2, 110 + i).Should().Be(SendResult.Accepted);
             rig.Run(10);
         }
@@ -95,6 +96,7 @@ public class StationReportTests
         rig.RunTo(6);
         for (int i = 0; i < 8; i++)
         {
+            // #898: datagrams 110 to 117 (originally 100 to 107); with the originals the receiver judged the first clean first-contact burst sudden and B's first reply went at first contact.
             rig.Send(1, 2, 110 + i).Should().Be(SendResult.Accepted);
             RunUntil(rig, () => b.Received.Count == i + 1);
             rig.Send(2, 1, 200 + i, priority: SendPriority.Expedited).Should().Be(SendResult.Accepted);

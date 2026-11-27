@@ -843,6 +843,7 @@ public sealed partial class Station
             _floods.Add(new Flood(_burst.Queue.Key, sampleIndex, sampleIndex + AnswerWaitSamples(_burst.Length)));
         }
 
+        DataBurstSent?.Invoke(_burst.Dest, _burst.AskedReport, sampleIndex, _burst.Queue!.Address);
         double timeOut = ClockSeconds(sampleIndex);
         double airtime = (sampleIndex - _burst.StartedAt) / (double)SampleRate;
         double rate = StandardFormats.Rate(_burst.Format) * 1000.0;
@@ -883,6 +884,12 @@ public sealed partial class Station
         }
     }
 
+    /// <summary>A data burst has ended on air: the station number it went to (0 for everyone), whether it asked for a report, the sample it ended at and the address its datagrams were for. For tests: no host sees it.</summary>
+    internal event Action<int, bool, long, LinkAddress>? DataBurstSent;
+
+    /// <summary>A silence was counted against a station: its number and the count now. For tests.</summary>
+    internal event Action<int, int>? SilenceCounted;
+
     private void RescheduleAnswerTimer()
     {
         if (_answerChecks.Count == 0)
@@ -919,6 +926,7 @@ public sealed partial class Station
             if (_heardAt[dest] <= ended)
             {
                 _link.NoAnswer(dest);
+                SilenceCounted?.Invoke(dest, _link.TryGetNeighbour(dest, out LinkNeighbour? counted) && counted is not null ? counted.Silences : -1);
                 if (_link.TryGetNeighbour(dest, out LinkNeighbour? nb) && nb is { Silences: >= 3 })
                 {
                     // Three bursts running have met silence: the station falls back to first contact, and what is known of where its addresses live goes with it.

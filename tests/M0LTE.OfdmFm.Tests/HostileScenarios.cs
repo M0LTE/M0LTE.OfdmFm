@@ -221,6 +221,7 @@ internal static class HostileScenarios
         rig.RunTo(6);
         for (int i = 0; i < 4; i++)
         {
+            // #898: datagram contents 110 to 113 (originally 100 to 103); with 100 to 103 the receiver judged a clean first-contact burst sudden and the path settled at format 27, not 124.
             rig.Send(1, 2, 110 + i);
             rig.Run(7);
             rig.Send(2, 1, 210 + i);
@@ -321,6 +322,7 @@ internal static class HostileScenarios
         rig.RunTo(6);
         for (int i = 0; i < pairs; i++)
         {
+            // #898: datagram contents 110 to 113 and 210 to 213 (originally 100 to 103 and 200 to 203); with the originals C measured only three of A's four bursts.
             rig.Send(1, 2, 110 + i);
             rig.Run(8);
             rig.Send(2, 1, 210 + i);
@@ -382,7 +384,7 @@ internal static class HostileScenarios
 
     public sealed record Cut(
         double CutStart, double CutEnd, string AToBBefore, string AToBCut, string AToBAfter, string BToABefore, string BToACut, string BToAAfter, string AToCBefore, string AToCCut, string AToCAfter, string BToCCut,
-        int[] DeliveredByPeriod, int[] SentByPeriod, int SilencesAtCutEnd, int MaxSilencesA, int MaxSilencesB, int CRecommendsForABefore, int CRecommendsForAAfterCut, int? BurstsToRecover, double? SecondsToRecover, double PreCutRateKbit, int[] BurstsByPeriod, int[] CollidedByPeriod, int ToCSentInCut, int ToCDeliveredInCut, List<string> Log);
+        int[] DeliveredByPeriod, int[] SentByPeriod, int SilencesAtCutEnd, int MaxSilencesA, int MaxSilencesB, int CRecommendsForABefore, int CRecommendsForAAfterCut, int? BurstsToRecover, double? SecondsToRecover, double PreCutRateKbit, int[] BurstsByPeriod, int[] CollidedByPeriod, int ToCSentInCut, int ToCDeliveredInCut, List<string> Log, List<string>? Trace = null);
 
     /// <summary>
     /// Every <paramref name="spacing"/> seconds A sends B and C and B sends A and C, each datagram at a seeded moment within the round (C only answers). Warm-up for <paramref name="warm"/> rounds, then A and B cannot hear each other
@@ -489,7 +491,28 @@ internal static class HostileScenarios
             cutStart / 48000.0, cutEnd / 48000.0, Fmts(rig.Nodes[0], 2, 0, cutStart), Fmts(rig.Nodes[0], 2, cutStart, cutEnd), Fmts(rig.Nodes[0], 2, cutEnd, long.MaxValue),
             Fmts(rig.Nodes[1], 1, 0, cutStart), Fmts(rig.Nodes[1], 1, cutStart, cutEnd), Fmts(rig.Nodes[1], 1, cutEnd, long.MaxValue),
             Fmts(rig.Nodes[0], 3, 0, cutStart), Fmts(rig.Nodes[0], 3, cutStart, cutEnd), Fmts(rig.Nodes[0], 3, cutEnd, long.MaxValue), Fmts(rig.Nodes[1], 3, cutStart, cutEnd),
-            delivered, sent, silencesAtEnd, maxA, maxB, cRecBefore, cRecAfterCut, burstsToRecover, secondsToRecover, pre / 1000.0, bursts3, collided3, ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd), ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd && ledger.Delivered(i)), rig.Channel.Log);
+            delivered, sent, silencesAtEnd, maxA, maxB, cRecBefore, cRecAfterCut, burstsToRecover, secondsToRecover, pre / 1000.0, bursts3, collided3, ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd), ledger.Items.Count(i => i.To == 3 && i.FirstSentClock >= cutStart && i.FirstSentClock < cutEnd && ledger.Delivered(i)), rig.Channel.Log, CutTrace(rig, cutStart, cutEnd));
+    }
+
+    /// <summary>What each of A and B did towards the other inside the cut: every burst that went to the other station or to everyone (when, which, whether it asked for a report), and each silence counted.</summary>
+    private static List<string> CutTrace(SimRig rig, long cutStart, long cutEnd)
+    {
+        var lines = new List<string>();
+        foreach ((int node, string name, int other) in new[] { (0, "A", 2), (1, "B", 1) })
+        {
+            SimNode n = rig.Nodes[node];
+            foreach ((long end, int dest, bool asked, LinkAddress address) in n.BurstsSent.Where(b => b.End >= cutStart && b.End < cutEnd + (30 * 48000L) && b.Address == SimRig.Address(other)))
+            {
+                lines.Add($"{name} burst ended {(end - cutStart) / 48000.0:F1} s into the cut, for the other, {(dest == 0 ? "to everyone (address forgotten)" : $"addressed to station {dest}")}, asked for a report {asked}");
+            }
+
+            foreach ((long clock, int dest, int count) in n.SilenceCounts.Where(c => c.Clock >= cutStart && c.Clock < cutEnd + (30 * 48000L) && c.Dest == other))
+            {
+                lines.Add($"{name} silence {count} counted {(clock - cutStart) / 48000.0:F1} s into the cut");
+            }
+        }
+
+        return lines;
     }
 
     public static string Describe(Cut r) =>

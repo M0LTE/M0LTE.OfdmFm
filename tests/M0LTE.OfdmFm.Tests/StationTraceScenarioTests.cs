@@ -244,6 +244,7 @@ public class StationTraceScenarioTests
             "  63.49  Something else landed on the burst from S1: not used to judge the path",
             "  63.49  Told S1 its burst was not decoded: it can send at 37.9 kbit/s");
         s2.Texts.Should().Contain("Owing S1 a report: its burst was not decoded");
+        s2.LinesAt(TraceLevel.Flow).Should().Contain("  34.60  Path from S1 is good for 37.9 kbit/s (was 42.9)", "an earlier burst the station could not decode brought the rate down");
         s1.LinesAt(TraceLevel.Flow).Should().Contain("  63.90  Told by S2: our burst was not decoded, we can send at 37.9 kbit/s");
         s1.Texts.Should().Contain("Told the host that its burst to S2 was not decoded: 1 datagram");
         s1.Texts.Should().Contain("Holding ordinary traffic until 64.66: report from S2");
@@ -273,6 +274,7 @@ public class StationTraceScenarioTests
         s1.LinesAt(TraceLevel.Detail).Should().Contain("   7.87  Identification due: first transmission");
         s1.Lines.Should().Contain("   8.02  Sent identification as M0S1, 1.19 s on air");
         s1.Lines.Should().Contain("  11.15  Heard S2: identified as M0S2, signal 74 dB");
+        s1.Texts.Should().Contain("Heard from S2 within the wait: not counted as silence");
         s2.Lines.Should().Contain("   9.48  Heard address f3b8bcd6: identified as M0S1, signal 73 dB");
         s2.Lines.Should().Contain("   9.82  Sent identification as M0S2, 1.19 s on air");
     }
@@ -306,6 +308,28 @@ public class StationTraceScenarioTests
         taps[1].Lines.Should().Contain("  27.90  Heard a notice that the station using number 7 must move");
         taps[1].Lines.Should().Contain("  27.90  Changed station number from 7 to 48: told to move by another station");
         taps[0].Texts.Should().NotContain(t => t.StartsWith("Changed", StringComparison.Ordinal), "the notice named the later station, and the first stays");
+    }
+
+    [Fact]
+    public void A_station_with_no_callsign_hears_two_stations_hold_a_number_and_says_it_cannot_tell_them()
+    {
+        var rig = new SimRig(3, numbers: [7, 7, 3], ids: [0x01010101, 0x02020202, 0x03030303], locates: (_, _) => false, connect: false, identified: i => i != 3);
+        rig.Channel.Connect(rig.Nodes[0], rig.Nodes[2], 1.0, 0.004);
+        rig.Channel.Connect(rig.Nodes[1], rig.Nodes[2], 1.0, 0.004);
+        foreach (Station s in rig.Stations)
+        {
+            s.IdentificationSuspended = false;
+            s.IdentificationInterval = 20L * 48000;
+        }
+
+        var listener = new TraceTap(rig.Stations[2]);
+        rig.RunTo(2);
+        rig.Send(1, 3, 1);
+        rig.RunTo(14);
+        rig.Send(2, 3, 2);
+        rig.RunTo(60);
+        listener.Texts.Should().Contain("Station number 7 is in use by two stations: not telling, no callsign set");
+        listener.Texts.Should().NotContain(t => t.StartsWith("Told", StringComparison.Ordinal));
     }
 
     // ---- addresses ----

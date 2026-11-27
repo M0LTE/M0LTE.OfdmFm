@@ -390,12 +390,15 @@ internal static class HostileScenarios
     /// Every <paramref name="spacing"/> seconds A sends B and C and B sends A and C, each datagram at a seeded moment within the round (C only answers). Warm-up for <paramref name="warm"/> rounds, then A and B cannot hear each other
     /// for <paramref name="cutRounds"/> rounds, then the path is restored for <paramref name="after"/> rounds.
     /// </summary>
+    public static Action<SimRig>? PathCutHook;
+
     public static Cut PathCut(CaptureModel? capture, int seed, int warm = 5, int cutRounds = 8, int after = 12, double spacing = 15, bool cutIt = true)
     {
         SimRig rig = Make(3, seed, capture, false);
         Pair(rig, 1, 2, 1.0);
         Pair(rig, 1, 3, 1.0);
         Pair(rig, 2, 3, 1.0);
+        PathCutHook?.Invoke(rig);
         var ledger = new Ledger(rig, seed) { MaxAttempts = 1 };
         var rng = new Random(seed * 13 + 1);
         long t0 = 5L * 48000 + 24000;

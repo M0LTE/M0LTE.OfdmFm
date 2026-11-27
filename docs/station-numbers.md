@@ -1,7 +1,7 @@
 # Link addresses and station numbers: the design
 
-<<<<<<< HEAD
-Status: agreed by Tom on 2026-11-27 ("so effectively MAC addresses and ARP. OK"), for packet-net/pdn-soundmodem#835. Step one is built (link addresses, the From and For items, learning, sending and receiving by address, the host's events by address: docs/station-design.md, "Link addresses as built"). Step two is not (random station numbers, the station id, the Clash item, a number changing hands): the number is still the constructor's parameter. It replaces the interim arrangement (the station number is a setting, the host binds names to numbers, a heard callsign becomes a number's name). Amended the same day after a review against a draft third-party network stack that would run over the modem (see "Amended" at the end). Two earlier forms of this document were dropped the same day: one kept names in the modem with a question and answer on the air, one had the host send to numbers. "Choices made here" at the end lists what was settled without asking.
+Status: agreed by Tom on 2026-11-27 ("so effectively MAC addresses and ARP. OK"), for packet-net/pdn-soundmodem#835. Step one is built (link addresses, the From and For items, learning, sending and receiving by address, the host's events by address: docs/station-design.md, "Link addresses as built"); step two is not (random station numbers, the station id, the Clash item, a number changing hands), and the number is still the constructor's parameter. It replaces the interim arrangement (the station number is a setting, the host binds names to numbers, a heard callsign becomes a number's name). Amended the same day after a review against a draft third-party network stack that would run over the modem (see "Amended" at the end). Two earlier forms of this document were dropped the same day: one kept names in the modem with a question and answer on the air, one had the host send to numbers. "Choices made here" at the end lists what was settled without asking.
+
 ## In one paragraph
 
 The modem is a link layer with addresses of its own, as a LAN is. Each datagram has a **link address** it is going to and one it comes from: opaque bytes that the host chooses and the modem never interprets. The modem learns where an address lives from the "from" on each burst it hears, as an Ethernet switch does, and sends to everyone when it does not know yet. **Station numbers** are the modem's private, short, on-air form of "which station": it picks its own at random, the modems settle clashes among themselves, and no host ever sees one.
@@ -74,14 +74,11 @@ After any of these the next datagram for the address goes to everyone again.
 The host gives a datagram, the address it is for, the address it is from and its protocol byte.
 
 - **The address is known:** the datagram goes in a burst to that station, as now.
-- **The address is not known:** it goes in a burst to everyone, at the first-contact format, with For set. This is the format a first contact uses anyway. There is no prelude, so no report is asked for and none comes back. The answer, when the far host sends a datagram, carries its own From, and the two then address each other; and when the address is one the far host has sent from, the far station answers the burst with a report (below).
+- **The address is not known:** it goes in a burst to everyone, at the first-contact format, with For set. This is the format a first contact uses anyway. There is no prelude. The answer, when the far host sends one, carries its own From, and the two then address each other. If the far host sends nothing back, its modem still answers (next).
+- **A station answers for its own addresses.** A station knows which addresses its host has sent from. When it decodes a burst to everyone whose For is one of them, it owes the sender a lone report in the first slot, as for any burst it must report on. The sender, which has that one burst outstanding, takes the report as saying where the address lives. So one-way traffic to a host that never replies is still addressed, and climbs, after one burst.
 - **The address is everyone:** a burst to everyone with no For.
 
 A burst to everyone carries datagrams for one For, or for none. Datagrams waiting for an address follow it when it becomes known or is forgotten.
-
-**A station answers for its own addresses.** It keeps the set of keys its own host has sent from. When it decodes a burst to everyone whose For is one of them, it owes the sender a lone report, as it owes one for a decoded burst addressed to it that dropped its recommendation: the same class, the first slot, carrying its recommendation for the sender (bursts to everyone are measured like any other). If it has nothing to recommend yet it sends none. It sends none for a burst with no For, or with a For that is not its own.
-
-**The sender binds the address from that report.** When a lone report addressed to this station arrives from station N, and this station has exactly one For outstanding (a burst to everyone with that For, sent, its answer wait not yet run out, counted from the burst's end), that For is learned as living at N, and the report is then applied as any report is. With none outstanding, or two different keys, nothing is learned from it. No new wire item and no new burst type. So a flood for an address whose host has sent from it at least once is answered at modem level even if that host never replies: one-way traffic with nothing coming back becomes addressed after one burst and climbs, and an address forgotten after three silences is relearned from the next flood. What remains: a host that has never sent from an address cannot be located, and traffic to it stays at the first-contact format.
 
 ## Receiving
 
@@ -120,6 +117,7 @@ The modem does not filter on For. A host that can tell from its own frame whethe
 - 63 stations in hearing of each other.
 - Anyone can send from any address. That is the trust AX.25 and an unswitched LAN have.
 - A datagram for an address not yet located is heard by everyone's host, at the slowest format.
+- A host that has never sent from an address cannot be located at it. Traffic for that address stays at the first-contact format until it does.
 - An audio repeater that plays a station's own bursts back to it would look like a clash. The modem is for simplex channels.
 
 ## Choices made here
@@ -136,6 +134,7 @@ Settled without being put to Tom, because each is internal or a starting value. 
 8. Whoever notices a clash moves. For hidden stations the more recent arrival is told to.
 9. Nothing is carried across a change of number.
 10. The protocol byte borrows AX.25's PID numbers, with 0x00 added for a whole AX.25 frame.
+11. A station answers a burst For one of its own addresses with a lone report, and the sender learns the address from it. Found in the build: without it, one-way traffic never found its station again once three silences had forgotten it.
 
 ## Amended (Tom, 27 November 2026)
 

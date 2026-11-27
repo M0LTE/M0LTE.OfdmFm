@@ -18,9 +18,9 @@ internal static class HostileScenarios
     /// <summary>Lone reports a station sent to station <paramref name="to"/>.</summary>
     private static int Reports(SimNode n, int to) => n.ModemSent.Where((m, i) => m.Kind == ModemSentKind.Report && n.ModemSentTo[i] == to).Count();
 
-    public static SimRig Make(int stations, int seed, CaptureModel? capture, bool indication, Func<int, int, bool>? locates = null)
+    public static SimRig Make(int stations, int seed, CaptureModel? capture, bool indication, Func<int, int, bool>? locates = null, bool randomNumbers = false)
     {
-        var rig = new SimRig(stations, 4800, seed, connect: false, locates: locates);
+        var rig = new SimRig(stations, 4800, seed, connect: false, locates: randomNumbers ? (_, _) => false : locates, randomNumbers: randomNumbers);
         rig.Channel.Capture = capture;
         if (indication)
         {
@@ -613,15 +613,15 @@ internal static class HostileScenarios
 
     public sealed record Soak(
         int Offered, int Refused, int Accepted, int Transmitted, int Dropped, int StillQueued, int Delivered, int Lost, int LostOverlapped, int LostByPath, int Duplicates, int DeliveredWithoutEvent, int Bursts, int CollidedBursts, int[] BytesBySender,
-        double MaxWaitSeconds, int MaxBurstsInFlight, int MaxCandidatesWaiting, int MaxTimers, int MaxQueued, int ReceivedByB, string FormatsFromA, int Hints, int WrongHints, int MisattributedReports, int Congestions, int Reordered, int ClocksBackwards, int Cancelled, int NoLongerFit, List<string> Log);
+        double MaxWaitSeconds, int MaxBurstsInFlight, int MaxCandidatesWaiting, int MaxTimers, int MaxQueued, int ReceivedByB, string FormatsFromA, int Hints, int WrongHints, int MisattributedReports, int Congestions, int Reordered, int ClocksBackwards, int Cancelled, int NoLongerFit, int LinkForgotten, List<string> Log);
 
     /// <summary>
     /// Three stations, mixed traffic (to one station or to everyone, short and long, ordinary and expedited) at seeded moments for <paramref name="seconds"/>, with the path between A and B fading in steps (0, -20, -40, -20, 0 dB, then cut
     /// for 20 s). The hosts resend nothing. After the traffic stops the stations are left <paramref name="drain"/> seconds to empty their queues.
     /// </summary>
-    public static Soak Soaking(CaptureModel? capture, int seed, double seconds = 240, double drain = 90, double meanGapSeconds = 9, bool indication = false)
+    public static Soak Soaking(CaptureModel? capture, int seed, double seconds = 240, double drain = 90, double meanGapSeconds = 9, bool indication = false, bool randomNumbers = false)
     {
-        SimRig rig = Make(3, seed, capture, indication);
+        SimRig rig = Make(3, seed, capture, indication, randomNumbers: randomNumbers);
         Pair(rig, 1, 2, 1.0);
         Pair(rig, 1, 3, 1.0);
         Pair(rig, 2, 3, 1.0);
@@ -740,7 +740,7 @@ internal static class HostileScenarios
                 }
 
                 int heard = rig.Nodes[x - 1].PathReports.Count(p => p.Address == SimRig.Address(y));
-                int sentLone = Reports(rig.Nodes[y - 1], x);
+                int sentLone = randomNumbers ? rig.Nodes[y - 1].ModemSent.Count(m => m.Kind is ModemSentKind.Report or ModemSentKind.Announcement) : Reports(rig.Nodes[y - 1], x); // numbers change in a random run: every lone report y sent is a bound
                 int sentData = rig.Nodes[y - 1].Transmitted.Where(t => t.Event.Address == SimRig.Address(x)).Select(t => t.Clock).Distinct().Count();
                 if (heard > sentLone + sentData)
                 {
@@ -752,7 +752,7 @@ internal static class HostileScenarios
         int stillQueued = Enumerable.Range(0, 3).Sum(i => rig.Stations[i].QueuedTotal);
         return new Soak(
             ledger.Items.Count, ledger.Refused.Count, accepted, transmitted, ledger.DroppedCount(), stillQueued, delivered, lost, lostOverlap, lost - lostOverlap, ledger.Duplicates().Count, ledger.DeliveredWithoutTransmittedEvent(),
-            rig.Nodes.Sum(n => n.Transmissions.Count), cb, bytes, maxWait, maxFlight, maxCand, maxTimers, maxQueued, rig.Nodes[1].Received.Count, Formats(rig.Nodes[0], 40), rig.Nodes.Sum(n => n.NotDecoded.Count), wrongHints, misattributed, rig.Nodes.Sum(n => n.Congestion.Count), ledger.Reordered(), Ledger.ClocksGoingBackwards(rig.Channel.Log), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.Cancelled)), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.NoLongerFits)), rig.Channel.Log);
+            rig.Nodes.Sum(n => n.Transmissions.Count), cb, bytes, maxWait, maxFlight, maxCand, maxTimers, maxQueued, rig.Nodes[1].Received.Count, Formats(rig.Nodes[0], 40), rig.Nodes.Sum(n => n.NotDecoded.Count), wrongHints, misattributed, rig.Nodes.Sum(n => n.Congestion.Count), ledger.Reordered(), Ledger.ClocksGoingBackwards(rig.Channel.Log), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.Cancelled)), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.NoLongerFits)), rig.Nodes.Sum(n => n.Dropped.Count(d => d.Reason == DropReason.LinkForgotten)), rig.Channel.Log);
     }
 
     public static string Describe(Soak r) =>

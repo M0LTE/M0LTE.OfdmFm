@@ -300,6 +300,7 @@ namespace M0LTE.OfdmFm
         Report = 0,
         Identification = 1,
         Announcement = 2,
+        Clash = 3,
     }
     public readonly struct PathReportEvent : System.IEquatable<M0LTE.OfdmFm.PathReportEvent>
     {
@@ -406,7 +407,7 @@ namespace M0LTE.OfdmFm
     public sealed class Station
     {
         public const int SampleRate = 48000;
-        public Station(int stationNumber, System.Random random, bool runJobsInline = false) { }
+        public Station(System.Random random, bool runJobsInline = false) { }
         public string? Callsign { get; }
         public bool HasWork { get; }
         public long SampleCount { get; }

@@ -195,7 +195,7 @@ public class StationIdentityTests
     }
 
     [Fact]
-    public void A_Listener_Delivers_Measures_And_Runs_The_Rules_As_Usual_And_Never_Asks_To_Transmit()
+    public void A_Listener_Has_No_Number_Is_Never_Addressed_Measures_And_Learns_And_Never_Asks_To_Transmit()
     {
         Outcome twin = Scenario(bIdentified: true);
         Outcome listener = Scenario(bIdentified: false);
@@ -207,17 +207,21 @@ public class StationIdentityTests
         twin.Owed.Should().BeGreaterThan(0);
         twin.ASilences.Should().Be(0);
 
-        // Without one, B delivers what it decodes, and the rules are called and return reports (they are called as now), but nothing is owed, asked for or put on the air.
-        listener.Received.Should().Be(3, "all three bursts that asked for a report were delivered");
-        listener.ReceivedAfterDrop.Should().Be(4, "the weaker burst decoded");
-        listener.Lost.Should().Be(1, "a burst weak enough was heard and not decoded");
-        listener.ReturnedByRules.Should().BeGreaterThan(0, "the adaptation rules are still called and still return what is owed");
+        // Without one, B has no number, so no burst is for it: nothing is delivered. The rules are not asked for a report (nothing was addressed to it), and nothing is owed, asked for or put on the air. It still measures: what it heard from A is held.
+        listener.Received.Should().Be(0, "a station with no identity has no number and no burst is for it");
+        listener.Rig.Nodes[1].Received.Should().OnlyContain(r => r.Everyone, "what it does deliver is a burst to everyone (A forgot where the address lives after three silences and flooded); none is addressed to it");
+        listener.ReturnedByRules.Should().Be(0, "nothing was addressed to it, so the rules owe no report");
         listener.Owed.Should().Be(0);
         listener.Requests.Should().Be(0);
         listener.Transmissions.Should().Be(0);
         listener.Rig.Nodes[1].ModemSent.Should().BeEmpty();
         listener.Rig.Nodes[1].Dropped.Should().BeEmpty();
         listener.Rig.Stations[1].OwedReports.Should().BeEmpty();
+        listener.Rig.Stations[1].StationNumber.Should().Be(0);
+        listener.Rig.Stations[1].Adaptation.TryGetNeighbour(1, out LinkNeighbour? heard).Should().BeTrue("a listener still measures what it hears");
+        heard!.Measures.Should().BeGreaterThan(0);
+        listener.Rig.Stations[1].LearnedAddresses.TryGet(SimRig.Address(1).Key, out AddressTable.Entry entry).Should().BeTrue("and learns where an address lives");
+        entry.Number.Should().Be(1);
 
         // The sender, hearing nothing back after a burst that asked, counts a silence where it would have had a report.
         listener.ASilences.Should().BeGreaterThan(0);
@@ -233,7 +237,7 @@ public class StationIdentityTests
         rig.RunTo(6);
         rig.Send(1, 2, 100, reportWanted: true).Should().Be(SendResult.Accepted);
         rig.Run(12);
-        b.Received.Should().ContainSingle();
+        b.Received.Should().BeEmpty("a station with no identity has no number: the burst addressed to number 2 is not for it");
         b.Requests.Should().BeEmpty();
         rig.Send(2, 1, 101).Should().Be(SendResult.NoIdentity);
 

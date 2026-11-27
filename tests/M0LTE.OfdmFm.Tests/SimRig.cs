@@ -8,12 +8,15 @@ internal sealed class SimRig
     /// <summary>The first-contact format's rate, bit/s.</summary>
     public static readonly double FirstContactRate = StandardFormats.Rate(StandardFormats.FirstContact) * 1000.0;
 
-    public SimRig(int stations, int block = 4800, int seed = 1, double noise = 0.004, double gain = 1.0, bool connect = true, Func<int, int, bool>? locates = null, Func<int, bool>? identified = null)
+    public SimRig(int stations, int block = 4800, int seed = 1, double noise = 0.004, double gain = 1.0, bool connect = true, Func<int, int, bool>? locates = null, Func<int, bool>? identified = null, int[]? numbers = null, uint[]? ids = null, bool randomNumbers = false)
     {
         Channel = new SimChannel(block, seed);
         for (int i = 1; i <= stations; i++)
         {
-            Station s = new(i, new Random((seed * 100) + i), runJobsInline: true);
+            // The seam fixes each station's number (its index unless <numbers> says) and id, so that the scenarios keep their flows; <randomNumbers> makes the stations take their own, as a host's would.
+            Station s = randomNumbers
+                ? new(new Random((seed * 100) + i), runJobsInline: true)
+                : new(numbers?[i - 1] ?? i, ids?[i - 1] ?? (0xC0DE0000u | (uint)(numbers?[i - 1] ?? i)), new Random((seed * 100) + i), runJobsInline: true);
             if (identified?.Invoke(i) ?? true)
             {
                 s.WithIdentity($"M0S{i}");
@@ -30,7 +33,7 @@ internal sealed class SimRig
             {
                 if (i != j && (locates?.Invoke(i, j) ?? true))
                 {
-                    Stations[i - 1].Locate(Address(j), j);
+                    Stations[i - 1].Locate(Address(j), randomNumbers ? Stations[j - 1].StationNumber : numbers?[j - 1] ?? j);
                 }
             }
         }
@@ -46,6 +49,9 @@ internal sealed class SimRig
             }
         }
     }
+
+    /// <summary>The numbers the stations were given at the start (their indexes unless a test said), or, with random numbers, the ones they took.</summary>
+    public int[] StartNumbers => [.. Stations.Select(s => s.StationNumber)];
 
     public SimChannel Channel { get; }
 

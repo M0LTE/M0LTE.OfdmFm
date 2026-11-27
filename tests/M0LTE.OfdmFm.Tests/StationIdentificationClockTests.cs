@@ -416,7 +416,7 @@ public class StationIdentificationClockTests
     private static int IdentLength(string callsign)
     {
         var packed = new byte[100];
-        int n = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(callsign), 0, default, packed);
+        int n = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(callsign), 0, [new ExtensionItem(PayloadCodec.StationIdTag, new byte[PayloadCodec.KeyBytes])], packed);
         return new BurstRenderer().SamplesFor(StandardFormats.FirstContact, PayloadCodec.SymbolsFor(StandardFormats.FirstContact, n)!.Value);
     }
 }

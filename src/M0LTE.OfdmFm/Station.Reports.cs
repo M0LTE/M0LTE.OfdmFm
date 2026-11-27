@@ -48,6 +48,9 @@ public sealed partial class Station
 
         /// <summary>True when the burst is an announcement (a data burst with no datagrams), not a lone report.</summary>
         public bool Announcement;
+
+        /// <summary>For an announcement: the key of the address it tells.</summary>
+        public uint AnnounceKey;
         public float[]? Audio;
         public int Length;
     }
@@ -448,7 +451,7 @@ public sealed partial class Station
         _renderer ??= new BurstRenderer();
         int total = _renderer.ReportSamples(spec.Opening);
         float[] audio = RentAudio(total);
-        _renderer.RenderReport(BurstHeader.Report(StationNumber, dest, format, slot.Kind == OwedKind.Failed), spec.Opening, spec.DriveDb, audio);
+        _renderer.RenderReport(BurstHeader.Report(_number, dest, format, slot.Kind == OwedKind.Failed), spec.Opening, spec.DriveDb, audio);
         _report.Built = true;
         _report.Started = false;
         _report.Announcement = false;
@@ -490,10 +493,11 @@ public sealed partial class Station
         _renderer ??= new BurstRenderer();
         int total = _renderer.SamplesFor(format, symbols);
         float[] audio = RentAudio(total);
-        _renderer.RenderData(BurstHeader.Data(StationNumber, a.Station, format, symbols, number), _payload.AsSpan(0, length), audio);
+        _renderer.RenderData(BurstHeader.Data(_number, a.Station, format, symbols, number), _payload.AsSpan(0, length), audio);
         _report.Built = true;
         _report.Started = false;
         _report.Announcement = true;
+        _report.AnnounceKey = a.Key;
         _report.Dest = a.Station;
         _report.Kind = OwedKind.Drop;
         _report.Audio = audio;

@@ -354,6 +354,25 @@ internal sealed class ChannelAccess
         Update();
     }
 
+    /// <summary>
+    /// Takes back a request handed to the audio layer and not keyed, whatever the channel is doing, and queues it again: what it carries is stale (the station's number changed). The rules then run, and may hand it over again at once.
+    /// Nothing happens for a request that is not granted.
+    /// </summary>
+    public void TakeBack(Request request)
+    {
+        if (request.State != RequestState.Granted || !ReferenceEquals(_active, request))
+        {
+            return;
+        }
+
+        _active = null;
+        request.State = RequestState.Waiting;
+        Insert(request);
+        _withdraw(request);
+        _raise?.Invoke(new AccessEvent(request.Id, AccessStage.Withdrawn, _clock.Now));
+        Update();
+    }
+
     /// <summary>The audio layer keyed <paramref name="request"/>. <paramref name="late"/>: it had been withdrawn and started anyway (the tolerated race).</summary>
     public void Started(Request request, long sample, bool late)
     {

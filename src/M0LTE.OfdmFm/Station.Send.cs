@@ -479,7 +479,7 @@ public sealed partial class Station
     }
 
     /// <summary>Drops what matches (a tag, or everything when <paramref name="all"/> is set), expedited first, raising <see cref="Dropped"/> for each. Returns how many.</summary>
-    private int CancelWhere(AddressQueue q, HostTag tag, bool? all)
+    private int CancelWhere(AddressQueue q, HostTag tag, bool? all, DropReason reason = DropReason.Cancelled)
     {
         int count = 0;
         for (int pass = 0; pass < 2; pass++)
@@ -492,7 +492,7 @@ public sealed partial class Station
                 {
                     list.RemoveAt(i);
                     Unqueue(q, p);
-                    Dropped?.Invoke(new DroppedEvent(p.Tag, DropReason.Cancelled));
+                    Dropped?.Invoke(new DroppedEvent(p.Tag, reason));
                     Release(p);
                     count++;
                 }
@@ -571,6 +571,11 @@ public sealed partial class Station
         if (ReferenceEquals(request, _identRequest))
         {
             return PrepareIdentification(request);
+        }
+
+        if (ReferenceEquals(request, _clashRequest))
+        {
+            return PrepareClash(request);
         }
 
         if (!ReferenceEquals(request, _data))
@@ -778,7 +783,7 @@ public sealed partial class Station
         int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
         int number = _burstNumber;
         _burstNumber = (_burstNumber + 1) & 15;
-        var header = BurstHeader.Data(StationNumber, dest, format, symbols, number);
+        var header = BurstHeader.Data(_number, dest, format, symbols, number);
         int total = _renderer.SamplesFor(format, symbols);
         float[] audio = RentAudio(total);
         _renderer.RenderData(header, _payload.AsSpan(0, length), audio);

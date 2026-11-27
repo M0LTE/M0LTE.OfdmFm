@@ -97,13 +97,16 @@ public sealed partial class Station
 
         int format = StandardFormats.FirstContact;
         _renderer ??= new BurstRenderer();
-        int length = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(Callsign!), CapabilityWord, default, _payload);
+        PayloadCodec.WriteKey(_stationId, _idItemValue);
+        _identItems[0] = new ExtensionItem(PayloadCodec.StationIdTag, _idItemValue);
+        int length = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(Callsign!), CapabilityWord, _identItems.AsSpan(0, 1), _payload);
+        IdentificationPayloadBuilt?.Invoke(_payload.AsSpan(0, length).ToArray());
         int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
         int number = _burstNumber;
         _burstNumber = (_burstNumber + 1) & 15;
         int total = _renderer.SamplesFor(format, symbols);
         float[] audio = RentAudio(total);
-        _renderer.RenderData(BurstHeader.Identification(StationNumber, format, symbols, number), _payload.AsSpan(0, length), audio);
+        _renderer.RenderData(BurstHeader.Identification(_number, format, symbols, number), _payload.AsSpan(0, length), audio);
         _identAudio = audio;
         _identBuilt = true;
         request.Samples = audio.AsMemory(0, total);
@@ -132,6 +135,32 @@ public sealed partial class Station
 
     // ---- receiving an identification ----
 
+    /// <summary>
+    /// The items of an identification burst that concern station numbers: the sender's station id (the first item with tag 1 and four bytes of value), which is checked against the id last heard on that number, and each Clash (tag 2, five bytes).
+    /// The id is looked at before the Clashes, and before the burst is measured, so that a station found to be new at a number is measured afresh. An item of another length, or another tag, is skipped.
+    /// </summary>
+    private void ReadNumberItems(int sender, ExtensionReader items, long end, double now)
+    {
+        ExtensionReader again = items;
+        bool haveId = false;
+        while (items.TryNext(out byte tag, out ReadOnlySpan<byte> value))
+        {
+            if (tag == PayloadCodec.StationIdTag && value.Length == PayloadCodec.KeyBytes && !haveId)
+            {
+                haveId = true;
+                NoteStationId(sender, PayloadCodec.ReadKey(value), end, now);
+            }
+        }
+
+        while (again.TryNext(out byte tag, out ReadOnlySpan<byte> value))
+        {
+            if (tag == PayloadCodec.ClashTag && value.Length == PayloadCodec.ClashBytes && value[0] is >= 1 and <= 63)
+            {
+                HeardClash(value[0], PayloadCodec.ReadKey(value[1..]));
+            }
+        }
+    }
+
     private void ApplyIdentification(BurstRecord r)
     {
         BurstJob job = r.Job!;
@@ -143,7 +172,12 @@ public sealed partial class Station
         double footing = LinkAdaptation.Footing(h.Format, opening: !decoded);
         ReadOnlySpan<byte> callsign = default;
         int capability = 0;
-        bool read = decoded && PayloadCodec.TryUnpackIdentification(job.Payload.AsSpan(0, job.PayloadBytes), out callsign, out capability, out _);
+        ExtensionReader items = default;
+        bool read = decoded && PayloadCodec.TryUnpackIdentification(job.Payload.AsSpan(0, job.PayloadBytes), out callsign, out capability, out items);
+        if (read)
+        {
+            ReadNumberItems(sender, items, r.End, now);
+        }
 
         // A burst to everyone, measured like any other from that station; nothing is owed for it.
         int? word = read ? capability : null;

@@ -161,7 +161,7 @@ public enum DropReason
     /// <summary>It waited in the queue too long. Not raised yet: a queue is bounded in airtime and the host cancels what it no longer wants.</summary>
     Expired = 1,
 
-    /// <summary>The address was forgotten. Not raised: a datagram waiting for an address that is forgotten goes to everyone instead.</summary>
+    /// <summary>The station the address lived at was found to have a new holder: its number was taken by another station, or two stations had it (docs/station-numbers.md). The address is forgotten and what was queued for it is dropped. Not raised when an address is forgotten for silence: a datagram waiting for it then goes to everyone instead.</summary>
     LinkForgotten = 2,
 
     /// <summary>The link's format fell after the datagram was accepted, and the datagram is now larger than one burst at the format carries. The host sees the new room in <see cref="LinkStateEvent"/>.</summary>
@@ -192,6 +192,9 @@ public enum ModemSentKind
 
     /// <summary>An announcement: a data burst with no datagrams that tells the stations hearing it where an address of this station's host lives (the answer to a burst to everyone for that address).</summary>
     Announcement = 2,
+
+    /// <summary>A Clash: an identification burst that says two stations hold one number and names the one that is to move. It does not move the identification clock.</summary>
+    Clash = 3,
 }
 
 /// <summary>What <see cref="Station.Send"/> did with a datagram.</summary>

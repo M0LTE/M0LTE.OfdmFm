@@ -1,6 +1,6 @@
 # Link addresses and station numbers: the design
 
-Status: agreed by Tom on 2026-11-27 ("so effectively MAC addresses and ARP. OK"), for packet-net/pdn-soundmodem#835. Not yet built. It replaces the interim arrangement (the station number is a setting, the host binds names to numbers, a heard callsign becomes a number's name). Two earlier forms of this document were dropped the same day: one kept names in the modem with a question and answer on the air, one had the host send to numbers. "Choices made here" at the end lists what was settled without asking.
+Status: agreed by Tom on 2026-11-27 ("so effectively MAC addresses and ARP. OK"), for packet-net/pdn-soundmodem#835. Step one is built (link addresses, the From and For items, learning, sending and receiving by address, the host's events by address: docs/station-design.md, "Link addresses as built"). Step two is not (random station numbers, the station id, the Clash item, a number changing hands): the number is still the constructor's parameter. It replaces the interim arrangement (the station number is a setting, the host binds names to numbers, a heard callsign becomes a number's name). Two earlier forms of this document were dropped the same day: one kept names in the modem with a question and answer on the air, one had the host send to numbers. "Choices made here" at the end lists what was settled without asking.
 
 ## In one paragraph
 

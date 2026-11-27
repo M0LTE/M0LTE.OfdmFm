@@ -64,19 +64,21 @@ public class StationUnlikeRadioTests
     private static void Gate() =>
         Assert.SkipWhen(Environment.GetEnvironmentVariable("SM_MASK_GATE") != "1", "set SM_MASK_GATE=1: minutes of simulated traffic between unlike radios, about a minute of processor time each");
 
-    // What a run of 40 datagrams each way gave, measured on 2026-11-26 (build 0.1.0, step 5; step 6 added the last three figures and left every other one as it was, the mute after a station's own transmission having been shortened by then). "Lost" is the index, in the order sent, of each burst whose datagram never arrived.
+    // What a run of 40 datagrams each way gave, measured on 2026-11-26 (build 0.1.0, step 5; step 6 added the last three figures and left every other one as it was, the mute after a station's own transmission having been shortened by then),
+    // and again on 27 November 2026 with link addresses: every burst is a few bytes longer (its block of items), which moved which bursts were lost and a few other figures. What did not move: the same bursts go at the same ceilings of formats,
+    // each loss is reported at once and named in a hint, nothing arrives twice, and the control loses nothing. "Lost" is the index, in the order sent, of each burst whose datagram never arrived.
     public static TheoryData<double, double, Outcome> Cases => new()
     {
-        // A good path: the narrow station is sent formats up to 6.5 and 8 kHz wide for 37 of 40 bursts and loses seven of them, spread right through the run, and each is reported at once and named in a hint (seven failed reports from the narrow
-        // station, one other, and the wide station's one); reports change nothing about which formats it is sent. It hears the wide station's fast formats well enough to settle on 28
-        // (48.5 kbit/s, band 0) and 61 and 62 (band 1) for it, and 70 kbit/s the other way, where nothing is lost. Its estimate of the path from the wide station falls from 39 dB at 2 kHz to 17 dB at 6 kHz: it does know.
-        { 1.0, 3000, new Outcome(40, "7,11,15,21,26,28,34", 37, 28, 40, "", 38, 31, 39, 17, 1, 8, 7) },
+        // A good path: the narrow station is sent formats up to 6.5 and 8 kHz wide for 37 of 40 bursts and loses four of them (seven before link addresses), spread right through the run, and each is reported at once and named in a hint (four failed reports from the narrow
+        // station, three others, and the wide station's one); reports change nothing about which formats it is sent. It hears the wide station's fast formats well enough to settle on 28
+        // (48.5 kbit/s, band 0) and 61 and 62 (band 1) for it, and 70 kbit/s the other way, where nothing is lost. Its estimate of the path from the wide station falls from 40 dB at 2 kHz to 19 dB at 6 kHz (39 and 17 before link addresses): it does know.
+        { 1.0, 3000, new Outcome(40, "10,17,27,39", 37, 28, 40, "", 38, 31, 40, 19, 1, 7, 4) },
 
-        // A weaker path (20 dB down): the same pattern, five lost of 40 one way and one the other.
-        { 0.1, 3000, new Outcome(40, "12,18,23,24,35", 37, 61, 40, "25", 38, 30, 35, 18, 2, 7, 5) },
+        // A weaker path (20 dB down): the same pattern, four lost of 40 one way (five before link addresses) and one the other.
+        { 0.1, 3000, new Outcome(40, "9,18,29,34", 37, 61, 40, "25", 38, 30, 35, 16, 2, 6, 4) },
 
-        // A path 30 dB down: the narrow station's estimate shows nothing above 3 kHz (the carriers there measured too weak to count), the wide station settles on the 3 kHz band (format 158, 22.4 kbit/s), and nothing is lost.
-        { 0.03, 3000, new Outcome(40, "", 0, 158, 40, "", 23, 26, 24, -4, 1, 1, 0) },
+        // A path 30 dB down: the narrow station's estimate shows nothing above 3 kHz (the carriers there measured too weak to count), the wide station settles on the 3 kHz band (format 158, 22.4 kbit/s), and one burst is lost (fifth sent, reported and named in a hint; none was lost before link addresses).
+        { 0.03, 3000, new Outcome(40, "4", 0, 158, 40, "", 24, 26, 24, -4, 1, 2, 1) },
 
         // The control: no cut, a good path: nothing lost either way, and the same ceiling of formats.
         { 1.0, 0, new Outcome(40, "", 38, 31, 40, "", 39, 31, 54, 47, 1, 1, 0) },

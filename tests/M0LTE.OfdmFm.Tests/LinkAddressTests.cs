@@ -90,4 +90,48 @@ public class LinkAddressTests
         PayloadCodec.AddressBlockSize(1, true).Should().Be(1 + 2 + 4 + 2 + 4);
         PayloadCodec.AddressBlockSize(0, false).Should().Be(1);
     }
+
+    private static byte[] Item(byte tag, params LinkAddress[] addresses)
+    {
+        var value = new byte[4 * addresses.Length];
+        for (int i = 0; i < addresses.Length; i++)
+        {
+            PayloadCodec.WriteKey(addresses[i].Key, value.AsSpan(4 * i));
+        }
+
+        return value;
+    }
+
+    private static string Packed(PayloadPrelude? prelude, ExtensionItem[] items)
+    {
+        var buffer = new byte[200];
+        int n = PayloadCodec.Pack(prelude, items, [(byte[])[0x48, 0x69, 0x21]], buffer);
+        return Convert.ToHexString(buffer.AsSpan(0, n));
+    }
+
+    [Fact]
+    public void The_Worked_Examples_Of_The_Payload_In_The_Document_Are_Byte_For_Byte_What_Packs()
+    {
+        // docs/adaptation-protocol.md, "Link addresses": the datagram "Hi!" sent from M0LTE-1, for G9XYZ.
+        LinkAddress from = LinkAddress.FromAscii("M0LTE-1");
+        LinkAddress other = LinkAddress.FromAscii("G9XYZ");
+        other.Key.Should().Be(0xB97C7FB1u);
+        var fromItem = new ExtensionItem(PayloadCodec.FromTag, Item(PayloadCodec.FromTag, from));
+        var forItem = new ExtensionItem(PayloadCodec.ForTag, Item(PayloadCodec.ForTag, other));
+
+        Packed(new PayloadPrelude(false, 0x28, false, null), [fromItem]).Should().Be("2828" + "06" + "01046EEC7110" + "000348" + "6921");
+        Packed(null, [fromItem, forItem]).Should().Be("0C" + "01046EEC7110" + "0204B97C7FB1" + "0003486921");
+        Packed(null, [fromItem]).Should().Be("06" + "01046EEC7110" + "0003486921");
+        Packed(null, [new ExtensionItem(PayloadCodec.FromTag, Item(PayloadCodec.FromTag, from, other))]).Should().Be("0A" + "01086EEC7110B97C7FB1" + "0003486921");
+        PayloadCodec.AddressBlockSize(2, false).Should().Be(1 + 2 + 8);
+    }
+
+    [Fact]
+    public void An_Identification_Payload_Does_Not_Begin_With_A_Block()
+    {
+        // The callsign's length first, as it always was: the document's worked example, unchanged.
+        var buffer = new byte[40];
+        int n = PayloadCodec.PackIdentification("M0LTE-1"u8, 0, default, buffer);
+        Convert.ToHexString(buffer.AsSpan(0, n)).Should().Be("074D304C54452D31" + "0000");
+    }
 }

@@ -174,12 +174,12 @@ In the order sent:
 
 That is 51 bits, from 42 in the prototype before this. Measured in simulation, the nine added bits (version, a wider burst type, destination) cost half to three quarters of a decibel of header reach (on the full band, 172 headers read of 200 against 192 with each carrier 4 dB under the noise).
 
-Station numbers are set at both ends for the bench. How a station comes by its number on a shared channel is packet-net/pdn-soundmodem#835.
+Station numbers are set at both ends for the bench. How a station comes by its number on a shared channel is packet-net/pdn-soundmodem#835. The host never sees a number: it deals in link addresses (see "Link addresses").
 
 | Burst type | Header | Payload |
 |---|---|---|
-| Data to one station | every field | the prelude, then one or more whole datagrams |
-| Data to everyone | the same, with destination 0 | datagrams. No prelude, no report. |
+| Data to one station | every field | the prelude (with its extension block, which carries From), then one or more whole datagrams |
+| Data to everyone | the same, with destination 0 | a block of items (From, and For when the sender has not located the address), then datagrams. No prelude, no report. |
 | Report | every field, with the recommended format and the failed bit in the format and burst-number fields, and length 0 | none |
 | Identification | as data to everyone: burst type 2, destination 0, the length in payload symbols, a burst number for the scrambler | the station's callsign, its capability word and any items (see "The identification payload"), in the first-contact format, padded, scrambled and checked as a data burst to everyone is |
 
@@ -226,18 +226,51 @@ A format and a length give a payload of a fixed number of bits. This is the payl
 1. **The prelude**, in a burst to one station: two bytes. First byte, from the top bit: "report wanted", "a capability word follows", "a recommendation is given", "failed", "an extension block follows", and three spare bits. The spare bits are sent as 0 and ignored on receipt. Second byte: the recommended format (0 when none is given).
 2. **The capability word**, when flagged: two bytes, the more significant first.
 3. **The extension block**, when flagged: one length byte N (0 to 255), then N bytes of items. An item is a tag byte, a length byte L and L bytes of value, so a value is at most 253 bytes. The rules:
-   - A station skips any item whose tag it does not know. Tag 0 is reserved and never sent. Tags are assigned in this document as features are added, and none is yet.
+   - A station skips any item whose tag it does not know. Tag 0 is reserved and never sent. Tags are assigned in this document as features are added: 1 is From (see "Link addresses", below), and no other is assigned.
    - A block that ends part-way through an item, because the lengths do not add up, is ignored from that point.
    - The datagrams begin N bytes after the length byte whatever the items say, so a malformed block cannot make a receiver misread them.
    - A block that runs past the end of the payload leaves no datagrams.
    - A burst that does not set the flag is exactly what it was before the block existed.
    - Every station understands the block from version 0, so nothing added inside it needs a capability flag.
-   - A burst to everyone has no prelude and so no block.
+   - Every data burst to one station that carries datagrams has the block, with a From item in it. A burst to everyone has no prelude; it begins with a block of its own, in the same form (see "Link addresses").
 4. **Datagrams**, each behind its length in two bytes, the more significant first. A length of 0, a length that runs past the room left, or too little room for another length, ends them.
 5. **Padding** of zero bits, up to the check.
 6. **The check**: the payload's last 32 bits.
 
 A worked example, to check an implementation against: the flags 0x28 (a recommendation is given, an extension block follows), the recommended format 0x28, a block of 5 bytes holding one item with the unassigned tag 0x7F and the three-byte value AA BB CC, then the datagram "Hi!". The payload before padding is `28 28 05 7F 03 AA BB CC 00 03 48 69 21`. A receiver skips the item and reads "Hi!".
+
+#### Link addresses
+
+The modem is a link layer with addresses of its own, as a LAN is (docs/station-numbers.md has the reasons). Each datagram the host gives the modem has a **link address** it is going to and one it comes from: 1 to 32 bytes the host chooses and the modem never interprets (for AX.25, the bytes of a callsign and SSID). "Everyone" is a value of its own, not a string of bytes.
+
+**The key.** On the air an address travels as its key: four bytes, the payload's own CRC-32 (the check above: polynomial 0x04C11DB7, started at all ones, most significant bit first, nothing reflected, nothing inverted) run over the address's bytes, each byte most significant bit first, and sent most significant byte first. A worked example: the address `M0LTE-1` is the bytes `4D 30 4C 54 45 2D 31` and its key is 0x6EEC7110, sent as `6E EC 71 10`. The address `G9XYZ` (`47 39 58 59 5A`) has the key 0xB97C7FB1. Two addresses with the same key would be confused; with three hundred addresses in hearing the chance that any two share a key is about one in a hundred thousand, and the cost is datagrams that a host discards.
+
+**The items.** Two tags are assigned, in the extension block of a burst to one station and in the leading block of a burst to everyone:
+
+| Tag | Item | Value |
+|---|---|---|
+| 1 | From | one or more keys, 4 bytes each: the distinct link addresses the burst's datagrams were sent from, in the order they first appear. Always present in a data burst that carries datagrams. |
+| 2 | For | one key: the link address the burst is really for. Only in a burst to everyone, and only when the sender has not located that address. Absent in a burst that is for everyone. |
+
+A burst to everyone carries datagrams for one For, or for none.
+
+**A data burst to everyone begins with its own block**, before the datagrams, in the form of the extension block: one length byte N, then N bytes of items. It is always there (N is 0 when there are no items, which only a test sends). The datagrams begin N bytes after the length byte whatever the items say, and the rest of the rules for the extension block hold: an item with a tag a station does not know is skipped, a block that ends part-way through an item is ignored from that point, and a block that runs past the end of the payload leaves no datagrams. An identification burst is laid out like a data burst to everyone and does **not** have this block: its payload begins with the callsign's length (see "The identification payload").
+
+Worked examples, to check an implementation against. The datagram is "Hi!" (`00 03 48 69 21` with its length), sent from `M0LTE-1` (key `6E EC 71 10`), the payload before padding:
+
+- To one station, with the recommendation 0x28 given (flags 0x28): `28 28 06 01 04 6E EC 71 10 00 03 48 69 21`. The block holds six bytes, one From item.
+- To everyone, for `G9XYZ` (key `B9 7C 7F B1`), which the sender has not located: `0C 01 04 6E EC 71 10 02 04 B9 7C 7F B1 00 03 48 69 21`. The block holds twelve bytes: From, then For.
+- To everyone with no For, a broadcast: `06 01 04 6E EC 71 10 00 03 48 69 21`.
+- To everyone, from two addresses (`M0LTE-1` and `G9XYZ`) in one burst: `0A 01 08 6E EC 71 10 B9 7C 7F B1 ...`, the datagrams following. The most From keys one burst carries is 32.
+
+**What a station does with them.**
+
+- *Learning.* Every station learns from the From of every data burst it decodes, whoever the burst is for (a burst for another station is read just far enough to see its block): each key in From now lives at the burst's sender, and the latest burst heard wins. An identification burst teaches nothing.
+- *Forgetting.* What a station knows about an address is forgotten when the station it lives at is forgotten (unheard for ten minutes), and when three bursts running to that station have met silence, which is when a sender already falls back to first contact. After either, the next datagram for the address goes to everyone again.
+- *Sending.* Where the sender has located the address, the datagram goes in a burst to that station as before, with From in the extension block. Where it has not, it goes in a burst to everyone, at the first-contact format, with For set: there is no prelude, so no report is asked for and none is waited for. The answer, when the far host sends one, carries its own From, and the two then address each other. A datagram for everyone goes in a burst to everyone with no For.
+- *Receiving.* A burst addressed to this station is delivered to the host. A burst to everyone is delivered to the host whether or not it has a For, and the host is told which of the three it was (to this station, to everyone, for an address not yet located) and, when there is one, the For key. The modem does not filter on For: a host that can tell from its own frame whether a datagram is for it (AX.25) ignores the key; one that cannot compares it with the key of its own address.
+
+Size: the block takes 1 + 2 + 4 bytes with one From key, and 4 more for each further key, and 2 + 4 more for a For. At the first-contact format the longest burst carries 348 bytes of payload; a datagram then fits if it is no larger than 335 bytes to a located address (the prelude's four bytes, the block's seven and the datagram's length of two come off), 333 to an address not located (a prelude is not sent, the block is thirteen bytes) and 339 to everyone. From is sent in every data burst; at the slowest format it costs about a fifth of a second. Sending it only now and then is a later refinement, if it is shown to matter.
 
 **Everything before the check is scrambled.** Without that, padding, or data with long runs in it, puts the same point on every carrier, and that makes a symbol that is nearly all peak. The scrambler is additive: each bit is added (exclusive or) to the next bit of a sequence that both ends make the same way.
 
@@ -255,7 +288,7 @@ Why it is this scrambler:
 
 ### The identification payload
 
-An identification burst is laid out as a data burst to everyone: the header's destination is 0, its length counts payload symbols, and the burst number seeds the scrambler (a station takes it from its own count, so that each identification is a different waveform). The payload is padded, scrambled and checked exactly as above, and the burst goes at the first-contact format. Only what the payload holds differs. From the front:
+An identification burst is laid out as a data burst to everyone, but without its leading block of link addresses: the header's destination is 0, its length counts payload symbols, and the burst number seeds the scrambler (a station takes it from its own count, so that each identification is a different waveform). The payload is padded, scrambled and checked exactly as above, and the burst goes at the first-contact format. Only what the payload holds differs. From the front:
 
 1. **The callsign**: one length byte N, 1 to 16, then N bytes of ASCII. The characters are the upper-case letters A to Z, the digits, "/" and "-": enough for a prefix, a base call and a suffix or SSID (`M0LTE-1`, `F/M0LTE/P`, `VK2/M0LTE/QRP-15`). Lower case, spaces and every other byte are refused, so a callsign is checked when the host gives it to the station.
 2. **The capability word**: two bytes, the more significant first, the same word as in a prelude.
@@ -270,7 +303,7 @@ What a receiver does with it:
 
 - It decodes it as it decodes any burst to everyone, and measures it like one, so nothing is owed for it: no report, whatever the verdict.
 - If the payload is not a callsign and a capability word (too short, or a callsign that breaks the rules above), that is all it does.
-- Otherwise it keeps the capability word against that station, and takes the callsign as the station's name, unless the host program has already named that station number (the host's name stands) or has given that callsign to another number.
+- Otherwise it keeps the capability word against that station and tells the host the callsign and the word. The callsign names nothing: link addresses are the host's, and are learned from data bursts.
 
 When a station sends one, in plain words: an identification is due when a transmission of the station's ends and either it has never identified or ten minutes of its own sample clock have passed since its last identification burst began on the air (not since it fell due). Transmitting means anything but an identification burst, a lone report included. So a station that never transmits never identifies; one that has been quiet and then transmits is due when that transmission ends, and identifies right after it; one that keeps transmitting identifies after the first transmission that ends past the ten minutes; and what it sends within the ten minutes after an identification is covered by that identification and owes nothing later. An idle station never keys to identify. The identification burst does not make another owed. It is queued with the lone reports and goes in the first slot once the channel is clear (and, when it fell due as a transmission ended, after that transmission); if the channel stays busy it waits, and nothing expires it. The station that keys a Morse ident beside it follows the same rule, as the host interface says.
 
@@ -307,7 +340,7 @@ A connects to B, having never heard it. The format numbers and rates are the one
 
 ## What is left to the layer above
 
-- **Who stations are.** The modem deals in 6-bit numbers. Binding a number to a station's name after first contact is not designed yet (packet-net/pdn-soundmodem#835). Identifying the station as the licence requires is the modem's own job and does not depend on the layer above: the host gives the station its callsign and the station does not transmit until it has one, and while it is transmitting the modem sends an identification burst on its own clock (see "The identification payload"), and a Morse ident beside it that anyone can read ([the host interface](https://github.com/packet-net/pdn-soundmodem/blob/main/docs/dev/ofdm-fm/host-interface.md) has the decision).
+- **Who stations are.** The modem deals in 6-bit numbers on the air, and the host in link addresses of its own: the modem learns where each address lives from the From of the bursts it hears and sends to everyone while it does not know (docs/station-numbers.md; how a station comes by its number is packet-net/pdn-soundmodem#835). Identifying the station as the licence requires is the modem's own job and does not depend on the layer above: the host gives the station its callsign and the station does not transmit until it has one, and while it is transmitting the modem sends an identification burst on its own clock (see "The identification payload"), and a Morse ident beside it that anyone can read ([the host interface](https://github.com/packet-net/pdn-soundmodem/blob/main/docs/dev/ofdm-fm/host-interface.md) has the decision).
 - **Getting a datagram there in the end.** Acknowledging, repeating and ordering belong to the layer above, as set out under AX.25 above. The modem tells the host when each frame has gone out, and what it knows about the path. packet-net/pdn-soundmodem#836 decides whether the modem should ever do more.
 - **Routing, connections, flow.** Unchanged, but better informed: the host interface (packet-net/pdn-soundmodem#822) says what each neighbour can carry now, and packet-net/pdn-soundmodem#841 considers the AX.25 engine using it directly.
 
@@ -359,6 +392,7 @@ Nothing here reverses any of the nine choices above. Each line is a rule that th
 | An identification is due when a transmission of the station's ends and either it has never identified or ten minutes have passed since its last identification began; there is no closing identification, and an idle station never keys to identify. The Morse ident follows the same rule. | The first form had a timer that keyed an idle station once to cover what it had sent. | Tom, 27 November 2026 |
 | The document was made exact in these places against the implemented rules. | Porting the rules line by line showed where the wording was looser than the behaviour. | The port |
 | The interleaver and the training symbols are defined in this document's own terms (a shuffle driven by the scrambler's generator; a fixed table), where the prototype drew both from a software library's random generator. The training values did not change; the interleaver's permutation did. | A wire format has to be reproducible from its description. | The port |
+| The modem is a link layer with addresses of its own: each datagram has a link address it is for and one it is from, carried as 4-byte keys in a From item (every data burst) and a For item (a burst to everyone for an address not yet located), and a burst to everyone now begins with a block of items. Stations learn where an address lives from every From they decode, and send to everyone while they do not know. See docs/station-numbers.md. | A host's protocol needs addresses of its own (AX.25 callsigns, IP next hops), and the modem needs to know which station a datagram is for to choose a rate. | Tom, 27 November 2026, link addresses |
 
 ## What the bench has shown
 

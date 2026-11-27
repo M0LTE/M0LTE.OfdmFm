@@ -165,11 +165,6 @@ public sealed partial class Station
         {
             OnIdentificationBurstStarted(sampleIndex);
         }
-        else
-        {
-            // Any other transmission starts the identification clock if it is resting (the lone reports count, the identification burst does not).
-            OnOtherTransmissionStarted(sampleIndex);
-        }
 
         if (ReferenceEquals(request, _data))
         {
@@ -255,7 +250,7 @@ public sealed partial class Station
 
             if (!ReferenceEquals(request, _identRequest))
             {
-                OnOtherTransmissionEnded();
+                OnOtherTransmissionEnded(sampleIndex);
             }
         }
         finally

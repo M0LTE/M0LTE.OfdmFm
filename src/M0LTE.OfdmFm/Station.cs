@@ -75,7 +75,7 @@ internal enum TransmitState
 /// </para>
 /// <para>
 /// <b>Identification.</b> The callsign (given by the host with <see cref="SetIdentity"/>; the station does not transmit until it has one: 1 to 16 characters, upper-case letters, digits, '/' and '-') goes on the air, and the clock that decides when runs on the sample clock only while the station transmits:
-/// an identification is due when ten minutes have passed since the last one (or there was none) and the station has transmitted since: at once after the first transmission of a quiet station, every ten minutes while it keeps transmitting, and once more when the ten minutes are up for a station that sent something since and went quiet. A station that has sent nothing since its last identification never keys. See <c>docs/station-design.md</c>, "Step 7 as built".
+/// an identification is due when a transmission of the station's ends and either it has never identified or ten minutes have passed since its last identification started: at once after the first transmission of a quiet station, and after the first transmission to end past the ten-minute mark for a station that keeps transmitting. Transmissions sooner are covered by the last identification, and an idle station never keys to identify. See <c>docs/station-design.md</c>, "Step 7 as built".
 /// </para>
 /// </summary>
 public sealed partial class Station
@@ -210,8 +210,8 @@ public sealed partial class Station
     public event Action<BurstNotDecodedEvent>? BurstNotDecoded;
 
     /// <summary>
-    /// Raised when the station's identification is due: ten minutes of the sample clock have passed since the last identification started (or there was none) and the station has transmitted since; raised when the station is not keyed (at the end of the transmission in progress) (see <c>docs/station-design.md</c>, "Step 7 as built"), so that the audio layer can key its Morse ident.
-    /// The identification burst is queued at the same moment and raises <see cref="ModemSent"/> when it goes on air. Once for each identification, on the audio thread, at the end of the transmission in progress, or from the timer at the due sample if the station is idle.
+    /// Raised when the station's identification is due: a transmission of the station's has ended and either it has never identified or ten minutes of the sample clock have passed since the last identification started; raised at that end, when the station is not keyed (see <c>docs/station-design.md</c>, "Step 7 as built"), so that the audio layer can key its Morse ident.
+    /// The identification burst is queued at the same moment and raises <see cref="ModemSent"/> when it goes on air. Once for each identification, on the audio thread, in the call to <see cref="TransmitEnded"/>.
     /// </summary>
     public event Action<IdentificationDueEvent>? IdentificationDue;
 

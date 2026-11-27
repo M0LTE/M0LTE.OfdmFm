@@ -2,14 +2,12 @@ namespace M0LTE.OfdmFm;
 
 // Step 7 of docs/station-design.md: the station identifies itself, and learns the callsigns of the stations that do.
 //
-// The rule (it is the host program's existing Morse ident's rule): an identification is due when ten minutes have passed since the station's last identification (or it has never identified)
-// AND the station has transmitted since then. "Last identification" is when its burst started on the air (TransmitStarted), not when it fell due, so a long wait for the channel does not shorten the next interval.
-// The identification burst is not a transmission that makes another owed; anything else the station sends is, a lone report included.
-//   - Nothing sent since the last identification: nothing is owed and nothing is ever sent.
-//   - A transmission starts when the last identification was ten minutes ago or more (or there was none): due at once. IdentificationDue is raised when that transmission ends, not in the middle of it
-//     (the station is no longer keyed, so the audio layer can send its Morse ident), and the burst is queued at that moment.
-//   - A transmission starts within the ten minutes: a timer on the sample clock is set for the end of the ten minutes. When it runs out the identification falls due (at the end of the transmission, if one is on the air then),
-//     so a station that identified, sent something, and went quiet keys once, to cover it.
+// The rule (it is the host program's existing Morse ident's rule): an identification is due when a transmission of the station's (data or a lone report, not an identification burst) ends and either the station has never identified
+// or ten minutes have passed since its last identification burst started. Nothing else makes one due: there is no timer, and an idle station never keys to identify.
+//   - A transmission ends and there was no identification, or the last was ten minutes ago or more: due at once. IdentificationDue is raised at that moment (the station is no longer keyed, so the audio layer can send its Morse ident)
+//     and the burst is queued then.
+//   - A transmission ends within ten minutes of the last identification's start: nothing is owed. It is covered by that identification.
+// "Last identification" is when its burst started on the air (TransmitStarted), not when it fell due, so a long wait for the channel does not shorten the next interval.
 // An identification owed stays owed, however long the channel is busy, until its burst starts: IdentificationDue is raised once, and transmissions in the meantime are covered by the burst that follows.
 
 public sealed partial class Station
@@ -20,12 +18,7 @@ public sealed partial class Station
     internal const long IdentificationIntervalSamples = 600L * SampleRate;
 
     private long _lastIdentStart = -1;
-    private bool _transmittedSince;
     private bool _identOwed;
-    private bool _identDueWaiting;
-    private long _identTimerAt = -1;
-    private TimerHandle _identTimer;
-    private Action _onIdentificationDue = null!;
     private ChannelAccess.Request? _identRequest;
     private float[]? _identAudio;
     private bool _identBuilt;
@@ -35,7 +28,7 @@ public sealed partial class Station
 
     /// <summary>
     /// The interval the identification rule uses, in samples. A test's seam: it is <see cref="IdentificationIntervalSamples"/> and a test sets a shorter one so that a run does not push ten minutes of audio. Sound because the interval is read in one place only
-    /// (when a transmission starts) and enters nothing but the due sample of one timer and one comparison; set it before the station first transmits. Not for a host.
+    /// (when a transmission ends) and enters nothing but one comparison; set it before the station first transmits. Not for a host.
     /// </summary>
     internal long IdentificationInterval
     {
@@ -53,14 +46,8 @@ public sealed partial class Station
     /// </summary>
     internal bool IdentificationSuspended { get; set; }
 
-    /// <summary>The sample the interval since the last identification runs out at, while a timer waits for it; otherwise null.</summary>
-    internal long? IdentificationDueAt => _identTimerAt >= 0 ? _identTimerAt : null;
-
     /// <summary>True from the sample an identification falls due until its burst goes on air.</summary>
     internal bool IdentificationOwed => _identOwed;
-
-    /// <summary>True when nothing has been sent since the last identification (or ever): nothing is owed and no timer runs.</summary>
-    internal bool IdentificationResting => !_transmittedSince && !_identOwed;
 
     /// <summary>The sample the last identification burst started at, or null if none has.</summary>
     internal long? LastIdentificationStart => _lastIdentStart >= 0 ? _lastIdentStart : null;
@@ -71,61 +58,20 @@ public sealed partial class Station
     /// <summary>How many identification bursts have gone on air.</summary>
     internal long IdentificationsSent => _identificationsSent;
 
-    private void InitialiseIdentification() => _onIdentificationDue = OnIdentificationTimer;
-
-    /// <summary>Anything but the identification burst has started: something has been sent since the last identification.</summary>
-    private void OnOtherTransmissionStarted(long sampleIndex)
+    /// <summary>
+    /// A transmission other than the identification burst has ended at <paramref name="sampleIndex"/>: an identification is due if the station has never identified or the interval has run out since the last one started.
+    /// Anything sooner is covered by that one and owes nothing.
+    /// </summary>
+    private void OnOtherTransmissionEnded(long sampleIndex)
     {
         if (_identOwed || IdentificationSuspended || Callsign is null)
         {
             return;
         }
 
-        _transmittedSince = true;
         if (_lastIdentStart < 0 || sampleIndex >= _lastIdentStart + _identificationInterval)
         {
-            BecomeDue();
-        }
-        else if (_identTimerAt < 0)
-        {
-            _identTimerAt = _lastIdentStart + _identificationInterval;
-            _identTimer = ScheduleAt(_identTimerAt, _onIdentificationDue);
-        }
-    }
-
-    private void OnIdentificationTimer()
-    {
-        _identTimerAt = -1;
-        if (_transmittedSince && !_identOwed)
-        {
-            BecomeDue();
-        }
-    }
-
-    /// <summary>Owed from now. If the station is keyed, IdentificationDue and the request wait for the end of the transmission (<see cref="OnOtherTransmissionEnded"/>).</summary>
-    private void BecomeDue()
-    {
-        _identOwed = true;
-        if (_identTimerAt >= 0)
-        {
-            CancelTimer(_identTimer);
-            _identTimerAt = -1;
-        }
-
-        if (IsTransmitting)
-        {
-            _identDueWaiting = true;
-            return;
-        }
-
-        RaiseIdentificationDue();
-    }
-
-    private void OnOtherTransmissionEnded()
-    {
-        if (_identDueWaiting)
-        {
-            _identDueWaiting = false;
+            _identOwed = true;
             RaiseIdentificationDue();
         }
     }
@@ -170,13 +116,7 @@ public sealed partial class Station
     {
         _lastIdentStart = sampleIndex;
         _identOwed = false;
-        _transmittedSince = false;
         _identificationsSent++;
-        if (_identTimerAt >= 0)
-        {
-            CancelTimer(_identTimer);
-            _identTimerAt = -1;
-        }
     }
 
     private void OnIdentificationBurstEnded()

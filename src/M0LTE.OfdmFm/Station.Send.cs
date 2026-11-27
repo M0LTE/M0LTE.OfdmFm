@@ -106,7 +106,6 @@ public sealed partial class Station
         _onAnswerTimer = OnAnswerTimer;
         _access.Prepare = PrepareBurst;
         InitialiseReports();
-        InitialiseIdentification();
     }
 
     private static int ComputeMaxPayloadBytes()

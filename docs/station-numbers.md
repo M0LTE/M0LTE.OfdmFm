@@ -74,7 +74,8 @@ After any of these the next datagram for the address goes to everyone again.
 The host gives a datagram, the address it is for, the address it is from and its protocol byte.
 
 - **The address is known:** the datagram goes in a burst to that station, as now.
-- **The address is not known:** it goes in a burst to everyone, at the first-contact format, with For set. This is the format a first contact uses anyway. There is no prelude, so no report is asked for and none comes back. The answer, when the far host sends one, carries its own From, and the two then address each other.
+- **The address is not known:** it goes in a burst to everyone, at the first-contact format, with For set. This is the format a first contact uses anyway. There is no prelude. The answer, when the far host sends one, carries its own From, and the two then address each other. If the far host sends nothing back, its modem still answers (next).
+- **A station answers for its own addresses.** A station knows which addresses its host has sent from. When it decodes a burst to everyone whose For is one of them, it owes the sender a lone report in the first slot, as for any burst it must report on. The sender, which has that one burst outstanding, takes the report as saying where the address lives. So one-way traffic to a host that never replies is still addressed, and climbs, after one burst.
 - **The address is everyone:** a burst to everyone with no For.
 
 A burst to everyone carries datagrams for one For, or for none. Datagrams waiting for an address follow it when it becomes known or is forgotten.
@@ -116,6 +117,7 @@ The modem does not filter on For. A host that can tell from its own frame whethe
 - 63 stations in hearing of each other.
 - Anyone can send from any address. That is the trust AX.25 and an unswitched LAN have.
 - A datagram for an address not yet located is heard by everyone's host, at the slowest format.
+- A host that has never sent from an address cannot be located at it. Traffic for that address stays at the first-contact format until it does.
 - An audio repeater that plays a station's own bursts back to it would look like a clash. The modem is for simplex channels.
 
 ## Choices made here
@@ -132,6 +134,7 @@ Settled without being put to Tom, because each is internal or a starting value. 
 8. Whoever notices a clash moves. For hidden stations the more recent arrival is told to.
 9. Nothing is carried across a change of number.
 10. The protocol byte borrows AX.25's PID numbers, with 0x00 added for a whole AX.25 frame.
+11. A station answers a burst For one of its own addresses with a lone report, and the sender learns the address from it. Found in the build: without it, one-way traffic never found its station again once three silences had forgotten it.
 
 ## Amended (Tom, 27 November 2026)
 

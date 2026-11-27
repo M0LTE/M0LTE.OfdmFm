@@ -926,6 +926,7 @@ public sealed partial class Station
             if (quality.Length == Carriers)
             {
                 quality.CopyTo(job.Quality);
+                MarkUnmeasured(job.Quality, StandardFormats.Describe(r.Header.Format).Carriers);
                 job.HasQuality = true;
             }
         }
@@ -938,6 +939,21 @@ public sealed partial class Station
         lock (_gate)
         {
             r.State = BurstState.Done;
+        }
+    }
+
+    /// <summary>
+    /// Makes the quality of a decoded burst safe to give the adaptation rules: NaN on every carrier above the ones its payload used.
+    /// The receiver holds 1.0 (0 dB) on the carriers above the opening's band, and the opening's own estimate on those between the
+    /// payload's and the opening's. Both are placeholders for "not measured by the payload" that the receiver's own results keep, but the
+    /// rules read only NaN as "not measured" and would take them as figures, a burst at the first-contact format as -13.7 dB on 277
+    /// carriers. A burst that failed is measured from its opening, which already leaves NaN outside the opening's carriers.
+    /// </summary>
+    private static void MarkUnmeasured(Span<double> quality, int payloadCarriers)
+    {
+        if (payloadCarriers < quality.Length)
+        {
+            quality[payloadCarriers..].Fill(double.NaN);
         }
     }
 

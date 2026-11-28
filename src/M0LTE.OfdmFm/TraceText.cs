@@ -316,6 +316,8 @@ internal static class TraceText
     /// <summary>The channel turned clear with nothing waiting.</summary>
     internal static string ChannelClear() => "Channel clear";
 
+    internal static string NothingCameOfIt() => "Nothing came of the signal checked";
+
     /// <summary>The cause of a busy channel, as a clause.</summary>
     [TracePiece]
     internal static string CauseText(AccessCause cause) => cause switch

@@ -282,6 +282,11 @@ public sealed partial class Station
                     Detail(TraceText.ChannelBusy(TraceText.CauseText(cause)));
                 }
             }
+            else if (_access.SpellWasJudgingAlone)
+            {
+                // The channel was busy only while candidates were being judged, and none was a burst.
+                Detail(TraceText.NothingCameOfIt());
+            }
             else if (waiting is null)
             {
                 Detail(TraceText.ChannelClear());

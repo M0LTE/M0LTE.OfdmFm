@@ -24,8 +24,8 @@ public sealed partial class Station
     private readonly Dictionary<long, ChannelAccess.Request> _byHandshake = [];
     private long _candidatesMuted;
 
-    // Candidates whose header would not read, held back until every candidate waiting has been judged (see SettleUnreadable).
-    private readonly List<(long Index, long Until)> _unreadable = [];
+    // Candidates whose header would not read, or read as nothing a burst can be.
+    private long _candidatesCameToNothing;
 
     /// <summary>A change in an access request: granted, withdrawn and queued again, started, ended. Raised on the audio thread. Step 5 reads it; tests do now.</summary>
     internal event Action<AccessEvent>? AccessChanged;
@@ -41,6 +41,9 @@ public sealed partial class Station
 
     /// <summary>The detector's threshold for an opening now.</summary>
     internal double DetectorThreshold(FormatOpening opening) => _detector.ThresholdOf(opening);
+
+    /// <summary>Candidates whose header would not read, or read as nothing a burst can be: they held the channel only while they were being judged.</summary>
+    internal long CandidatesCameToNothing => _candidatesCameToNothing;
 
     /// <summary>Candidates ignored because they fell in the window of the station's own transmission.</summary>
     internal long CandidatesMuted => _candidatesMuted;
@@ -417,44 +420,20 @@ public sealed partial class Station
     }
 
     /// <summary>Tells the channel whether a candidate is waiting for its header to be judged, or an identification burst for its result: busy while one is.</summary>
-    private void RefreshPending() => _access.SetPending(CandidatePending() || IdentificationUndecided());
+    private void RefreshPending()
+    {
+        _access.SetPending(CandidatePending());
+        _access.SetUndecided(IdentificationUndecided());
+    }
 
     // ---- what a header read means for the channel (E) ----
 
     /// <summary>
-    /// A header that would not read, or read as nothing a burst can be: busy for the opening and a second more from the candidate's first sample, then judged again. The hold is kept back until every candidate
-    /// waiting has been judged: a real burst is found under each opening whose reference it resembles, and the readings under the wrong ones fail, so a failed candidate that lies within a symbol of the start of a burst
-    /// the station knows is that burst's shadow and holds nothing.
+    /// A header that would not read, or read as nothing a burst can be: nothing came of the candidate. It held the channel while it waited to be judged (<see cref="CandidatePending"/>) and holds nothing more:
+    /// a burst is known by its header, and a candidate that is not one leaves no hold behind and does not move the time the channel was last busy. Open-channel noise gives a stream of such candidates, more of them on a receiver whose
+    /// noise is loud or not white, and a hold for each would add up to a channel that reads busy for much of the time.
     /// </summary>
-    private void HoldForUnreadable(Candidate c)
-    {
-        if (_unreadable.Count == 64)
-        {
-            _unreadable.RemoveAt(0);
-        }
-
-        _unreadable.Add((c.Index, c.Index + HeaderReader.OpeningSamples(c.Opening) + ChannelAccess.UnreadableHold));
-    }
-
-    /// <summary>Applies the holds of the candidates that would not read, once none is left to judge, except those that are the shadow of a burst that did.</summary>
-    private void SettleUnreadable()
-    {
-        if (_unreadable.Count == 0 || CandidatePending())
-        {
-            return;
-        }
-
-        foreach ((long index, long until) in _unreadable)
-        {
-            if (!IsShadow(index))
-            {
-                BurstKnown?.Invoke(SampleCount, until);
-                _access.HoldUntil(until);
-            }
-        }
-
-        _unreadable.Clear();
-    }
+    private void NothingCameOf() => _candidatesCameToNothing++;
 
     /// <summary>A header of a version this station does not know: busy a second from now; the next candidate that reads the same adds another.</summary>
     private void HoldForUnknownVersion()
@@ -464,8 +443,8 @@ public sealed partial class Station
         _access.HoldUntil(until);
     }
 
-    /// <summary>A station's identification burst said it goes on sending until <paramref name="until"/>: busy until then, whatever else is waiting.</summary>
-    private void HoldForTail(int sender, long until)
+    /// <summary>A station's identification burst, ending at <paramref name="from"/>, said it goes on sending until <paramref name="until"/>: busy until then, whatever else is waiting.</summary>
+    private void HoldForTail(int sender, long from, long until)
     {
         BurstKnown?.Invoke(SampleCount, until);
         if (WantsDetail() && until > SampleCount)
@@ -473,6 +452,9 @@ public sealed partial class Station
             Detail(TraceText.HoldingForIdentification(StationName(sender), ClockSeconds(until)));
         }
 
+        // What follows the burst is the station's carrier with its callsign in Morse, not open-channel noise: it must not pull down the detector's estimate of the noise, which would then put the threshold
+        // under the noise for the next 30 s.
+        PauseEstimateOver(from, until);
         _access.HoldForTail(until);
     }
 

@@ -513,7 +513,6 @@ public sealed partial class Station
             }
         }
 
-        SettleUnreadable();
         RefreshPending();
         if (_notify)
         {
@@ -621,13 +620,13 @@ public sealed partial class Station
         if (status == HeaderStatus.Lost)
         {
             _headersLost++;
-            HoldForUnreadable(c);
+            NothingCameOf();
             return;
         }
 
         if (status != HeaderStatus.Read)
         {
-            HoldForUnreadable(c);
+            NothingCameOf();
             return;
         }
 
@@ -649,7 +648,7 @@ public sealed partial class Station
         if (header.Sender == 0)
         {
             Note(c, header, NoteReason.Invalid);
-            HoldForUnreadable(c);
+            NothingCameOf();
             return;
         }
 
@@ -661,7 +660,7 @@ public sealed partial class Station
             {
                 // A burst with a payload opens the way its format says (a read under another opening is not a burst), and an identification burst is for everyone.
                 Note(c, header, NoteReason.Invalid);
-                HoldForUnreadable(c);
+                NothingCameOf();
                 return;
             }
         }

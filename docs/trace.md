@@ -144,6 +144,7 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 | Detail | `Channel busy: another station is sending` | The channel turned busy. The causes are listed under Reasons and kinds. With datagrams waiting, the Flow line above comes first. |
 | Detail | `Channel busy: this station is sending` | The audio layer keyed a transmission. Said when it is keyed, not when it is granted: a request the audio layer refuses says nothing. |
 | Detail | `Channel clear` | The channel turned clear with nothing waiting. |
+| Detail | `Nothing came of the signal checked` | The channel turned clear after being busy only while candidates were checked, and none was a burst: noise, or a burst whose header would not read. Said in place of "Channel clear", after the Flow line if datagrams are waiting. |
 | Detail | `Carrier from the radio: present` | The host's carrier indication changed. The three states are listed under Reasons and kinds. |
 
 ### When to transmit

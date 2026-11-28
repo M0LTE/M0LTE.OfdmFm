@@ -169,7 +169,7 @@ public class StationAccessTests
     [Theory]
     [InlineData(480)]
     [InlineData(0)]
-    public void A_candidate_whose_header_will_not_read_is_busy_for_its_opening_and_a_second_more_then_judged_again(int block)
+    public void A_candidate_whose_header_will_not_read_is_busy_only_while_it_is_checked_and_leaves_no_hold(int block)
     {
         var builder = new StreamBuilder().Silence(6.0);
         Placed placed = builder.Add(TestBurst.Report(7, 1, 80, false, FormatOpening.Full));
@@ -196,12 +196,14 @@ public class StationAccessTests
         driver.PushTo(stream.Length, Blocks(block));
 
         station.NotedHeaders.Should().BeEmpty("no header read");
-        driver.Known.Should().NotBeEmpty();
-        (long now, long until) = driver.Known[0];
-        (until - 48000 - 4224).Should().BeCloseTo(placed.Start, 8, "the hold counts from the candidate's first sample: its opening (4224) and a second");
+        station.CandidatesCameToNothing.Should().BeGreaterThan(0);
+        driver.Known.Should().BeEmpty("a candidate that is not a burst takes no hold");
         driver.Busy.Should().HaveCount(2);
-        driver.Busy[0].Should().Be((now, true));
-        driver.Busy[1].Should().Be((driver.Known.Max(k => k.Until), false));
+        driver.Busy[0].Busy.Should().BeTrue();
+        driver.Busy[1].Busy.Should().BeFalse();
+        driver.Busy[0].At.Should().BeGreaterThan(placed.Start, "busy from the frame that found the candidate");
+        driver.Busy[1].At.Should().BeLessThanOrEqualTo(driver.Busy[0].At + StreamingBurstDetector.Hop, "clear once it has been judged, within a frame");
+        station.ClearSince.Should().BeLessThan(placed.Start, "the time the channel was last busy does not move for it");
     }
 
     [Theory]

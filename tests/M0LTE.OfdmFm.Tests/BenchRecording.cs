@@ -13,6 +13,9 @@ internal sealed class BenchRecording
     /// <summary>A 30 ms capture period, as the bench's sound cards deliver.</summary>
     public const int Block = 1440;
 
+    // The clock of each hold for an identification's tail (its trace line is said as the hold is taken).
+    private readonly List<long> _tails = [];
+
     private BenchRecording()
     {
     }
@@ -38,8 +41,14 @@ internal sealed class BenchRecording
     /// <summary>Datagrams received.</summary>
     public int Received { get; private set; }
 
+    /// <summary>Trace lines saying a burst was heard and decoded ("Heard ...").</summary>
+    public int HeardLines => Lines.Count(l => l.Text.StartsWith("Heard ", StringComparison.Ordinal));
+
     /// <summary>Stations heard identifying.</summary>
     public int Identified { get; private set; }
+
+    /// <summary>Candidates whose header would not read, or read as nothing a burst can be.</summary>
+    public long CameToNothing { get; private set; }
 
     /// <summary>The samples played.</summary>
     public long Length { get; private set; }
@@ -47,15 +56,29 @@ internal sealed class BenchRecording
     /// <summary>Candidates the detector gave, all told.</summary>
     public long CandidatesSeen { get; private set; }
 
-    /// <summary>Plays <paramref name="audio"/> through a new listening station (no identity: it never transmits) in <see cref="Block"/>-sample blocks, jobs run inline.</summary>
-    public static BenchRecording Play(float[] audio, int seed = 1)
+    /// <summary>
+    /// Plays <paramref name="audio"/> through a new listening station (no identity: it never transmits) in <see cref="Block"/>-sample blocks. Jobs run inline, or (<paramref name="inline"/> false) as a host's
+    /// worker runs them: after each block, as if a worker took them up at once, so that a header read is taken in at the next block, as on a station with worker threads.
+    /// </summary>
+    /// <param name="carrier">Null: no carrier indication, detection alone. Otherwise the indication the host gives from the start, held there.</param>
+    public static BenchRecording Play(float[] audio, bool inline = true, bool? carrier = null, int seed = 1)
     {
         var r = new BenchRecording();
-        var station = new Station(new Random(seed), runJobsInline: true) { TraceLevel = TraceLevel.Detail };
+        var station = new Station(new Random(seed), runJobsInline: inline) { TraceLevel = TraceLevel.Detail };
+        if (carrier is { } c)
+        {
+            station.SetExternalBusy(c);
+        }
+
         string cause = "";
         station.Trace += e =>
         {
             r.Lines.Add(e);
+            if (e.Text.StartsWith("Holding all traffic", StringComparison.Ordinal))
+            {
+                r._tails.Add(station.SampleCount);
+            }
+
             const string prefix = "Channel busy: ";
             if (e.Text.StartsWith(prefix, StringComparison.Ordinal))
             {
@@ -75,6 +98,10 @@ internal sealed class BenchRecording
         {
             int n = Math.Min(Block, audio.Length - at);
             station.Push(audio.AsSpan(at, n));
+            if (!inline)
+            {
+                station.RunPending();
+            }
             if ((at / Block) % 10 == 0)
             {
                 r.Thresholds.Add((station.SampleCount, station.DetectorThreshold(FormatOpening.Full), station.DetectorThreshold(FormatOpening.UpTo3000Hz), station.DetectorThreshold(FormatOpening.UpTo1500Hz)));
@@ -90,6 +117,7 @@ internal sealed class BenchRecording
 
         r.Length = audio.Length;
         r.CandidatesSeen = station.CandidatesSeen;
+        r.CameToNothing = station.CandidatesCameToNothing;
         return r;
     }
 
@@ -150,6 +178,80 @@ internal sealed class BenchRecording
         }
 
         return longest;
+    }
+
+    /// <summary>The bursts whose header read: the first sample and the sample the station held the channel to for it (the latest hold taken as the header was taken in or later from its decode, such as an identification's tail).</summary>
+    public List<(long Start, long End)> Bursts()
+    {
+        var bursts = new List<(long, long)>();
+        foreach (var j in Judged)
+        {
+            if (!j.Read)
+            {
+                continue;
+            }
+
+            long end = j.Index;
+            foreach ((long now, long until) in Holds)
+            {
+                if (now == j.At)
+                {
+                    end = Math.Max(end, until);
+                }
+            }
+
+            bursts.Add((j.Index, end));
+        }
+
+        // An identification's tail is taken when its decode is applied, up to a frame after the burst's end: it extends the burst it follows.
+        for (int i = 0; i < bursts.Count; i++)
+        {
+            (long start, long end) = bursts[i];
+            foreach ((long now, long until) in Holds)
+            {
+                if (_tails.Contains(now) && now >= end && now <= end + StreamingBurstDetector.Hop + Block && until > end)
+                {
+                    end = until;
+                }
+            }
+
+            bursts[i] = (start, end);
+        }
+
+        return bursts;
+    }
+
+    /// <summary>
+    /// The samples in [<paramref name="from"/>, <paramref name="to"/>) the channel read busy outside every burst whose header read (from its first sample to its end, <see cref="Bursts"/>): the total, and the longest unbroken run of them.
+    /// </summary>
+    public (long Total, long Longest) Unexplained(long from, long to)
+    {
+        List<(long Start, long End)> bursts = Bursts();
+        long total = 0;
+        long longest = 0;
+        foreach ((long s, long e, _) in Spells())
+        {
+            long run = 0;
+            for (long x = Math.Max(s, from); x < Math.Min(e, to); x++)
+            {
+                bool inside = false;
+                foreach ((long bs, long be) in bursts)
+                {
+                    inside |= x >= bs && x < be;
+                }
+
+                if (inside)
+                {
+                    run = 0;
+                    continue;
+                }
+
+                total++;
+                longest = Math.Max(longest, ++run);
+            }
+        }
+
+        return (total, longest);
     }
 
     /// <summary>A readable account: every spell, candidate and hold, by the sample clock in seconds.</summary>
@@ -250,8 +352,9 @@ public sealed class BenchRecordingDiagnostics
         Assert.SkipWhen(string.IsNullOrEmpty(dir), "set SM_BENCH_WAV to a directory of 48 kHz mono recordings");
         foreach (string path in Directory.GetFiles(dir!, "*.wav").Order(StringComparer.Ordinal))
         {
-            BenchRecording r = BenchRecording.Play(BenchRecording.ReadWav(path));
-            File.WriteAllText(Path.ChangeExtension(path, ".busy.txt"), r.Describe());
+            float[] audio = BenchRecording.ReadWav(path);
+            File.WriteAllText(Path.ChangeExtension(path, ".busy.txt"), BenchRecording.Play(audio).Describe());
+            File.WriteAllText(Path.ChangeExtension(path, ".worker.busy.txt"), BenchRecording.Play(audio, inline: false).Describe());
         }
     }
 }

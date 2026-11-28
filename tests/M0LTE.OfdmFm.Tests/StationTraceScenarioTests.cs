@@ -156,7 +156,7 @@ public class StationTraceScenarioTests
     [Fact]
     public void The_refusal_names_the_address_by_the_bytes_the_host_gave_even_when_it_asks_by_key()
     {
-        var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
+        var station = new Station(1, new Random(1)) { IdentificationSuspended = true }.WithIdentity("M0LTE"); // the identification would take the first grant: this is about the datagram
         var tap = new TraceTap(station);
         LinkAddress to = Name("G4ABC-1");
         station.Send(new byte[10], to, Name("M0LTE-1"), LinkProtocol.NoLayer3, new HostTag(1));
@@ -254,7 +254,7 @@ public class StationTraceScenarioTests
     // ---- identification ----
 
     [Fact]
-    public void Identification_is_due_after_the_first_transmission_is_sent_and_heard_by_the_other_station()
+    public void Identification_is_due_before_the_first_transmission_goes_first_and_is_heard_by_the_other_station()
     {
         var rig = new SimRig(2);
         foreach (Station s in rig.Stations)
@@ -269,12 +269,16 @@ public class StationTraceScenarioTests
         rig.Send(1, 2, 1);
         rig.RunTo(30);
 
-        s1.LinesAt(TraceLevel.Detail).Should().Contain("   7.87  Identification due: first transmission");
-        s1.Lines.Should().Contain("   8.02  Sent identification as M0S1, 1.19 s on air");
-        s1.Lines.Should().Contain("  11.15  Heard S2: identified as M0S2, signal 74 dB");
+        // The datagram's turn comes at 5.80 s: the identification falls due then, goes first, and the datagram follows it 0.15 s after it ends, with no random wait.
+        s1.LinesAt(TraceLevel.Detail).Should().Contain("   5.80  Identification due: none sent yet");
+        s1.LinesAt(TraceLevel.Detail).Should().Contain("   5.80  Sending identification first, before datagrams");
+        s1.Lines.Should().Contain("   5.80  Sent identification as M0S1, 1.19 s on air");
+        s1.LinesAt(TraceLevel.Detail).Should().Contain("   6.99  Going straight on after the identification: no random wait");
+        s1.Lines.Should().Contain("   7.14  Sent 1 datagram to S2 at 0.25 kbit/s, 2.07 s on air, report asked for");
+        s1.Lines.Should().Contain("  12.41  Heard S2: identified as M0S2, signal 74 dB");
         s1.Texts.Should().Contain("Heard from S2 within the wait: not counted as silence");
-        s2.Lines.Should().Contain("   9.48  Heard address f3b8bcd6: identified as M0S1, signal 73 dB");
-        s2.Lines.Should().Contain("   9.82  Sent identification as M0S2, 1.19 s on air");
+        s2.Lines.Should().Contain("   7.38  Heard address f3b8bcd6: identified as M0S1, signal 74 dB");
+        s2.Lines.Should().Contain("  11.03  Sent identification as M0S2, 1.19 s on air", "after its report (10.71 s), in the first slot");
     }
 
     // ---- numbers ----
@@ -284,15 +288,16 @@ public class StationTraceScenarioTests
     {
         ScenarioRun run = TraceScenarios.ClashRun(TraceSetting.Flow);
         TraceTap[] taps = [run.Taps[0]!, run.Taps[1]!, run.Taps[2]!];
-        taps[2].Lines.Should().Contain("  17.85  Station number 7 is in use by two stations: will tell the later one to move");
-        taps[2].Lines.Should().Contain("  26.19  Told the station using number 7 to move");
-        taps[0].Lines.Should().Contain("  27.90  Heard a notice that the station using number 7 must move");
-        taps[1].Lines.Should().Contain("  27.90  Heard a notice that the station using number 7 must move");
-        taps[1].Lines.Should().Contain("  27.90  Changed station number from 7 to 48: told to move by another station");
+        taps[2].Lines.Should().Contain("  15.34  Station number 7 is in use by two stations: will tell the later one to move");
+        taps[2].Lines.Should().Contain("  23.68  Sent identification as M0S3, 1.19 s on air", "the station has never identified, so the identification goes before the notice");
+        taps[2].Lines.Should().Contain("  25.02  Told the station using number 7 to move");
+        taps[0].Lines.Should().Contain("  26.64  Heard a notice that the station using number 7 must move");
+        taps[1].Lines.Should().Contain("  26.64  Heard a notice that the station using number 7 must move");
+        taps[1].Lines.Should().Contain("  26.64  Changed station number from 7 to 48: told to move by another station");
         taps[0].Texts.Should().NotContain(t => t.StartsWith("Changed", StringComparison.Ordinal), "the notice named the later station, and the first stays");
 
         TraceTap detail = TraceScenarios.ClashRun(TraceSetting.Detail).Taps[2]!;
-        detail.Lines.Should().Contain("  17.85  Forgot station 7: its number is in use by two stations", "nothing the host sent to lived there, so the detail says what Flow had no address to say");
+        detail.Lines.Should().Contain("  15.34  Forgot station 7: its number is in use by two stations", "nothing the host sent to lived there, so the detail says what Flow had no address to say");
     }
 
     [Fact]
@@ -462,7 +467,7 @@ public class StationTraceScenarioTests
     [Fact]
     public void A_datagram_accepted_at_a_fast_rate_and_too_big_once_the_rate_falls_is_dropped_with_the_reason()
     {
-        var station = new Station(1, new Random(1)).WithIdentity("M0LTE");
+        var station = new Station(1, new Random(1)) { IdentificationSuspended = true }.WithIdentity("M0LTE"); // the identification would take the first grant: this is about the datagram
         var tap = new TraceTap(station);
         LinkAddress to = Name("G4ABC-1");
         station.Locate(to, 2);
@@ -480,7 +485,7 @@ public class StationTraceScenarioTests
     [Fact]
     public void A_burst_built_and_not_yet_keyed_is_built_again_when_the_station_moves_to_another_number()
     {
-        var station = new Station(23, new Random(1)).WithIdentity("M0LTE");
+        var station = new Station(23, new Random(1)) { IdentificationSuspended = true }.WithIdentity("M0LTE"); // a built identification is rebuilt too, and has its own test; this is the datagram's burst
         var tap = new TraceTap(station, TraceLevel.Detail);
         station.Locate(Name("G4ABC-1"), 2);
         station.Send(new byte[10], Name("G4ABC-1"), Name("M0LTE-1"), LinkProtocol.NoLayer3, new HostTag(1));

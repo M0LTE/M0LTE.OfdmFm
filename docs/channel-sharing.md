@@ -145,6 +145,8 @@ Checked against the source or its abstract on 27 November 2026 unless marked.
 
 ## Baseline: how the station behaves today
 
+28 November 2026: the figures in this section were recorded before identification moved to the front of a station's first transmission (library 0.3.0), and will be rerun with the next loss slice.
+
 Recorded on 28 November 2026, before any change to the station, so that later changes can be judged against it. Nothing here is tuned: the scenarios were fixed before the results were seen, and every figure is a total or a range over the same eight seeds (1 to 8) the earlier comparisons use. The figures describe a simulated channel (see "What the simulated channel does and does not do"); they are not predictions for a real one. One row for each seed of every scenario is in `docs/channel-sharing-baseline-by-seed.md`.
 
 ### How it was measured

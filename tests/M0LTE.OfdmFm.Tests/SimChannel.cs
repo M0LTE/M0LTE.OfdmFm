@@ -44,6 +44,9 @@ internal sealed class SimNode
     /// <summary>After the station's own transmission ends the receiver hears nothing for this many samples.</summary>
     public int DeafSamples { get; set; }
 
+    /// <summary>Impulsive noise on this station's receiver input (see <see cref="ImpulseModel"/>). Null (the default): none. Set before <see cref="SimChannel.Run"/>.</summary>
+    public ImpulseModel? Impulses { get; set; }
+
     /// <summary>The carrier indication: null means the host supplies none and <see cref="Station.SetExternalBusy"/> is never called. Otherwise it follows any carrier heard at the receiver, this many samples late.</summary>
     public int? CarrierDelaySamples { get; set; }
 
@@ -122,6 +125,16 @@ internal sealed class SimNode
     internal int Carriers;
     internal Filter? ReceiveFilter;
     internal Random? CaptureRandom;
+    internal ImpulseSource? ImpulseStream;
+
+    /// <summary>The impulses this receiver has been given so far, in order, when <see cref="Impulses"/> is set (ground truth for a test).</summary>
+    public IReadOnlyList<ImpulsePulse> ImpulsePulses => (IReadOnlyList<ImpulsePulse>?)ImpulseStream?.Pulses ?? [];
+
+    /// <summary>Whether an impulse overlapped the samples from <paramref name="from"/> up to <paramref name="to"/> at this receiver.</summary>
+    public bool ImpulseOverlaps(long from, long to) => ImpulseStream?.Overlaps(from, to) ?? false;
+
+    /// <summary>Every burst that reached this receiver, with what the path did to it, when <see cref="SimChannel.RecordDeliveries"/> is set.</summary>
+    public List<SimDelivery> Deliveries { get; } = [];
 
     /// <summary>Set to keep everything this station's receiver is given in <see cref="Input"/> (for a test that wants to look at the audio itself).</summary>
     public bool RecordInput { get; set; }
@@ -224,6 +237,9 @@ internal sealed class SimLink
 
     /// <summary>Whether this transmitter's carrier counts for the receiver's carrier indication.</summary>
     public bool CarrierHeard { get; set; } = true;
+
+    /// <summary>A reflection that fades the signal on this one direction of the path for an episode (see <see cref="FlutterModel"/>). Null (the default): none.</summary>
+    public FlutterModel? Flutter { get; set; }
 
     internal FmNoise? Noise;
 }
@@ -338,6 +354,18 @@ internal sealed class SimChannel
     /// <summary>The clock every station is at, samples.</summary>
     public long Clock { get; private set; }
 
+    /// <summary>The root mean square of a burst's audio at path gain 1 (0.44 for most formats, 0.23 for the dense ones, which are sent 6 dB lower): the level impulses (<see cref="ImpulseModel.LevelDb"/>) are given against. Pinned by a test.</summary>
+    public const double ReferenceRms = 0.44;
+
+    /// <summary>Set to keep, for every burst that reaches a receiver, what the path did to it (<see cref="SimNode.Deliveries"/>). Off by default.</summary>
+    public bool RecordDeliveries { get; set; }
+
+    /// <summary>
+    /// Steps the loss of one direction of a path by <paramref name="db"/> (negative: weaker) when the clock reaches <paramref name="at"/>. A burst takes the path's gain from the moment it goes on the air, so a step takes effect from the next
+    /// burst, as the path-cut scenarios always have. For the other direction too, call it again.
+    /// </summary>
+    public void StepPath(SimNode from, SimNode to, long at, double db) => Schedule(at, () => Link(from, to).Gain *= Db(db));
+
     /// <summary>What a receiver does when signals overlap. Null (the default): they add, as in steps 5 to 7. Set before <see cref="Run"/>.</summary>
     public CaptureModel? Capture { get; set; }
 
@@ -447,6 +475,11 @@ internal sealed class SimChannel
             n.ReceiveFilter = new Filter(hz);
         }
 
+        if (n.ImpulseStream is null && n.Impulses is { } impulses)
+        {
+            n.ImpulseStream = new ImpulseSource(impulses, unchecked((_seed * 15485863) + (n.Index * 2038) + 29));
+        }
+
         foreach (SimNode from in _nodes)
         {
             if (from != n && _links.TryGetValue((from.Index, n.Index), out SimLink? l) && l.Noise is null && l.NoiseRms > 0)
@@ -497,6 +530,8 @@ internal sealed class SimChannel
                 l.Noise.AddTo(block);
             }
         }
+
+        n.ImpulseStream?.AddTo(block, from);
 
         bool muted = n.Transmitting || Clock < n.DeafUntil;
         if (muted)
@@ -726,6 +761,25 @@ internal sealed class SimChannel
 
             float[] heard = Resample(tx, link.Ppm, link.Gain);
             long at = start + link.DelaySamples;
+            double flutterMin = 1.0;
+            double flutterSum = 0;
+            if (link.Flutter is { } flutter)
+            {
+                flutterMin = double.MaxValue;
+                for (int i = 0; i < heard.Length; i++)
+                {
+                    double g = flutter.GainAt(at + i);
+                    heard[i] = (float)(heard[i] * g);
+                    flutterMin = Math.Min(flutterMin, g);
+                    flutterSum += g;
+                }
+            }
+
+            if (RecordDeliveries)
+            {
+                rx.Deliveries.Add(new SimDelivery(n.Index, start, at, length, link.Gain, flutterMin, link.Flutter is null ? 1.0 : flutterSum / Math.Max(1, heard.Length)));
+            }
+
             rx.Heard.Add(new Incoming { Start = at, Data = heard, Level = Capture is null ? null : CaptureModel.Levels(heard) });
             if (rx.CarrierDelaySamples is { } delay && link.CarrierHeard)
             {

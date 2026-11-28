@@ -41,6 +41,9 @@ internal sealed class SimNode
     /// <summary>The transmitter's key-up delay, samples: the first this many samples of what the audio layer plays are not radiated (a slow transmitter cuts off the start of the lead-in).</summary>
     public int KeyUpSamples { get; set; }
 
+    /// <summary>The host's Morse: after an identification burst the transmitter stays keyed for this many samples (the other stations' modems hear silence: they cannot hear Morse) and the transmission ends then. Zero: it ends with the burst.</summary>
+    public int IdentificationTailSamples { get; set; }
+
     /// <summary>After the station's own transmission ends the receiver hears nothing for this many samples.</summary>
     public int DeafSamples { get; set; }
 
@@ -722,9 +725,15 @@ internal sealed class SimChannel
         }
 
         plan.Started = true;
+        int modemSentBefore = n.ModemSent.Count;
         n.Station.TransmitStarted(plan.Id, Clock);
         n.Transmitting = true;
         float[] tx = plan.Samples.ToArray();
+        if (n.IdentificationTailSamples > 0 && n.ModemSent.Count > modemSentBefore && n.ModemSent[^1].Kind == ModemSentKind.Identification)
+        {
+            tx = AddMorse(tx, n.IdentificationTailSamples);
+        }
+
         if (n.TransmitLowPassHz is { } hz)
         {
             new Filter(hz).Process(tx);
@@ -746,6 +755,14 @@ internal sealed class SimChannel
             n.DeafUntil = Math.Max(n.DeafUntil, Clock + n.DeafSamples);
             n.Plans.Remove(plan.Id);
         });
+    }
+
+    /// <summary>The host's Morse after an identification burst, as the modem on another station sees it: nothing. The transmitter is keyed for <paramref name="tail"/> samples more and the others' receivers hear silence (the premise of the announced tail: Morse is not a signal the modem finds).</summary>
+    private static float[] AddMorse(float[] tx, int tail)
+    {
+        float[] all = new float[tx.Length + tail];
+        tx.CopyTo(all, 0);
+        return all;
     }
 
     /// <summary>Sends <paramref name="tx"/> (already filtered and cut for key-up) to every receiver the antenna reaches.</summary>

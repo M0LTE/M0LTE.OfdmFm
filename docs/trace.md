@@ -89,6 +89,8 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 | Detail | `Told the host that its burst to G4ABC-1 was not decoded: 2 datagrams` | The host was given the hint that a burst was not decoded. |
 | Detail | `Holding ordinary traffic until 12.26: report from GB7RDG-1` | A report for this station came in. Ordinary traffic waits a second from its end; the sender of the report is usually about to reply. |
 | Detail | `Going straight on to GB7RDG-1 after the report: no random wait` | This station sent a lone report and has data for the same station. |
+| Detail | `Going straight on after the identification: no random wait` | This station's identification went first and the transmission that made it due, or the data that follows a lone report and its identification, goes straight after it. |
+| Detail | `Holding all traffic until 14.62: GB7RDG-1 is sending its callsign after its identification` | An identification burst said its sender goes on sending for a while after it (its callsign in Morse). Nothing goes until then, a lone report included. |
 
 ### Sending
 
@@ -161,8 +163,10 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 |---|---|---|
 | Flow | `Callsign set to M0LTE` | The host gave the station its callsign. |
 | Flow | `Took station number 23` | The station took its on-air number. |
+| Flow | `Told by the host that the last identification was 180 s ago` | The host said, before the first transmission, how long ago the station last identified. |
 | Flow | `Sent identification as M0LTE, 2.07 s on air` | An identification burst went on air. |
-| Detail | `Identification due: first transmission` | An identification fell due. The reasons are listed under Reasons and kinds. |
+| Detail | `Identification due: none sent yet` | An identification fell due: the station is about to transmit of its own accord, or has sent a lone report, and has not identified, or last did 10 minutes ago. The reasons are listed under Reasons and kinds. |
+| Detail | `Sending identification first, before datagrams` | The identification goes ahead of the transmission that made it due. What it goes before is named as in "Asked to send" (the kinds listed under Reasons and kinds). A lone report is not made to wait: the identification follows it, with no line of its own. |
 
 ### Station numbers
 
@@ -215,6 +219,7 @@ Some lines take a reason, a kind or a cause from a short fixed list. These are t
 | Cause | `a report just came in, ordinary traffic waits a second` |
 | Cause | `the station number changed, so it is built again` |
 | Cause | `the audio layer would not key it` |
+| Cause | `another station is identifying` |
 | Owing | `its burst was not decoded` |
 | Owing | `the path from it got worse` |
 | Owing | `it asked for one` |
@@ -230,7 +235,7 @@ Some lines take a reason, a kind or a cause from a short fixed list. These are t
 | Built | `announcement` |
 | Built | `identification` |
 | Built | `notice` |
-| Due | `first transmission` |
+| Due | `none sent yet` |
 | Due | `10 minutes since the last` |
 | Carrier | `present` |
 | Carrier | `gone` |

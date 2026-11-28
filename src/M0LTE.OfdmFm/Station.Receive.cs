@@ -1013,6 +1013,7 @@ public sealed partial class Station
             _applyingResults = false;
         }
 
+        RefreshPending();
         if (_reportCheckDeferred)
         {
             _reportCheckDeferred = false;

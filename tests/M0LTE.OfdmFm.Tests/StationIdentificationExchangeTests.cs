@@ -40,7 +40,7 @@ public class StationIdentificationExchangeTests
         b.Station.AdaptationCalled = callsB.Add;
         Scenario(channel, a);
 
-        // Each sent exactly what it should: A the datagram and its identification, B a lone report and its identification.
+        // Each sent exactly what it should: A its identification and the datagram, B a lone report and its identification.
         a.Transmissions.Should().HaveCount(2);
         b.Transmissions.Should().HaveCount(2);
         a.ModemSent.Select(m => m.Kind).Should().Equal(ModemSentKind.Identification);
@@ -82,8 +82,8 @@ public class StationIdentificationExchangeTests
         long aSent = channel.Log.Where(l => l.Contains(" A modem sent Identification", StringComparison.Ordinal)).Select(l => long.Parse(l.Split(' ')[0])).Single();
         long aHeardAtB = b.Identified.Single().Clock;
         aHeardAtB.Should().BeGreaterThan(aSent, "heard when it has been on the air and received");
-        a.IdentificationsDue.Single().Clock.Should().BeLessThan(aSent);
-        a.IdentificationsDue.Single().Clock.Should().Be(a.Transmissions[0].Start + a.Transmissions[0].Length, "due at once, when its first transmission ends");
+        a.IdentificationsDue.Single().Clock.Should().Be(aSent, "due when the station is about to make its first transmission, and sent at once");
+        a.IdentificationsDue.Single().Clock.Should().Be(a.Transmissions[0].Start, "its first transmission is the identification, ahead of the datagram that made it due");
     }
 
     [Fact]

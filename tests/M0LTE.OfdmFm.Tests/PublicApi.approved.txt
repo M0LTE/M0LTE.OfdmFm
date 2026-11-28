@@ -405,6 +405,8 @@ namespace M0LTE.OfdmFm
     }
     public sealed class Station
     {
+        public const double MaxIdentificationTail = 25.5D;
+        public const double MaxLastIdentificationAge = 31536000D;
         public const int SampleRate = 48000;
         public Station(System.Random random, bool runJobsInline = false) { }
         public long BurstsDropped { get; }
@@ -436,7 +438,9 @@ namespace M0LTE.OfdmFm
         public int RunPending() { }
         public M0LTE.OfdmFm.SendResult Send(System.ReadOnlyMemory<byte> datagram, M0LTE.OfdmFm.LinkAddress to, M0LTE.OfdmFm.LinkAddress from, byte protocol, M0LTE.OfdmFm.HostTag tag, bool reportWanted = false, M0LTE.OfdmFm.SendPriority priority = 0) { }
         public void SetExternalBusy(bool? busy) { }
+        public void SetIdentificationTail(double seconds) { }
         public M0LTE.OfdmFm.IdentityResult SetIdentity(string callsign) { }
+        public void SetLastIdentification(double secondsAgo) { }
         public void Skip(int count) { }
         public System.Collections.Generic.IReadOnlyList<M0LTE.OfdmFm.LinkStateEvent> Snapshot() { }
         public void TransmitEnded(long id, long sampleIndex) { }

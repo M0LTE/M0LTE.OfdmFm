@@ -118,6 +118,15 @@ public static class PayloadCodec
     /// <summary>The tag of the Clash item of an identification burst: the number (1 byte) and the station id (4 bytes) that is to move.</summary>
     internal const byte ClashTag = 2;
 
+    /// <summary>
+    /// The tag of the Tail item of an identification burst: one byte, how long the station goes on sending after the burst (its callsign in Morse), in tenths of a second, rounded up, 1 to 255. Present only when the host announced a tail.
+    /// A station that does not know the tag skips the item.
+    /// </summary>
+    internal const byte TailTag = 3;
+
+    /// <summary>Bytes of a Tail item's value.</summary>
+    internal const int TailBytes = 1;
+
     /// <summary>Bytes of a Clash item's value.</summary>
     internal const int ClashBytes = 1 + KeyBytes;
 

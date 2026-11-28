@@ -80,6 +80,9 @@ internal enum AccessCause
 
     /// <summary>The audio layer would not key it.</summary>
     Refused,
+
+    /// <summary>Another station's identification burst announced that it goes on sending (its callsign in Morse) after the burst: nothing goes until that time has run.</summary>
+    Identifying,
 }
 
 /// <summary>A note from the channel-access rules to the station's trace. A value, so that making one allocates nothing.</summary>
@@ -193,6 +196,7 @@ internal sealed class ChannelAccess
     private long _holdUntil;
     private long _externalUntil;
     private long _ownUntil;
+    private long _tailUntil;
     private long _ordinaryNotBefore;
     private long _straightOnFrom = -1;
     private int _draw = -1;
@@ -227,6 +231,9 @@ internal sealed class ChannelAccess
 
         /// <summary>For a burst the host did not ask for (a lone report, an identification): what to tell the host when it starts. Null for the host's own datagrams.</summary>
         public ModemSentEvent? Modem;
+
+        /// <summary>True: the request goes ahead of every other waiting request, whatever its class (the station's own identification).</summary>
+        public bool First;
     }
 
     /// <summary>Where a request stands.</summary>
@@ -278,6 +285,18 @@ internal sealed class ChannelAccess
     /// </summary>
     public Func<Request, bool>? Prepare { get; set; }
 
+    /// <summary>
+    /// Called when the head of the queue may go, before it is handed over. If it returns true the owner has put something ahead of it (queued a request with <see cref="Request.First"/> set), and the head is left waiting: the rules run again,
+    /// and the new request goes first. Null: nothing is put ahead.
+    /// </summary>
+    public Func<Request, bool>? Gate { get; set; }
+
+    /// <summary>
+    /// Asked for each waiting request when the queue is put in order: true for a request that goes ahead even of one marked <see cref="Request.First"/> (a lone report, which the station it is for is waiting for, never waits behind the
+    /// station's own identification). It may change while a request waits, so the order is worked out again at each step. Null: none.
+    /// </summary>
+    public Func<Request, bool>? Urgent { get; set; }
+
     /// <summary>Told of what the rules decide, for the station's trace. Null: nothing is told. Called with a value and nothing built; the listener decides whether anyone wants it.</summary>
     public Action<AccessNote>? Note { get; set; }
 
@@ -310,7 +329,7 @@ internal sealed class ChannelAccess
     public int SlotWindow() => _externalSupplied ? SlotsWithCarrierIndication : SlotsWithDetectionOnly;
 
     /// <summary>The sample the channel was last busy until: when the clear time of the waits is counted from (the start-up listen counted in).</summary>
-    public long ClearSince => Math.Max(Math.Max(_holdUntil, _externalUntil), Math.Max(_ownUntil, StartUpListen));
+    public long ClearSince => Math.Max(Math.Max(Math.Max(_holdUntil, _tailUntil), _externalUntil), Math.Max(_ownUntil, StartUpListen));
 
     /// <summary>Queues a transmission and returns it. It may be granted before this returns.</summary>
     public Request Enqueue(ReadOnlyMemory<float> samples, TransmitClass cls, ModemSentEvent? modem = null)
@@ -325,10 +344,11 @@ internal sealed class ChannelAccess
     /// <summary>
     /// Queues a request the owner keeps and reuses (its samples come from <see cref="Prepare"/>), in <paramref name="cls"/>. The request must be new or <see cref="RequestState.Done"/>. It may be granted before this returns.
     /// </summary>
-    public Request Enqueue(Request request, TransmitClass cls)
+    public Request Enqueue(Request request, TransmitClass cls, bool first = false)
     {
         request.Id = _nextId++;
         request.Class = cls;
+        request.First = first;
         request.Samples = default;
         request.Sequence = _nextSequence++;
         request.State = RequestState.Waiting;
@@ -369,6 +389,15 @@ internal sealed class ChannelAccess
     public void HoldUntil(long until)
     {
         _holdUntil = Math.Max(_holdUntil, until);
+        Update();
+    }
+
+    /// <summary>
+    /// Another station's identification burst said it goes on sending until <paramref name="until"/> (exclusive): busy until then, for everything including reports, and shown as its own cause. A past sample counts only for when the channel was last busy.
+    /// </summary>
+    public void HoldForTail(long until)
+    {
+        _tailUntil = Math.Max(_tailUntil, until);
         Update();
     }
 
@@ -528,7 +557,7 @@ internal sealed class ChannelAccess
     private void Step()
     {
         long now = _clock.Now;
-        bool foreign = _pending || _externalSet || now < _holdUntil || now < _externalUntil;
+        bool foreign = _pending || _externalSet || now < _holdUntil || now < _tailUntil || now < _externalUntil;
 
         // Never transmit while busy: what is handed over and not keyed goes back if another station's signal, or the rule for ordinary traffic, says so.
         if (_active is { State: RequestState.Granted } granted && (foreign || (granted.Class == TransmitClass.Ordinary && now < _ordinaryNotBefore)))
@@ -555,7 +584,7 @@ internal sealed class ChannelAccess
         }
 
         // The next sample at which a time-based cause lets go.
-        long horizon = Math.Max(Math.Max(_holdUntil, _externalUntil), _ownUntil);
+        long horizon = Math.Max(Math.Max(Math.Max(_holdUntil, _tailUntil), _externalUntil), _ownUntil);
         if (horizon > now)
         {
             if (_horizonAt != horizon)
@@ -575,12 +604,19 @@ internal sealed class ChannelAccess
             _horizonAt = -1;
         }
 
+        Resort();
         if (!busy && _active is null && _waiting.Count > 0)
         {
             Request head = _waiting[0];
             long target = TargetFor(head);
             if (target <= now)
             {
+                if (Gate is not null && Gate(head))
+                {
+                    _again = true;
+                    return;
+                }
+
                 Grant(head, now);
                 _again = true;
                 return;
@@ -617,6 +653,11 @@ internal sealed class ChannelAccess
         if (_externalSet || now < _externalUntil)
         {
             return AccessCause.Carrier;
+        }
+
+        if (now < _tailUntil)
+        {
+            return AccessCause.Identifying;
         }
 
         if (now < _holdUntil)
@@ -688,12 +729,45 @@ internal sealed class ChannelAccess
     {
         request.QueuedAt = _clock.Now;
         int at = _waiting.Count;
-        while (at > 0 && (_waiting[at - 1].Class > request.Class || (_waiting[at - 1].Class == request.Class && _waiting[at - 1].Sequence > request.Sequence)))
+        while (at > 0 && Before(request, _waiting[at - 1]))
         {
             at--;
         }
 
         _waiting.Insert(at, request);
+    }
+
+    /// <summary>The order of the queue: a request <see cref="Urgent"/> first, then one marked first, then the rest; within each, the more urgent class, then the earlier arrival.</summary>
+    private int Rank(Request r) => Urgent is not null && Urgent(r) ? 0 : r.First ? 1 : 2;
+
+    /// <summary>True if <paramref name="a"/> goes ahead of <paramref name="b"/>.</summary>
+    private bool Before(Request a, Request b)
+    {
+        int ra = Rank(a);
+        int rb = Rank(b);
+        if (ra != rb)
+        {
+            return ra < rb;
+        }
+
+        return a.Class < b.Class || (a.Class == b.Class && a.Sequence < b.Sequence);
+    }
+
+    /// <summary>Puts the waiting requests in order again (a stable insertion sort of a handful): what makes a request urgent can change while it waits.</summary>
+    private void Resort()
+    {
+        for (int i = 1; i < _waiting.Count; i++)
+        {
+            Request x = _waiting[i];
+            int j = i - 1;
+            while (j >= 0 && Before(x, _waiting[j]))
+            {
+                _waiting[j + 1] = _waiting[j];
+                j--;
+            }
+
+            _waiting[j + 1] = x;
+        }
     }
 
     private static int ComputeDetectionLatency()

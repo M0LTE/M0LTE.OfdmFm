@@ -31,6 +31,7 @@ public sealed partial class Station
 
     private readonly byte[] _idItemValue = new byte[PayloadCodec.KeyBytes];
     private readonly byte[] _clashItemValue = new byte[PayloadCodec.ClashBytes];
+    private readonly byte[] _tailItemValue = new byte[PayloadCodec.TailBytes];
     private readonly ExtensionItem[] _identItems = new ExtensionItem[2];
 
     // Clashes owed: the number and the id that is to move. One goes in each burst.

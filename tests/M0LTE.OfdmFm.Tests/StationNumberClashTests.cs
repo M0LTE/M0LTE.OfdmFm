@@ -264,10 +264,15 @@ public class StationNumberClashTests
         acc.Send(3, 2, 2);
         rig.Run(1);
         acc.Send(2, 1, 3); // B's host sends to A's address, located at 5: it is queued while C's burst is on the air
-        rig.Run(35);
+        // C's identification now comes before its datagram, so B forgets A's address when it hears it and learns A's again from the announcement that follows: it is looked for at each second and not only at the end.
+        bool forgotten = false;
+        for (int second = 0; second < 35; second++)
+        {
+            rig.Run(1);
+            forgotten |= !b.LearnedAddresses.TryGet(SimRig.Address(1).Key, out _);
+        }
 
         bool reset = b.Adaptation.TryGetNeighbour(5, out LinkNeighbour? after) && !ReferenceEquals(before, after);
-        bool forgotten = !b.LearnedAddresses.TryGet(SimRig.Address(1).Key, out _) || !b.LearnedAddresses.TryGet(SimRig.Address(3).Key, out _);
         bool followed = rig.Nodes[0].Received.Any(r => r.Data.AsSpan().SequenceEqual(SimRig.Datagram(3, 30)));
         bool gone = rig.Nodes[1].LinkStates.Any(l => l.Address == SimRig.Address(1) && l.Gone);
         bool laterId = clashPayloads.Count > 0 && clashPayloads.All(p =>

@@ -432,21 +432,19 @@ public class StationNumbersTests
             var built = new List<byte[]>();
             lone.Station.IdentificationPayloadBuilt = built.Add;
             lone.Station.Send(TestBurst.Datagram(1, 30), LinkAddress.Everyone, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
-            lone.RunUntilRequests(1);
-            lone.Play(0);
-            lone.RunUntilRequests(2); // the identification, owed now the transmission has ended
+            lone.RunUntilRequests(1); // the identification: it goes first, ahead of the datagram that made it due
             built.Should().HaveCount(1);
             Convert.ToHexString(built[0]).Should().EndWith("0104" + "11111111", "the id is 11111111");
 
-            float[] oldIdent = lone.Layer.Requests[1].Samples.ToArray();
+            float[] oldIdent = lone.Layer.Requests[0].Samples.ToArray();
             lone.Station.HearHeaderFrom(5);
             int number = lone.Station.StationNumber;
             uint id = lone.Station.StationId;
             number.Should().NotBe(5);
-            lone.Layer.Requests.Should().HaveCount(3, "the identification was taken back and made again");
+            lone.Layer.Requests.Should().HaveCount(2, "the identification was taken back and made again");
             built.Should().HaveCount(2);
             built[1].Skip(built[1].Length - 4).Should().Equal(BitConverter.GetBytes(id).Reverse(), "built again with the new id, most significant byte first");
-            (int sender, _, List<string> callsigns) = Listen(lone.Layer.Requests[2].Samples);
+            (int sender, _, List<string> callsigns) = Listen(lone.Layer.Requests[1].Samples);
             sender.Should().Be(number, $"seed {seed}");
             callsigns.Should().Equal("M0LTE");
             (int oldSender, _, _) = Listen(oldIdent);
@@ -576,7 +574,7 @@ public class StationNumbersTests
     }
 
     [Fact]
-    public void The_Clash_Burst_Names_The_Number_And_The_Id_Heard_More_Recently_And_Moves_Neither_The_Identification_Clock_Nor_Raises_IdentificationDue()
+    public void The_Clash_Burst_Names_The_Number_And_The_Id_Heard_More_Recently_Goes_After_The_Identification_And_Does_Not_Move_Its_Clock()
     {
         var lone = new Lone(20, 0x22222222u, 1, suspendIdentification: false);
         var built = new List<byte[]>();
@@ -589,32 +587,33 @@ public class StationNumbersTests
         lone.Hear(Ident(5, 0x1111AAAA), 1);
         lone.Hear(Ident(5, 0x2222BBBB), 1);
         lone.Run(25);
-        lone.Layer.Requests.Should().HaveCount(1);
+        lone.Layer.Requests.Should().HaveCount(1, "the identification: the station has never identified, and a notice is a transmission of its own accord, so the identification goes first");
         lone.Play(0);
+        long identStart = lone.Station.LastIdentificationStart!.Value;
+        lone.RunUntilRequests(2); // the notice goes straight on after it
+        lone.Play(1);
         lone.Run(1);
 
-        built.Should().ContainSingle();
+        built.Should().HaveCount(2);
+        Convert.ToHexString(built[0]).Should().Be("054D304C5445" + "0000" + "010422222222");
         // The callsign M0LTE, the capability word, this station's own id, then the Clash: number 5 and the later id.
-        Convert.ToHexString(built[0]).Should().Be("054D304C5445" + "0000" + "010422222222" + "020505" + "2222BBBB");
-        sent.Should().ContainSingle().Which.Kind.Should().Be(ModemSentKind.Clash);
-        sent[0].Format.Should().Be(StandardFormats.FirstContact);
-        due.Should().BeEmpty("a Clash is not the ten-minute identification");
-        lone.Station.IdentificationsDue.Should().Be(0);
-        lone.Station.IdentificationsSent.Should().Be(0);
-        lone.Station.LastIdentificationStart.Should().BeNull("it did not move the clock");
+        Convert.ToHexString(built[1]).Should().Be("054D304C5445" + "0000" + "010422222222" + "020505" + "2222BBBB");
+        sent.Select(e => e.Kind).Should().Equal(ModemSentKind.Identification, ModemSentKind.Clash);
+        sent[1].Format.Should().Be(StandardFormats.FirstContact);
+        due.Should().ContainSingle("the identification, once, before the notice; the notice is not an identification and raises nothing");
+        lone.Station.IdentificationsDue.Should().Be(1);
+        lone.Station.IdentificationsSent.Should().Be(1);
+        lone.Station.LastIdentificationStart.Should().Be(identStart, "the notice did not move the clock");
         lone.Station.IdentificationOwed.Should().BeFalse();
         lone.Station.IsTransmitting.Should().BeFalse();
 
-        // The first real transmission afterwards still finds the station never identified: it is due when that transmission ends.
+        // A datagram afterwards, inside the ten minutes, is covered by that identification: nothing more is owed.
         lone.Station.Send(TestBurst.Datagram(1, 20), LinkAddress.Everyone, SimRig.Address(1), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted);
-        lone.RunUntilRequests(2);
-        lone.Play(1);
         lone.RunUntilRequests(3);
         lone.Play(2);
         due.Should().ContainSingle();
         lone.Station.IdentificationsSent.Should().Be(1);
         built.Should().HaveCount(2);
-        Convert.ToHexString(built[1]).Should().Be("054D304C5445" + "0000" + "010422222222");
     }
 
     [Fact]

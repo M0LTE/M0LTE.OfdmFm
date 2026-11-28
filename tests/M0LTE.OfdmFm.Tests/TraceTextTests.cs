@@ -309,9 +309,22 @@ public class TraceTextTests
     [Fact]
     public void An_identification_is_due()
     {
-        TraceText.IdentificationDue(TraceWords.DueFirst).Should().Be("Identification due: first transmission");
+        TraceText.IdentificationDue(TraceWords.DueFirst).Should().Be("Identification due: none sent yet");
         TraceText.IdentificationDue(TraceWords.DueInterval).Should().Be("Identification due: 10 minutes since the last");
     }
+
+    [Fact]
+    public void An_identification_goes_first() => TraceText.IdentifyingFirst("datagrams").Should().Be("Sending identification first, before datagrams");
+
+    [Fact]
+    public void The_station_goes_straight_on_after_its_identification() => TraceText.GoingStraightOnAfterIdentification().Should().Be("Going straight on after the identification: no random wait");
+
+    [Fact]
+    public void All_traffic_is_held_off_for_another_stations_callsign() =>
+        TraceText.HoldingForIdentification("GB7RDG-1", 14.62).Should().Be("Holding all traffic until 14.62: GB7RDG-1 is sending its callsign after its identification");
+
+    [Fact]
+    public void The_host_said_when_the_station_last_identified() => TraceText.LastIdentificationTold(180).Should().Be("Told by the host that the last identification was 180 s ago");
 
     [Fact]
     public void A_header_was_read_and_not_used() => TraceText.HeaderNotUsed("a version this station does not know").Should().Be("Header read but not used: a version this station does not know");
@@ -356,7 +369,7 @@ public class TraceTextTests
             TraceText.Measured("a", 1, 2, 3, 4, 5, 6, false, null, null), TraceText.ChannelBusy("a"), TraceText.ChannelClear(), TraceText.CarrierFromRadio(true), TraceText.AskedToSend("a", "b"), TraceText.DrewWaitSlots(1, 1, 2, 1),
             TraceText.CanSendAt(1), TraceText.ClearToSend("a", 1), TraceText.HeldBack("a", "b"), TraceText.Queued(1, "a", 1), TraceText.Chose(1, "a", 1, "b"), TraceText.OwingReport("a", "b"),
             TraceText.ReportCovered("a"), TraceText.AnnouncementCovered("a", "b"), TraceText.AnswerWait("a", 1), TraceText.AnswerInTime("a"), TraceText.IdentificationDue(TraceWords.DueFirst), TraceText.HeaderNotUsed("a"), TraceText.QueueFull("a", 1),
-            TraceText.QueueWritable("a"), TraceText.ForgotStation(1, "a"), TraceText.BuiltDiscarded("a"), TraceText.HostToldNotDecoded("a", 1), TraceText.HoldingOrdinary("a", 1), TraceText.GoingStraightOn("a"), TraceText.NoticeCancelled(1),
+            TraceText.QueueWritable("a"), TraceText.ForgotStation(1, "a"), TraceText.BuiltDiscarded("a"), TraceText.HostToldNotDecoded("a", 1), TraceText.HoldingOrdinary("a", 1), TraceText.GoingStraightOn("a"), TraceText.GoingStraightOnAfterIdentification(), TraceText.HoldingForIdentification("a", 1), TraceText.IdentifyingFirst("a"), TraceText.LastIdentificationTold(1), TraceText.NoticeCancelled(1),
         ];
         foreach (string line in all)
         {

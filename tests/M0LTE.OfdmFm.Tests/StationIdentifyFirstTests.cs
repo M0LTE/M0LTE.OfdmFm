@@ -122,14 +122,31 @@ public class StationIdentifyFirstTests
     {
         (List<(long Now, long Until)> control, List<(long At, bool Busy)> controlEdges) = Hear(Ident());
         controlEdges.Last().Busy.Should().BeFalse();
-        controlEdges.Count(e => e.Busy).Should().Be(1);
+        Stretches(controlEdges).Should().Be(1);
 
         (List<(long Now, long Until)> holds, List<(long At, bool Busy)> edges) = Hear(Ident(new ExtensionItem(PayloadCodec.TailTag, new byte[] { 60 })));
         long tailEnd = holds.Last().Until;
         holds.Select(h => h.Until).Should().Contain(tailEnd - (6 * Second), "the hold is six seconds from a sample the burst's own hold ended at: the end of the burst");
         holds.Max(h => h.Until).Should().Be(tailEnd);
         edges.Last().Should().Be((tailEnd, false), "busy to the last sample of the tail and clear at the next, by the sample clock");
-        edges.Count(e => e.Busy).Should().Be(1, "one stretch of busy: the burst and its tail");
+        Stretches(edges).Should().Be(1, "one stretch of busy: the burst and its tail");
+    }
+
+    /// <summary>
+    /// Stretches of busy that last at least a sample. A candidate under another opening, read and found to be nothing within the block that found it, shows as busy and clear at the same sample (it holds nothing once judged).
+    /// </summary>
+    private static int Stretches(List<(long At, bool Busy)> edges)
+    {
+        int count = 0;
+        for (int i = 0; i < edges.Count; i++)
+        {
+            if (edges[i].Busy && (i + 1 == edges.Count || edges[i + 1].At > edges[i].At))
+            {
+                count++;
+            }
+        }
+
+        return count;
     }
 
     [Fact]

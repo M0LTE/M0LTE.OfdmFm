@@ -110,6 +110,48 @@ public class ChannelAccessTests
     }
 
     [Fact]
+    public void With_a_carrier_indication_supplied_and_clear_a_candidate_waiting_to_be_judged_holds_nothing()
+    {
+        var rig = new AccessRig(1);
+        rig.Clock.AdvanceTo(T);
+        rig.Access.SetExternal(false);
+        rig.Access.SetPending(true);
+        rig.Clock.AdvanceTo(T + 30000);
+        rig.Access.SetPending(false);
+
+        rig.BusyLog.Should().BeEmpty("the radio says nothing is on the air");
+    }
+
+    [Fact]
+    public void When_the_indication_is_taken_away_a_candidate_waiting_holds_the_channel_again()
+    {
+        var rig = new AccessRig(1);
+        rig.Clock.AdvanceTo(T);
+        rig.Access.SetExternal(false);
+        rig.Access.SetPending(true);
+        rig.Clock.AdvanceTo(T + 10000);
+        rig.Access.SetExternal(null);
+        rig.Clock.AdvanceTo(T + 30000);
+        rig.Access.SetPending(false);
+
+        rig.BusyLog.Should().Equal([(T + 10000, true), (T + 30000, false)]);
+    }
+
+    [Fact]
+    public void With_a_carrier_indication_an_identification_waiting_for_its_result_still_holds_the_channel()
+    {
+        // Between the identification burst and its Morse the carrier can drop for longer than the indication's hold: the burst's result (whether a tail follows) is what the station waits for.
+        var rig = new AccessRig(1);
+        rig.Clock.AdvanceTo(T);
+        rig.Access.SetExternal(false);
+        rig.Access.SetUndecided(true);
+        rig.Clock.AdvanceTo(T + 30000);
+        rig.Access.SetUndecided(false);
+
+        rig.BusyLog.Should().Equal([(T, true), (T + 30000, false)]);
+    }
+
+    [Fact]
     public void The_stations_own_transmission_is_busy_from_the_grant_to_the_end_and_a_tail_after()
     {
         var rig = new AccessRig(1);

@@ -8,6 +8,8 @@
     <!-- Vectors the prototype generated for the link codecs, the payload code and the receivers. -->
     <None Include="Vectors/*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Vectors/*.bin.gz" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Received audio recorded on the bench: see BenchRecordingTests. -->
+    <None Include="Recordings/*.wav" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

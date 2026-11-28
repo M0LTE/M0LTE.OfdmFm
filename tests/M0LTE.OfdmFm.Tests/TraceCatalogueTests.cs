@@ -77,6 +77,7 @@ public class TraceCatalogueTests
             (nameof(TraceText.ChannelBusy), TraceLevel.Detail, TraceText.ChannelBusy(TraceText.CauseText(AccessCause.HeardBurst))),
             (nameof(TraceText.ChannelBusy), TraceLevel.Detail, TraceText.ChannelBusy(TraceText.CauseText(AccessCause.OwnTransmission))),
             (nameof(TraceText.ChannelClear), TraceLevel.Detail, TraceText.ChannelClear()),
+            (nameof(TraceText.NothingCameOfIt), TraceLevel.Detail, TraceText.NothingCameOfIt()),
             (nameof(TraceText.CarrierFromRadio), TraceLevel.Detail, TraceText.CarrierFromRadio(true)),
             (nameof(TraceText.AskedToSend), TraceLevel.Detail, TraceText.AskedToSend(TraceWords.SubjectDatagrams, TraceText.WaitOrdinary(0.8))),
             (nameof(TraceText.AskedToSend), TraceLevel.Detail, TraceText.AskedToSend(TraceWords.SubjectReport, TraceText.WaitFirstSlot(0.05))),

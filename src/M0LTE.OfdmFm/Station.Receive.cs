@@ -125,7 +125,8 @@ public sealed partial class Station
         Report,
     }
 
-    private readonly record struct Candidate(long Index, FormatOpening Opening);
+    /// <summary>A burst start the detector gave: its first sample, its opening, and whether its peak stood at least <see cref="ClearOfNoise"/> times the threshold.</summary>
+    private readonly record struct Candidate(long Index, FormatOpening Opening, bool Strong = false);
 
     private readonly record struct Extent(long Start, long End, BurstHeader Header);
 
@@ -435,6 +436,7 @@ public sealed partial class Station
         while (_detector.TryTake(out DetectedBurst d))
         {
             _candidatesSeen++;
+            CandidateFound?.Invoke(d.Index, d.Opening, d.Peak);
             if (InOwnWindow(d.Index))
             {
                 // The audio is muted or full of this station's own signal: nothing to find there.
@@ -442,7 +444,7 @@ public sealed partial class Station
                 continue;
             }
 
-            _candidates.Add(new Candidate(d.Index, d.Opening));
+            _candidates.Add(new Candidate(d.Index, d.Opening, d.Peak >= ClearOfNoise * _detector.ThresholdOf(d.Opening)));
         }
 
         // (An insertion sort: a frame gives a handful, and List.Sort makes a delegate each time it runs.)
@@ -512,7 +514,7 @@ public sealed partial class Station
             }
         }
 
-        SettleUnreadable();
+        SettleUnconfirmed();
         RefreshPending();
         if (_notify)
         {
@@ -616,16 +618,17 @@ public sealed partial class Station
     /// <summary>A header read has come back: a new burst, the same as one already known, or something to note.</summary>
     private void HandleHeader(Candidate c, HeaderStatus status, BurstHeader header)
     {
+        CandidateJudged?.Invoke(c.Index, c.Opening, status == HeaderStatus.Read, SampleCount);
         if (status == HeaderStatus.Lost)
         {
             _headersLost++;
-            HoldForUnreadable(c);
+            NothingCameOf(c);
             return;
         }
 
         if (status != HeaderStatus.Read)
         {
-            HoldForUnreadable(c);
+            NothingCameOf(c);
             return;
         }
 
@@ -647,7 +650,7 @@ public sealed partial class Station
         if (header.Sender == 0)
         {
             Note(c, header, NoteReason.Invalid);
-            HoldForUnreadable(c);
+            NothingCameOf(c);
             return;
         }
 
@@ -659,7 +662,7 @@ public sealed partial class Station
             {
                 // A burst with a payload opens the way its format says (a read under another opening is not a burst), and an identification burst is for everyone.
                 Note(c, header, NoteReason.Invalid);
-                HoldForUnreadable(c);
+                NothingCameOf(c);
                 return;
             }
         }
@@ -1003,6 +1006,7 @@ public sealed partial class Station
         }
 
         long floor = _detector.CandidateFloor;
+        int known = _bursts.Count;
         _applyingResults = true;
         try
         {
@@ -1014,7 +1018,9 @@ public sealed partial class Station
         }
 
         RefreshPending();
-        if (_reportCheckDeferred)
+
+        // A failed report waits while a later burst from its station is unapplied (IsReady): once one has been applied, it may be ready.
+        if (_reportCheckDeferred || _bursts.Count < known)
         {
             _reportCheckDeferred = false;
             EnsureReportRequest();

@@ -87,6 +87,51 @@ public class SimChannelTests
     }
 
     [Fact]
+    public void With_A_Carrier_Indication_A_Burst_Holds_The_Channel_From_The_Carrier_To_Its_End_And_Traffic_Waits()
+    {
+        var rig = new SimRig(2);
+        rig.Nodes[1].CarrierDelaySamples = 2400;
+        rig.RunTo(6);
+        rig.Send(1, 2, 1, priority: SendPriority.Expedited);
+        rig.Run(0.3);
+        rig.Send(2, 1, 2);
+        rig.Run(20);
+
+        SimTransmission first = rig.Nodes[0].Transmissions[0];
+        string[] busy = [.. rig.Channel.Log.Where(l => l.Contains(" S2 busy ", StringComparison.Ordinal))];
+        long At(string line) => long.Parse(line[..line.IndexOf(' ')], CultureInfo.InvariantCulture);
+        busy[0].Should().EndWith("busy True");
+        At(busy[0]).Should().Be(first.Start + 2400, "busy as soon as the radio reports the carrier");
+        At(busy[1]).Should().BeGreaterThanOrEqualTo(first.Start + first.Length, "and until the burst is over");
+        rig.Nodes[1].Transmissions[0].Start.Should().BeGreaterThan(first.Start + first.Length, "station 2's datagram waits for it");
+        rig.Nodes[1].Received.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void With_A_Carrier_Indication_A_Burst_The_Radio_Does_Not_Report_Is_Still_Decoded_And_Holds_The_Channel_Once_Its_Header_Reads()
+    {
+        var rig = new SimRig(2);
+        rig.Nodes[1].CarrierDelaySamples = 2400;
+        rig.Channel.Link(rig.Nodes[0], rig.Nodes[1]).CarrierHeard = false;
+        long held = 0;
+        long readAt = -1;
+        rig.Stations[1].BurstKnown = (now, until) =>
+        {
+            held = Math.Max(held, until);
+            readAt = readAt < 0 ? now : readAt;
+        };
+        rig.RunTo(6);
+        rig.Send(1, 2, 1, priority: SendPriority.Expedited);
+        rig.Run(20);
+
+        SimTransmission first = rig.Nodes[0].Transmissions[0];
+        rig.Nodes[1].Received.Should().ContainSingle("a candidate is read whatever the indication says");
+        held.Should().BeGreaterThanOrEqualTo(first.Start + first.Length - BurstRenderer.DefaultLeadSamples, "the header that read holds the channel to the burst's end");
+        string busy = rig.Channel.Log.First(l => l.Contains(" S2 busy True", StringComparison.Ordinal));
+        long.Parse(busy[..busy.IndexOf(' ')], CultureInfo.InvariantCulture).Should().Be(readAt, "with no carrier reported, the channel turns busy when the header reads");
+    }
+
+    [Fact]
     public void A_Station_Deaf_After_Its_Own_Transmission_Misses_The_Start_Of_A_Reply()
     {
         int Replies(int deaf)

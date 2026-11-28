@@ -326,7 +326,7 @@ public sealed partial class Station
                 if (end - _tailHonouredAt[sender] >= TailHonourSamples)
                 {
                     _tailHonouredAt[sender] = end;
-                    HoldForTail(sender, end + (value[0] * (long)(SampleRate / 10)));
+                    HoldForTail(sender, end, end + (value[0] * (long)(SampleRate / 10)));
                 }
 
                 break;

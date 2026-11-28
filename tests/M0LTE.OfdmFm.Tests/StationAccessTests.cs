@@ -169,7 +169,7 @@ public class StationAccessTests
     [Theory]
     [InlineData(480)]
     [InlineData(0)]
-    public void A_candidate_whose_header_will_not_read_is_busy_for_its_opening_and_a_second_more_then_judged_again(int block)
+    public void A_strong_candidate_whose_header_will_not_read_is_busy_for_its_opening_and_a_second_more(int block)
     {
         var builder = new StreamBuilder().Silence(6.0);
         Placed placed = builder.Add(TestBurst.Report(7, 1, 80, false, FormatOpening.Full));
@@ -202,6 +202,42 @@ public class StationAccessTests
         driver.Busy.Should().HaveCount(2);
         driver.Busy[0].Should().Be((now, true));
         driver.Busy[1].Should().Be((driver.Known.Max(k => k.Until), false));
+    }
+
+    [Theory]
+    [InlineData(480)]
+    [InlineData(0)]
+    public void With_a_carrier_indication_reading_clear_a_strong_candidate_whose_header_will_not_read_holds_nothing(int block)
+    {
+        var builder = new StreamBuilder().Silence(6.0);
+        Placed placed = builder.Add(TestBurst.Report(7, 1, 80, false, FormatOpening.Full));
+        builder.Silence(4.0);
+        float[] stream = builder.ToArray();
+
+        // Wreck the header symbol (the one after the training symbol) with noise of its own strength; the training symbol, which is what the detector correlates, is left alone.
+        long from = placed.Start + 2112;
+        double power = 0;
+        for (long i = from; i < from + 2112; i++)
+        {
+            power += stream[i] * stream[i];
+        }
+
+        double rms = Math.Sqrt(power / 2112);
+        var rng = new Random(77);
+        for (long i = from; i < from + 2112; i++)
+        {
+            stream[i] = (float)(rms * 1.7 * (rng.NextDouble() - 0.5) * 2);
+        }
+
+        Station station = Make();
+        station.SetExternalBusy(false);
+        var driver = new StreamDriver(station, stream);
+        driver.PushTo(stream.Length, Blocks(block));
+
+        station.NotedHeaders.Should().BeEmpty("no header read");
+        station.CandidatesCameToNothing.Should().BeGreaterThan(0);
+        driver.Known.Should().BeEmpty("the radio says nothing is on the air");
+        driver.Busy.Should().BeEmpty();
     }
 
     [Theory]

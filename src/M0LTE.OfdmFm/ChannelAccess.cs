@@ -142,8 +142,8 @@ internal sealed class ChannelAccess
     /// <summary>Busy for this long after the station's own transmission ends, in samples (100 ms). A starting value; how long a radio takes to hear again is #883 item 8.</summary>
     internal const int OwnTail = 4800;
 
-    /// <summary>A candidate whose header will not read holds the channel for its opening and this much more, in samples (1 s). The design's (Choice 4).</summary>
-    internal const int UnreadableHold = 48000;
+    /// <summary>A candidate that stood clear of the noise and whose header will not read holds the channel for its opening and this much more, in samples (1 s). The design's (Choice 4), for such candidates only since 28 November 2026.</summary>
+    internal const int UnconfirmedHold = 48000;
 
     /// <summary>A header of a version the station does not know holds the channel for this long, again and again while candidates keep arriving, in samples (1 s). The protocol says busy for as long as signal is heard; the design's step.</summary>
     internal const int UnknownVersionHold = 48000;
@@ -191,6 +191,8 @@ internal sealed class ChannelAccess
     private bool _again;
     private bool _busy;
     private bool _pending;
+    private bool _undecided;
+    private bool _onlyJudging;
     private bool _externalSet;
     private bool _externalSupplied;
     private long _holdUntil;
@@ -388,6 +390,7 @@ internal sealed class ChannelAccess
     /// <summary>A burst or hold the channel is busy for until <paramref name="until"/> (exclusive): clear from that sample. A past sample counts only for when the channel was last busy.</summary>
     public void HoldUntil(long until)
     {
+        _onlyJudging = false;
         _holdUntil = Math.Max(_holdUntil, until);
         Update();
     }
@@ -397,11 +400,20 @@ internal sealed class ChannelAccess
     /// </summary>
     public void HoldForTail(long until)
     {
+        _onlyJudging = false;
         _tailUntil = Math.Max(_tailUntil, until);
         Update();
     }
 
-    /// <summary>Whether a candidate is waiting for its header to be judged: busy while it is.</summary>
+    /// <summary>
+    /// True if the channel was busy, in its latest busy spell, only because candidates were waiting to be judged, and none of them turned out to be a burst (no hold was taken in the spell). Read as the channel turns clear: for the trace.
+    /// </summary>
+    public bool SpellWasJudgingAlone => _onlyJudging;
+
+    /// <summary>
+    /// Whether a candidate is waiting for its header to be judged: busy while it is, unless the host supplies a carrier indication. With an indication the radio is the authority on whether anything is on the air, and a candidate
+    /// with no carrier reported holds nothing (it is still read, and a header that reads holds the channel for its burst as ever). A real burst raises the indication within its notice time, well before the detector finds it.
+    /// </summary>
     public void SetPending(bool pending)
     {
         if (_pending == pending)
@@ -412,6 +424,21 @@ internal sealed class ChannelAccess
         _pending = pending;
         Update();
     }
+
+    /// <summary>Whether a burst known to be another station's identification is waiting for its result (whether a tail follows): busy while it is, whatever the carrier indication says.</summary>
+    public void SetUndecided(bool undecided)
+    {
+        if (_undecided == undecided)
+        {
+            return;
+        }
+
+        _undecided = undecided;
+        Update();
+    }
+
+    /// <summary>A candidate waiting to be judged holds the channel: there is one, and no carrier indication is supplied.</summary>
+    private bool Judging => _pending && !_externalSupplied;
 
     /// <summary>
     /// The host's carrier indication changed. Busy while set and for <see cref="ExternalHold"/> after; the first call with a value, either way, says the host supplies one.
@@ -557,7 +584,7 @@ internal sealed class ChannelAccess
     private void Step()
     {
         long now = _clock.Now;
-        bool foreign = _pending || _externalSet || now < _holdUntil || now < _tailUntil || now < _externalUntil;
+        bool foreign = Judging || _undecided || _externalSet || now < _holdUntil || now < _tailUntil || now < _externalUntil;
 
         // Never transmit while busy: what is handed over and not keyed goes back if another station's signal, or the rule for ordinary traffic, says so.
         if (_active is { State: RequestState.Granted } granted && (foreign || (granted.Class == TransmitClass.Ordinary && now < _ordinaryNotBefore)))
@@ -571,6 +598,16 @@ internal sealed class ChannelAccess
         }
 
         bool busy = foreign || _active is not null || now < _ownUntil;
+        bool judgingAlone = Judging && !_undecided && !_externalSet && now >= _holdUntil && now >= _tailUntil && now >= _externalUntil && _active is null && now >= _ownUntil;
+        if (busy && !_busy)
+        {
+            _onlyJudging = judgingAlone;
+        }
+        else if (busy && !judgingAlone)
+        {
+            _onlyJudging = false;
+        }
+
         if (busy != _busy)
         {
             _busy = busy;
@@ -665,7 +702,7 @@ internal sealed class ChannelAccess
             return AccessCause.HeardBurst;
         }
 
-        return _pending ? AccessCause.Judging : AccessCause.None;
+        return Judging || _undecided ? AccessCause.Judging : AccessCause.None;
     }
 
     /// <summary>The sample at which the head of the queue may go, if the channel stays clear.</summary>

@@ -40,6 +40,7 @@ internal static class TraceWords
     internal const string CauseJudging = "a signal is being checked";
     internal const string CauseHoldOff = "a report just came in, ordinary traffic waits a second";
     internal const string CauseNumber = "the station number changed, so it is built again";
+    internal const string CauseIdentifying = "another station is identifying";
     internal const string CauseRefused = "the audio layer would not key it";
 
     // Why a report is owed.
@@ -66,7 +67,7 @@ internal static class TraceWords
     internal const string DiscardNotice = "notice";
 
     // Why an identification is due.
-    internal const string DueFirst = "first transmission";
+    internal const string DueFirst = "none sent yet";
     internal const string DueInterval = "10 minutes since the last";
 
     // The host's carrier indication.
@@ -79,7 +80,7 @@ internal static class TraceWords
     [
         ("Chose", ChoseNothingKnown), ("Chose", ChoseOwnEstimate), ("Chose", ChoseReportTemplate), ("Chose", ChoseTwoSilences), ("Chose", ChoseThreeSilences), ("Chose", ChoseNotLocated), ("Chose", ChoseEveryone), ("Chose", ChoseAsking),
         ("Request", SubjectDatagrams), ("Request", SubjectReport), ("Request", SubjectAnnouncement), ("Request", SubjectIdentification), ("Request", SubjectNotice), ("Request", SubjectAudio),
-        ("Cause", CauseOwn), ("Cause", CauseCarrier), ("Cause", CauseHeard), ("Cause", CauseJudging), ("Cause", CauseHoldOff), ("Cause", CauseNumber), ("Cause", CauseRefused),
+        ("Cause", CauseOwn), ("Cause", CauseCarrier), ("Cause", CauseHeard), ("Cause", CauseJudging), ("Cause", CauseHoldOff), ("Cause", CauseNumber), ("Cause", CauseRefused), ("Cause", CauseIdentifying),
         ("Owing", OweFailed), ("Owing", OweWorse), ("Owing", OweAsked),
         ("Header", HeaderVersion), ("Header", HeaderKind), ("Header", HeaderInvalid),
         ("Forgot", ForgotSilence), ("Forgot", ForgotUnheard), ("Forgot", ForgotHands), ("Forgot", ForgotClash),
@@ -326,6 +327,7 @@ internal static class TraceText
         AccessCause.ReportHoldOff => TraceWords.CauseHoldOff,
         AccessCause.NumberChanged => TraceWords.CauseNumber,
         AccessCause.Refused => TraceWords.CauseRefused,
+        AccessCause.Identifying => TraceWords.CauseIdentifying,
         _ => "unknown",
     };
 
@@ -383,6 +385,18 @@ internal static class TraceText
 
     /// <summary>Why an identification is due.</summary>
     internal static string IdentificationDue(string reason) => "Identification due: " + reason;
+
+    /// <summary>The identification goes ahead of the transmission that made it due.</summary>
+    internal static string IdentifyingFirst(string subject) => $"Sending identification first, before {subject}";
+
+    /// <summary>The station goes on with its own transmission straight after its identification.</summary>
+    internal static string GoingStraightOnAfterIdentification() => "Going straight on after the identification: no random wait";
+
+    /// <summary>Another station's identification announced that it goes on sending for a while.</summary>
+    internal static string HoldingForIdentification(string who, double until) => $"Holding all traffic until {Moment(until)}: {who} is sending its callsign after its identification";
+
+    /// <summary>The host said when the station last identified.</summary>
+    internal static string LastIdentificationTold(double secondsAgo) => $"Told by the host that the last identification was {Seconds(secondsAgo)} s ago";
 
     /// <summary>A header read that the station did nothing with.</summary>
     internal static string HeaderNotUsed(string reason) => $"Header read but not used: {reason}";

@@ -23,6 +23,54 @@ public class ChannelAccessTests
     }
 
     [Fact]
+    public void An_announced_tail_is_busy_to_its_last_sample_as_a_cause_of_its_own_and_holds_a_report_too()
+    {
+        var rig = new AccessRig(1);
+        rig.Clock.AdvanceTo(T);
+        rig.Access.HoldUntil(T + 10000);
+        rig.Access.HoldForTail(T + 10000 + 48000);
+        rig.Access.Enqueue(Burst(), TransmitClass.Report);
+        rig.Clock.AdvanceTo(T + 5000);
+        rig.Access.CauseNow().Should().Be(AccessCause.Identifying, "the tail is the most telling cause while it lasts");
+        rig.Clock.AdvanceTo(T + 10000 + 47999);
+        rig.Access.Busy.Should().BeTrue();
+        rig.GrantLog.Should().BeEmpty("nothing is granted in the tail, a report included");
+        rig.Clock.AdvanceTo(T + 10000 + 48000 + 2400);
+
+        rig.BusyLog.Should().Equal([(T, true), (T + 58000, false), (T + 58000 + 2400, true)], "the last is the report itself, granted");
+        rig.GrantLog.Single().At.Should().Be(T + 58000 + 2400, "a report is granted the first slot after the tail");
+    }
+
+    [Fact]
+    public void A_request_marked_first_goes_ahead_of_every_class_and_the_gate_can_put_one_ahead_of_the_head()
+    {
+        var rig = new AccessRig(1);
+        ChannelAccess.Request? first = null;
+        rig.Access.Gate = head =>
+        {
+            if (first is not null)
+            {
+                return false;
+            }
+
+            first = new ChannelAccess.Request();
+            first.Samples = Burst();
+            rig.Access.Enqueue(first, TransmitClass.Report, first: true);
+            return true;
+        };
+        rig.Clock.AdvanceTo(T);
+        ChannelAccess.Request ordinary = rig.Access.Enqueue(Burst(), TransmitClass.Ordinary);
+        rig.Clock.AdvanceTo(T + 100000);
+
+        first.Should().NotBeNull();
+        rig.GrantLog.Select(g => g.Id).First().Should().Be(first!.Id, "the request the gate put ahead goes first, and the head waits");
+        rig.Access.Active.Should().BeSameAs(first);
+        rig.PlayActive(1000);
+        rig.Clock.AdvanceTo(T + 200000);
+        rig.GrantLog.Select(g => g.Id).Should().Equal([first.Id, ordinary.Id]);
+    }
+
+    [Fact]
     public void A_burst_that_is_over_when_it_is_known_changes_nothing_but_when_the_channel_was_last_busy()
     {
         var rig = new AccessRig(1);

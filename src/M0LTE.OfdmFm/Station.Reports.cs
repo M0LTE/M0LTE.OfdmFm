@@ -587,6 +587,7 @@ public sealed partial class Station
             }
 
             _access.GoStraightOn();
+            _straightOnAfterIdent = true;
         }
 
         EnsureReportRequest();

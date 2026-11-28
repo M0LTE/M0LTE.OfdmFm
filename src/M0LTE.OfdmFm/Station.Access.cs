@@ -183,6 +183,7 @@ public sealed partial class Station
             request => WithdrawTransmit(request.HandshakeId),
             e => AccessChanged?.Invoke(e));
         _access.Note = OnAccessNote;
+        _access.Gate = GateForIdentification;
         InitialiseSend();
     }
 
@@ -214,6 +215,7 @@ public sealed partial class Station
             Detail(TraceText.ChannelBusy(TraceText.CauseText(AccessCause.OwnTransmission)));
         }
 
+        _transmittedYet = true;
         if (ReferenceEquals(request, _identRequest))
         {
             OnIdentificationBurstStarted(sampleIndex);
@@ -310,9 +312,9 @@ public sealed partial class Station
                 OnClashBurstEnded();
             }
 
-            if (!ReferenceEquals(request, _identRequest) && !ReferenceEquals(request, _clashRequest))
+            if (ReferenceEquals(request, _reportRequest) && !_report.Announcement)
             {
-                OnOtherTransmissionEnded(sampleIndex);
+                OnLoneReportEnded(sampleIndex);
             }
         }
         finally
@@ -382,8 +384,25 @@ public sealed partial class Station
         return false;
     }
 
-    /// <summary>Tells the channel whether a candidate is waiting for its header to be judged: busy while one is.</summary>
-    private void RefreshPending() => _access.SetPending(CandidatePending());
+    /// <summary>
+    /// True while an identification burst of another station is known and its result has not been applied: busy until it is, so that the channel is not free between the end of the burst and the moment the station reads whether it
+    /// announced a tail (the result is applied up to a frame after the burst's last sample).
+    /// </summary>
+    private bool IdentificationUndecided()
+    {
+        foreach (BurstRecord r in _bursts)
+        {
+            if (r.Header.Kind == BurstKind.Identification && r.State is BurstState.Known or BurstState.Queued or BurstState.Running or BurstState.Done)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Tells the channel whether a candidate is waiting for its header to be judged, or an identification burst for its result: busy while one is.</summary>
+    private void RefreshPending() => _access.SetPending(CandidatePending() || IdentificationUndecided());
 
     // ---- what a header read means for the channel (E) ----
 
@@ -428,6 +447,18 @@ public sealed partial class Station
         long until = SampleCount + ChannelAccess.UnknownVersionHold;
         BurstKnown?.Invoke(SampleCount, until);
         _access.HoldUntil(until);
+    }
+
+    /// <summary>A station's identification burst said it goes on sending until <paramref name="until"/>: busy until then, whatever else is waiting.</summary>
+    private void HoldForTail(int sender, long until)
+    {
+        BurstKnown?.Invoke(SampleCount, until);
+        if (WantsDetail() && until > SampleCount)
+        {
+            Detail(TraceText.HoldingForIdentification(StationName(sender), ClockSeconds(until)));
+        }
+
+        _access.HoldForTail(until);
     }
 
     /// <summary>A burst the station knows the length of: busy to its last sample.</summary>

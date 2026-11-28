@@ -119,8 +119,8 @@ public class LinkAddressStationTests
         rig.Send(1, 2, 1).Should().Be(SendResult.Accepted);
         rig.Run(30);
 
-        audio.Should().HaveCount(2, "the datagram and then the identification");
-        (BurstHeader header, byte[] payload) = DecodeBurst(audio[1]);
+        audio.Should().HaveCount(2, "the identification, which goes first, and then the datagram");
+        (BurstHeader header, byte[] payload) = DecodeBurst(audio[0]);
         header.Kind.Should().Be(BurstKind.Identification);
         byte[] expected = new byte[40];
         int n = PayloadCodec.PackIdentification("M0S1"u8, 0, default, expected);

@@ -2,13 +2,16 @@ namespace M0LTE.OfdmFm;
 
 // Step 7 of docs/station-design.md: the station identifies itself, and learns the callsigns of the stations that do.
 //
-// The rule (it is the host program's existing Morse ident's rule): an identification is due when a transmission of the station's (data or a lone report, not an identification burst) ends and either the station has never identified
-// or ten minutes have passed since its last identification burst started. Nothing else makes one due: there is no timer, and an idle station never keys to identify.
-//   - A transmission ends and there was no identification, or the last was ten minutes ago or more: due at once. IdentificationDue is raised at that moment (the station is no longer keyed, so the audio layer can send its Morse ident)
-//     and the burst is queued then.
-//   - A transmission ends within ten minutes of the last identification's start: nothing is owed. It is covered by that identification.
-// "Last identification" is when its burst started on the air (TransmitStarted), not when it fell due, so a long wait for the channel does not shorten the next interval.
-// An identification owed stays owed, however long the channel is busy, until its burst starts: IdentificationDue is raised once, and transmissions in the meantime are covered by the burst that follows.
+// The rule (it is the host program's existing Morse ident's rule, with the order turned round so that the answer to a first burst finds a quiet channel): an identification is due when the station is about to make a transmission of its own accord
+// (a data burst, an announcement, a notice about a station number) and either it has never identified or ten minutes have passed since its last identification burst started. Nothing else makes one due: there is no timer, and an idle station never keys
+// to identify.
+//   - About to transmit of its own accord, and an identification is due: the identification goes first, at once and without a fresh wait, and the transmission that made it due follows it without a random wait (one continuous turn).
+//     IdentificationDue is raised at that moment, once. The host sends its Morse inside the identification's own transmission (see SetIdentificationTail) and ends it when the Morse is over.
+//   - A lone report ends and an identification is due: the report went first, because the other station is waiting for exactly that; the identification follows it in the first slot, ahead of anybody's ordinary traffic. A report never waits for an identification.
+//   - About to transmit and the last identification started within ten minutes: nothing is owed. The transmission is covered by that identification.
+// "Last identification" is when its burst started on the air (TransmitStarted), not when it fell due, so a long wait for the channel does not shorten the next interval. A host that restarts says how long ago it was (SetLastIdentification).
+// An identification owed stays owed, however long the channel is busy, until its burst starts: IdentificationDue is raised once.
+// The announced tail: while the host's Morse follows the burst, the modem cannot hear it as a busy channel, so the burst carries one item with its length and every station that decodes it holds off for that long (HoldForTail).
 
 public sealed partial class Station
 {
@@ -17,8 +20,12 @@ public sealed partial class Station
     /// </summary>
     internal const long IdentificationIntervalSamples = 600L * SampleRate;
 
-    private long _lastIdentStart = -1;
+    private long _lastIdentStart = long.MinValue;
     private bool _identOwed;
+    private bool _identFirst;
+    private bool _straightOnAfterIdent;
+    private bool _transmittedYet;
+    private byte _tailTenths;
     private ChannelAccess.Request? _identRequest;
     private float[]? _identAudio;
     private bool _identBuilt;
@@ -49,8 +56,63 @@ public sealed partial class Station
     /// <summary>True from the sample an identification falls due until its burst goes on air.</summary>
     internal bool IdentificationOwed => _identOwed;
 
-    /// <summary>The sample the last identification burst started at, or null if none has.</summary>
-    internal long? LastIdentificationStart => _lastIdentStart >= 0 ? _lastIdentStart : null;
+    /// <summary>The sample the last identification burst started at (a negative one if the host said it was before the clock started), or null if none has.</summary>
+    internal long? LastIdentificationStart => _lastIdentStart != long.MinValue ? _lastIdentStart : null;
+
+    /// <summary>The longest tail the host can announce, in seconds: a tenth of a second in one byte.</summary>
+    public const double MaxIdentificationTail = 25.5;
+
+    /// <summary>The longest "last identified" age the host can give, in seconds: a year.</summary>
+    public const double MaxLastIdentificationAge = 365.0 * 86400.0;
+
+    /// <summary>
+    /// Tells the station that after each identification burst the host goes on sending for <paramref name="seconds"/> inside the same transmission (its callsign in Morse), and ends the transmission with <see cref="TransmitEnded"/> only when that is over.
+    /// The station announces it in the identification burst, in an item of one byte (tenths of a second, rounded up), so that every station that decodes the burst stays off the channel until the tail has run out. Zero, the default: no item, and the
+    /// burst is the same bytes as a station that does not know the call sends. The host must keep the promise: the station cannot hear the tail.
+    /// A burst already built keeps the tail it was built with. Not for a station that transmits other than as said: a tail of 0 is right for a host that sends no Morse.
+    /// </summary>
+    /// <param name="seconds">0 to <see cref="MaxIdentificationTail"/>.</param>
+    /// <exception cref="ArgumentOutOfRangeException">Negative, not a number, or over <see cref="MaxIdentificationTail"/>.</exception>
+    /// <exception cref="InvalidOperationException">Called from inside an event handler or a timer action.</exception>
+    public void SetIdentificationTail(double seconds)
+    {
+        EnsureNotAdvancing();
+        if (double.IsNaN(seconds) || seconds < 0 || seconds > MaxIdentificationTail)
+        {
+            throw new ArgumentOutOfRangeException(nameof(seconds), seconds, "The tail is 0 to 25.5 seconds.");
+        }
+
+        _tailTenths = (byte)Math.Ceiling((seconds * 10.0) - 1e-6);
+    }
+
+    /// <summary>
+    /// Tells the station that it last identified <paramref name="secondsAgo"/> seconds ago, for a host that was stopped and started again (the host keeps the time of each identification; the library keeps no time and does no I/O).
+    /// Within ten minutes nothing is due until ten minutes have run from that moment; longer ago, an identification is due at the first transmission, as for a station that never has. Call it before the station first transmits (any burst, an identification included); it
+    /// can be called again until then and the last call counts. The host learns when an identification went out from <see cref="ModemSent"/> with kind <see cref="ModemSentKind.Identification"/>, raised as the burst goes on air: that is the moment to write down.
+    /// (<see cref="IdentificationDue"/> says only that one is owed.)
+    /// </summary>
+    /// <param name="secondsAgo">0 to <see cref="MaxLastIdentificationAge"/>.</param>
+    /// <exception cref="ArgumentOutOfRangeException">Negative, not a number, or over <see cref="MaxLastIdentificationAge"/>.</exception>
+    /// <exception cref="InvalidOperationException">The station has transmitted already, or the call is from inside an event handler or a timer action.</exception>
+    public void SetLastIdentification(double secondsAgo)
+    {
+        EnsureNotAdvancing();
+        if (double.IsNaN(secondsAgo) || secondsAgo < 0 || secondsAgo > MaxLastIdentificationAge)
+        {
+            throw new ArgumentOutOfRangeException(nameof(secondsAgo), secondsAgo, "The age is 0 seconds to a year.");
+        }
+
+        if (_transmittedYet)
+        {
+            throw new InvalidOperationException("The station has transmitted already: it knows when it last identified.");
+        }
+
+        _lastIdentStart = SampleCount - (long)Math.Round(secondsAgo * SampleRate);
+        if (WantsFlow())
+        {
+            Flow(TraceText.LastIdentificationTold(secondsAgo));
+        }
+    }
 
     /// <summary>How many times an identification has fallen due.</summary>
     internal long IdentificationsDue => _identificationsDue;
@@ -58,27 +120,74 @@ public sealed partial class Station
     /// <summary>How many identification bursts have gone on air.</summary>
     internal long IdentificationsSent => _identificationsSent;
 
+    /// <summary>True when an identification would fall due now: the station has never identified, or the interval has run out since the last one started.</summary>
+    private bool IdentificationFallsDue(long sampleIndex) =>
+        !_identOwed && !IdentificationSuspended && Callsign is not null && (_lastIdentStart == long.MinValue || sampleIndex >= _lastIdentStart + _identificationInterval);
+
     /// <summary>
-    /// A transmission other than the identification burst has ended at <paramref name="sampleIndex"/>: an identification is due if the station has never identified or the interval has run out since the last one started.
-    /// Anything sooner is covered by that one and owes nothing.
+    /// A lone report has ended at <paramref name="sampleIndex"/>: the report went first, so an identification that is due follows it, in the first slot. Data, an announcement or a notice owes nothing when it ends:
+    /// it was preceded by the identification, if one was due (see <see cref="GateForIdentification"/>).
     /// </summary>
-    private void OnOtherTransmissionEnded(long sampleIndex)
+    private void OnLoneReportEnded(long sampleIndex)
     {
-        if (_identOwed || IdentificationSuspended || Callsign is null)
+        if (_identOwed)
         {
             return;
         }
 
-        if (_lastIdentStart < 0 || sampleIndex >= _lastIdentStart + _identificationInterval)
+        if (!IdentificationFallsDue(sampleIndex))
         {
-            if (WantsDetail())
-            {
-                Detail(TraceText.IdentificationDue(_lastIdentStart < 0 ? TraceWords.DueFirst : TraceWords.DueInterval));
-            }
-
-            _identOwed = true;
-            RaiseIdentificationDue();
+            _straightOnAfterIdent = false;
+            return;
         }
+
+        if (WantsDetail())
+        {
+            Detail(TraceText.IdentificationDue(_lastIdentStart == long.MinValue ? TraceWords.DueFirst : TraceWords.DueInterval));
+        }
+
+        _identOwed = true;
+        _identFirst = false;
+        RaiseIdentificationDue();
+    }
+
+    /// <summary>
+    /// The channel-access rules are about to hand over the head of the queue. If it is a transmission of the station's own accord (data, an announcement, a notice) and an identification is due, the identification is queued ahead of it and the head waits:
+    /// true. The identification is granted at once (it needs only the first slot, which the head's own wait has covered), and when it has ended the head goes straight on.
+    /// </summary>
+    private bool GateForIdentification(ChannelAccess.Request head)
+    {
+        if (!IdentificationFallsDue(SampleCount) || !OfItsOwnAccord(head))
+        {
+            return false;
+        }
+
+        if (WantsDetail())
+        {
+            Detail(TraceText.IdentificationDue(_lastIdentStart == long.MinValue ? TraceWords.DueFirst : TraceWords.DueInterval));
+            Detail(TraceText.IdentifyingFirst(SubjectOf(head)));
+        }
+
+        _identOwed = true;
+        _identFirst = true;
+        RaiseIdentificationDue();
+        return true;
+    }
+
+    /// <summary>True for a request that is the station's own choice to transmit: data, a notice about a number, or an announcement. Not a lone report, which answers a station that is waiting for it, and not the identification.</summary>
+    private bool OfItsOwnAccord(ChannelAccess.Request request)
+    {
+        if (ReferenceEquals(request, _data) || ReferenceEquals(request, _clashRequest))
+        {
+            return true;
+        }
+
+        if (!ReferenceEquals(request, _reportRequest))
+        {
+            return false;
+        }
+
+        return _report.Built ? _report.Announcement : NextReady() < 0 && NextAnnouncement() >= 0;
     }
 
     private void RaiseIdentificationDue()
@@ -86,7 +195,7 @@ public sealed partial class Station
         _identificationsDue++;
         IdentificationDue?.Invoke(new IdentificationDueEvent(Seconds));
         _identRequest ??= new ChannelAccess.Request();
-        _access.Enqueue(_identRequest, TransmitClass.Report);
+        _access.Enqueue(_identRequest, TransmitClass.Report, first: true);
     }
 
     /// <summary>
@@ -104,7 +213,15 @@ public sealed partial class Station
         _renderer ??= new BurstRenderer();
         PayloadCodec.WriteKey(_stationId, _idItemValue);
         _identItems[0] = new ExtensionItem(PayloadCodec.StationIdTag, _idItemValue);
-        int length = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(Callsign!), CapabilityWord, _identItems.AsSpan(0, 1), _payload);
+        int items = 1;
+        if (_tailTenths > 0)
+        {
+            _tailItemValue[0] = _tailTenths;
+            _identItems[1] = new ExtensionItem(PayloadCodec.TailTag, _tailItemValue);
+            items = 2;
+        }
+
+        int length = PayloadCodec.PackIdentification(System.Text.Encoding.ASCII.GetBytes(Callsign!), CapabilityWord, _identItems.AsSpan(0, items), _payload);
         IdentificationPayloadBuilt?.Invoke(_payload.AsSpan(0, length).ToArray());
         int symbols = PayloadCodec.SymbolsFor(format, length)!.Value;
         int number = _burstNumber;
@@ -140,6 +257,20 @@ public sealed partial class Station
 
         _identAudio = null;
         _identBuilt = false;
+
+        // The identification went first, or came after a report that the station's own data follows straight on: the turn goes on, without a fresh wait, while the channel is still the station's to use.
+        if ((_identFirst || _straightOnAfterIdent) && _access.WaitingCount > 0)
+        {
+            if (WantsDetail())
+            {
+                Detail(TraceText.GoingStraightOnAfterIdentification());
+            }
+
+            _access.GoStraightOn();
+        }
+
+        _identFirst = false;
+        _straightOnAfterIdent = false;
     }
 
     // ---- receiving an identification ----
@@ -161,11 +292,21 @@ public sealed partial class Station
             }
         }
 
+        ExtensionReader tail = again;
         while (again.TryNext(out byte tag, out ReadOnlySpan<byte> value))
         {
             if (tag == PayloadCodec.ClashTag && value.Length == PayloadCodec.ClashBytes && value[0] is >= 1 and <= 63)
             {
                 HeardClash(value[0], PayloadCodec.ReadKey(value[1..]));
+            }
+        }
+
+        while (tail.TryNext(out byte tag, out ReadOnlySpan<byte> value))
+        {
+            if (tag == PayloadCodec.TailTag && value.Length == PayloadCodec.TailBytes && value[0] != 0)
+            {
+                HoldForTail(sender, end + (value[0] * (long)(SampleRate / 10)));
+                break;
             }
         }
     }

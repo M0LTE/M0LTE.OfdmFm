@@ -54,14 +54,19 @@ public class ReadmeExampleTests
 
         SendResult accepted = station.Send(datagram, peer, me, LinkProtocol.NoLayer3, new HostTag(1));
         float[] input = new float[4800];                        // the radio's audio, 0.1 s at a time (silence here)
-        while (id == 0) station.Push(input);                    // the station listens for 5 s first, then asks to transmit
-        station.TransmitStarted(id, station.SampleCount);       // play audio.Span to the radio, and say when it began ...
-        for (long left = audio.Length; left > 0; left -= input.Length)
+        while (sent.Count == 0)                                 // a station that has not identified identifies first: the first request is its identification, the datagram's follows it
         {
-            station.Push(input.AsSpan(0, (int)Math.Min(left, input.Length)));
-        }
+            while (id == 0) station.Push(input);                // the station listens for 5 s first, then asks to transmit
+            long playing = id;
+            id = 0;
+            station.TransmitStarted(playing, station.SampleCount); // play audio.Span to the radio, and say when it began ...
+            for (long left = audio.Length; left > 0; left -= input.Length)
+            {
+                station.Push(input.AsSpan(0, (int)Math.Min(left, input.Length)));
+            }
 
-        station.TransmitEnded(id, station.SampleCount);         // ... and when it ended: Transmitted is raised here
+            station.TransmitEnded(playing, station.SampleCount); // ... and when it ended: Transmitted is raised here for a datagram
+        }
 
         accepted.Should().Be(SendResult.Accepted);
         sent.Should().ContainSingle().Which.Tag.Should().Be(new HostTag(1));

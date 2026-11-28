@@ -184,6 +184,7 @@ public sealed partial class Station
             e => AccessChanged?.Invoke(e));
         _access.Note = OnAccessNote;
         _access.Gate = GateForIdentification;
+        _access.Urgent = IsLoneReport;
         InitialiseSend();
     }
 
@@ -216,6 +217,11 @@ public sealed partial class Station
         }
 
         _transmittedYet = true;
+        if (!ReferenceEquals(request, _identRequest) && !ReferenceEquals(request, _reportRequest))
+        {
+            _straightOnAfterIdent = false; // it was for the transmission that has now gone
+        }
+
         if (ReferenceEquals(request, _identRequest))
         {
             OnIdentificationBurstStarted(sampleIndex);

@@ -20,6 +20,10 @@ public sealed partial class Station
     /// </summary>
     internal const long IdentificationIntervalSamples = 600L * SampleRate;
 
+    /// <summary>A station number's announced tail is honoured at most once in this long, 60 s in samples.</summary>
+    internal const long TailHonourSamples = 60L * SampleRate;
+
+    private readonly long[] _tailHonouredAt = CreateTailTimes();
     private long _lastIdentStart = long.MinValue;
     private bool _identOwed;
     private bool _identFirst;
@@ -87,13 +91,13 @@ public sealed partial class Station
 
     /// <summary>
     /// Tells the station that it last identified <paramref name="secondsAgo"/> seconds ago, for a host that was stopped and started again (the host keeps the time of each identification; the library keeps no time and does no I/O).
-    /// Within ten minutes nothing is due until ten minutes have run from that moment; longer ago, an identification is due at the first transmission, as for a station that never has. Call it before the station first transmits (any burst, an identification included); it
+    /// Within ten minutes nothing is due until ten minutes have run from that moment; longer ago, an identification is due at the first transmission, as for a station that never has. Call it before the first <see cref="Send"/> or transmission (a refusal follows a transmission, or an identification that has fallen due and not gone yet); it
     /// can be called again until then and the last call counts. The host learns when an identification went out from <see cref="ModemSent"/> with kind <see cref="ModemSentKind.Identification"/>, raised as the burst goes on air: that is the moment to write down.
     /// (<see cref="IdentificationDue"/> says only that one is owed.)
     /// </summary>
     /// <param name="secondsAgo">0 to <see cref="MaxLastIdentificationAge"/>.</param>
     /// <exception cref="ArgumentOutOfRangeException">Negative, not a number, or over <see cref="MaxLastIdentificationAge"/>.</exception>
-    /// <exception cref="InvalidOperationException">The station has transmitted already, or the call is from inside an event handler or a timer action.</exception>
+    /// <exception cref="InvalidOperationException">The station has transmitted already or an identification has fallen due, or the call is from inside an event handler or a timer action.</exception>
     public void SetLastIdentification(double secondsAgo)
     {
         EnsureNotAdvancing();
@@ -102,9 +106,9 @@ public sealed partial class Station
             throw new ArgumentOutOfRangeException(nameof(secondsAgo), secondsAgo, "The age is 0 seconds to a year.");
         }
 
-        if (_transmittedYet)
+        if (_transmittedYet || _identificationsDue > 0)
         {
-            throw new InvalidOperationException("The station has transmitted already: it knows when it last identified.");
+            throw new InvalidOperationException("The station has transmitted or an identification has fallen due already: it knows when it last identified.");
         }
 
         _lastIdentStart = SampleCount - (long)Math.Round(secondsAgo * SampleRate);
@@ -174,6 +178,10 @@ public sealed partial class Station
         return true;
     }
 
+    /// <summary>True for the request that stands for a lone report that is ready or built: it goes ahead of the station's own identification, however that came to wait.</summary>
+    private bool IsLoneReport(ChannelAccess.Request request) =>
+        ReferenceEquals(request, _reportRequest) && (_report.Built ? !_report.Announcement : NextReady() >= 0);
+
     /// <summary>True for a request that is the station's own choice to transmit: data, a notice about a number, or an announcement. Not a lone report, which answers a station that is waiting for it, and not the identification.</summary>
     private bool OfItsOwnAccord(ChannelAccess.Request request)
     {
@@ -188,6 +196,13 @@ public sealed partial class Station
         }
 
         return _report.Built ? _report.Announcement : NextReady() < 0 && NextAnnouncement() >= 0;
+    }
+
+    private static long[] CreateTailTimes()
+    {
+        var times = new long[64];
+        Array.Fill(times, long.MinValue / 2);
+        return times;
     }
 
     private void RaiseIdentificationDue()
@@ -293,19 +308,27 @@ public sealed partial class Station
         }
 
         ExtensionReader tail = again;
+        bool notice = false;
         while (again.TryNext(out byte tag, out ReadOnlySpan<byte> value))
         {
             if (tag == PayloadCodec.ClashTag && value.Length == PayloadCodec.ClashBytes && value[0] is >= 1 and <= 63)
             {
+                notice = true;
                 HeardClash(value[0], PayloadCodec.ReadKey(value[1..]));
             }
         }
 
-        while (tail.TryNext(out byte tag, out ReadOnlySpan<byte> value))
+        // A tail is honoured from an identification burst proper, not from a notice about a station number, and from one number at most once in a minute: a station that keeps sending the item cannot keep the channel closed.
+        while (!notice && tail.TryNext(out byte tag, out ReadOnlySpan<byte> value))
         {
             if (tag == PayloadCodec.TailTag && value.Length == PayloadCodec.TailBytes && value[0] != 0)
             {
-                HoldForTail(sender, end + (value[0] * (long)(SampleRate / 10)));
+                if (end - _tailHonouredAt[sender] >= TailHonourSamples)
+                {
+                    _tailHonouredAt[sender] = end;
+                    HoldForTail(sender, end + (value[0] * (long)(SampleRate / 10)));
+                }
+
                 break;
             }
         }

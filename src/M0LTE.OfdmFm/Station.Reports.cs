@@ -579,6 +579,7 @@ public sealed partial class Station
         _report.Audio = null;
         _report.Built = false;
         _report.Started = false;
+        _straightOnAfterIdent = false;
         if (HasQueuedAt(dest, expeditedOnly: false) && !AwaitingAnswerFrom(dest))
         {
             if (WantsDetail())
@@ -587,7 +588,7 @@ public sealed partial class Station
             }
 
             _access.GoStraightOn();
-            _straightOnAfterIdent = true;
+            _straightOnAfterIdent = !_report.Announcement; // only a lone report can be followed by an identification that the data must wait behind
         }
 
         EnsureReportRequest();

@@ -291,6 +291,12 @@ internal sealed class ChannelAccess
     /// </summary>
     public Func<Request, bool>? Gate { get; set; }
 
+    /// <summary>
+    /// Asked for each waiting request when the queue is put in order: true for a request that goes ahead even of one marked <see cref="Request.First"/> (a lone report, which the station it is for is waiting for, never waits behind the
+    /// station's own identification). It may change while a request waits, so the order is worked out again at each step. Null: none.
+    /// </summary>
+    public Func<Request, bool>? Urgent { get; set; }
+
     /// <summary>Told of what the rules decide, for the station's trace. Null: nothing is told. Called with a value and nothing built; the listener decides whether anyone wants it.</summary>
     public Action<AccessNote>? Note { get; set; }
 
@@ -598,6 +604,7 @@ internal sealed class ChannelAccess
             _horizonAt = -1;
         }
 
+        Resort();
         if (!busy && _active is null && _waiting.Count > 0)
         {
             Request head = _waiting[0];
@@ -730,15 +737,37 @@ internal sealed class ChannelAccess
         _waiting.Insert(at, request);
     }
 
-    /// <summary>True if <paramref name="a"/> goes ahead of <paramref name="b"/>: one marked first, then the more urgent class, then the earlier arrival.</summary>
-    private static bool Before(Request a, Request b)
+    /// <summary>The order of the queue: a request <see cref="Urgent"/> first, then one marked first, then the rest; within each, the more urgent class, then the earlier arrival.</summary>
+    private int Rank(Request r) => Urgent is not null && Urgent(r) ? 0 : r.First ? 1 : 2;
+
+    /// <summary>True if <paramref name="a"/> goes ahead of <paramref name="b"/>.</summary>
+    private bool Before(Request a, Request b)
     {
-        if (a.First != b.First)
+        int ra = Rank(a);
+        int rb = Rank(b);
+        if (ra != rb)
         {
-            return a.First;
+            return ra < rb;
         }
 
         return a.Class < b.Class || (a.Class == b.Class && a.Sequence < b.Sequence);
+    }
+
+    /// <summary>Puts the waiting requests in order again (a stable insertion sort of a handful): what makes a request urgent can change while it waits.</summary>
+    private void Resort()
+    {
+        for (int i = 1; i < _waiting.Count; i++)
+        {
+            Request x = _waiting[i];
+            int j = i - 1;
+            while (j >= 0 && Before(x, _waiting[j]))
+            {
+                _waiting[j + 1] = _waiting[j];
+                j--;
+            }
+
+            _waiting[j + 1] = x;
+        }
     }
 
     private static int ComputeDetectionLatency()

@@ -158,6 +158,55 @@ public class StationIdentifyFirstTests
     }
 
     [Fact]
+    public void A_Tail_Is_Honoured_From_One_Station_Number_At_Most_Once_In_A_Minute()
+    {
+        // Each burst announces 6 s. Three from number 5: the first holds for its tail, the second (30 s later) is treated as carrying none, the third (more than a minute after the first's end) holds again.
+        TestBurst[] bursts = [Ident(new ExtensionItem(PayloadCodec.TailTag, new byte[] { 60 })), Ident(new ExtensionItem(PayloadCodec.TailTag, new byte[] { 60 })), Ident(new ExtensionItem(PayloadCodec.TailTag, new byte[] { 60 }))];
+        bursts[1] = TestBurst.Identification(5, "M0XYZ", 0, burstNumber: 1, items: [new ExtensionItem(PayloadCodec.StationIdTag, new byte[] { 1, 2, 3, 4 }), new ExtensionItem(PayloadCodec.TailTag, new byte[] { 60 })]);
+        bursts[2] = TestBurst.Identification(5, "M0XYZ", 0, burstNumber: 2, items: [new ExtensionItem(PayloadCodec.StationIdTag, new byte[] { 1, 2, 3, 4 }), new ExtensionItem(PayloadCodec.TailTag, new byte[] { 60 })]);
+        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
+        var holds = new List<long>();
+        station.BurstKnown = (now, until) => holds.Add(until);
+        var b = new StreamBuilder().Silence(1.2);
+        b.Add(bursts[0]);
+        b.Silence(30);
+        b.Add(bursts[1]);
+        b.Silence(70);
+        b.Add(bursts[2]);
+        b.Silence(12);
+        float[] stream = b.ToArray();
+        for (int at = 0; at < stream.Length; at += 4800)
+        {
+            station.Push(stream.AsSpan(at, Math.Min(4800, stream.Length - at)));
+        }
+
+        // A tail hold is the one that lasts exactly 6 s beyond another hold of the same burst.
+        int tails = holds.Count(h => holds.Contains(h - (6 * Second)));
+        tails.Should().Be(2, "the first and the third are honoured; the second, 30 s after the first, is not");
+    }
+
+    [Fact]
+    public void A_Tail_On_A_Notice_About_A_Station_Number_Is_Not_Honoured()
+    {
+        var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");
+        var holds = new List<long>();
+        station.BurstKnown = (now, until) => holds.Add(until);
+        var clash = new byte[PayloadCodec.ClashBytes];
+        PayloadCodec.WriteClash(9, 0x11111111u, clash);
+        TestBurst burst = TestBurst.Identification(5, "M0XYZ", 0, items: [new ExtensionItem(PayloadCodec.StationIdTag, new byte[] { 1, 2, 3, 4 }), new ExtensionItem(PayloadCodec.ClashTag, clash), new ExtensionItem(PayloadCodec.TailTag, new byte[] { 60 })]);
+        var b = new StreamBuilder().Silence(1.2);
+        b.Add(burst);
+        b.Silence(12);
+        float[] stream = b.ToArray();
+        for (int at = 0; at < stream.Length; at += 4800)
+        {
+            station.Push(stream.AsSpan(at, Math.Min(4800, stream.Length - at)));
+        }
+
+        holds.Count(h => holds.Contains(h - (6 * Second))).Should().Be(0, "a Clash is the same kind of burst, and carries no tail that anyone has to wait for");
+    }
+
+    [Fact]
     public void The_Hold_Is_Said_In_The_Trace_As_The_Cause_Of_The_Busy_Channel()
     {
         var station = new Station(1, new Random(1), runJobsInline: true).WithIdentity("M0LTE");

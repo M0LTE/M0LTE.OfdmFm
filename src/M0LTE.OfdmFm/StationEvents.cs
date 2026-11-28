@@ -94,7 +94,14 @@ public readonly record struct IdentificationDueEvent(double Seconds);
 /// <param name="Id">The request's id, unique within the station.</param>
 /// <param name="Samples">The 48 kHz samples to play. Valid until the request ends or is withdrawn.</param>
 /// <param name="EarliestSample">The earliest receive-sample index at which to start.</param>
-public readonly record struct TransmitRequestEvent(long Id, ReadOnlyMemory<float> Samples, long EarliestSample);
+public readonly record struct TransmitRequestEvent(long Id, ReadOnlyMemory<float> Samples, long EarliestSample)
+{
+    /// <summary>
+    /// True when this request is the station's identification burst. A host that follows the burst with its own signal (a callsign in Morse, see <see cref="Station.SetIdentificationTail"/>) appends it to this transmission and no other:
+    /// a report can be asked for after <see cref="Station.IdentificationDue"/> is raised and before the identification, so the order of requests does not say which one it is.
+    /// </summary>
+    public bool Identification { get; init; }
+}
 
 /// <summary>The station withdraws a request that has not been keyed. The audio layer may already have started it; it then reports the start as usual.</summary>
 /// <param name="Id">The request's id.</param>

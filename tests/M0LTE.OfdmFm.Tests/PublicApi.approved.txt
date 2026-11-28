@@ -478,6 +478,7 @@ namespace M0LTE.OfdmFm
         public TransmitRequestEvent(long Id, System.ReadOnlyMemory<float> Samples, long EarliestSample) { }
         public long EarliestSample { get; init; }
         public long Id { get; init; }
+        public bool Identification { get; init; }
         public System.ReadOnlyMemory<float> Samples { get; init; }
     }
     public readonly struct TransmittedEvent : System.IEquatable<M0LTE.OfdmFm.TransmittedEvent>

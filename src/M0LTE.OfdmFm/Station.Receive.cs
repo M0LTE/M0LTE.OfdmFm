@@ -1006,6 +1006,7 @@ public sealed partial class Station
         }
 
         long floor = _detector.CandidateFloor;
+        int known = _bursts.Count;
         _applyingResults = true;
         try
         {
@@ -1017,7 +1018,9 @@ public sealed partial class Station
         }
 
         RefreshPending();
-        if (_reportCheckDeferred)
+
+        // A failed report waits while a later burst from its station is unapplied (IsReady): once one has been applied, it may be ready.
+        if (_reportCheckDeferred || _bursts.Count < known)
         {
             _reportCheckDeferred = false;
             EnsureReportRequest();

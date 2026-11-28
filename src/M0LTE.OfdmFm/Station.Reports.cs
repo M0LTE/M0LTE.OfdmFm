@@ -330,14 +330,33 @@ public sealed partial class Station
         }
     }
 
-    private bool IsReady(in OwedSlot slot) => slot.Active && (slot.Kind != OwedKind.Asked || slot.Due <= SampleCount);
+    /// <summary>
+    /// Whether an owed report may go now. A failed report waits while a burst from the same station, known by its header, has not had its result applied: the failed bit says "your last burst reached me and I could not decode it",
+    /// and if that later burst decodes the report must go as a drop (<see cref="NoteVerdict"/>). Sent before, the sender's hint would name the burst that arrived. The result is applied up to a frame after the burst's end.
+    /// </summary>
+    private bool IsReady(int who, in OwedSlot slot) =>
+        slot.Active && (slot.Kind != OwedKind.Asked || slot.Due <= SampleCount) && (slot.Kind != OwedKind.Failed || !BurstUnappliedFrom(who));
+
+    /// <summary>True while a burst from station <paramref name="who"/> is known and its result not yet applied.</summary>
+    private bool BurstUnappliedFrom(int who)
+    {
+        foreach (BurstRecord r in _bursts)
+        {
+            if (r.Header.Sender == who)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     private int NextReady()
     {
         int best = -1;
         for (int who = 1; who < _owedSlots.Length; who++)
         {
-            if (IsReady(_owedSlots[who]) && (best < 0 || _owedSlots[who].Sequence < _owedSlots[best].Sequence))
+            if (IsReady(who, _owedSlots[who]) && (best < 0 || _owedSlots[who].Sequence < _owedSlots[best].Sequence))
             {
                 best = who;
             }

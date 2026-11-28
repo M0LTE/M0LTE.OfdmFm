@@ -33,6 +33,15 @@ public sealed partial class Station
     /// <summary>A burst or hold the station learned of: what the rules decided (a test's hook, called as a header is taken in).</summary>
     internal Action<long, long>? BurstKnown { get; set; }
 
+    /// <summary>A candidate's header read came back (a test's hook): the candidate's first sample, its opening, whether the header read, and the sample clock when it was taken in.</summary>
+    internal Action<long, FormatOpening, bool, long>? CandidateJudged { get; set; }
+
+    /// <summary>A candidate the detector gave (a test's hook): its first sample, its opening and its correlation peak.</summary>
+    internal Action<long, FormatOpening, double>? CandidateFound { get; set; }
+
+    /// <summary>The detector's threshold for an opening now.</summary>
+    internal double DetectorThreshold(FormatOpening opening) => _detector.ThresholdOf(opening);
+
     /// <summary>Candidates ignored because they fell in the window of the station's own transmission.</summary>
     internal long CandidatesMuted => _candidatesMuted;
 

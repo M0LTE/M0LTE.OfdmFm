@@ -435,6 +435,7 @@ public sealed partial class Station
         while (_detector.TryTake(out DetectedBurst d))
         {
             _candidatesSeen++;
+            CandidateFound?.Invoke(d.Index, d.Opening, d.Peak);
             if (InOwnWindow(d.Index))
             {
                 // The audio is muted or full of this station's own signal: nothing to find there.
@@ -616,6 +617,7 @@ public sealed partial class Station
     /// <summary>A header read has come back: a new burst, the same as one already known, or something to note.</summary>
     private void HandleHeader(Candidate c, HeaderStatus status, BurstHeader header)
     {
+        CandidateJudged?.Invoke(c.Index, c.Opening, status == HeaderStatus.Read, SampleCount);
         if (status == HeaderStatus.Lost)
         {
             _headersLost++;

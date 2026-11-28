@@ -383,7 +383,7 @@ public sealed partial class Station
     /// Asks the audio layer to transmit <paramref name="samples"/> at receive-sample <paramref name="earliestSample"/> or after, and returns the request's id.
     /// This is the handshake with the audio layer, below the channel-access rules: <see cref="Enqueue"/> is what applies them and what step 5 calls; this one asks at once, whatever the channel is doing.
     /// </summary>
-    internal long RequestTransmit(ReadOnlyMemory<float> samples, long earliestSample)
+    internal long RequestTransmit(ReadOnlyMemory<float> samples, long earliestSample, bool identification = false)
     {
         // The one place a request is put to the audio layer: a station with no identity never transmits. The specific checks (Send, the verdicts, identification) keep it from getting here.
         if (Callsign is null)
@@ -399,7 +399,7 @@ public sealed partial class Station
         request.EndedAt = null;
         request.WithdrawnBeforeStart = false;
         _requests[id] = request;
-        TransmitRequest?.Invoke(new TransmitRequestEvent(id, samples, earliestSample));
+        TransmitRequest?.Invoke(new TransmitRequestEvent(id, samples, earliestSample) { Identification = identification });
         return id;
     }
 

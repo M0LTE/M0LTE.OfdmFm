@@ -196,7 +196,7 @@ public sealed partial class Station
 
     private void GrantRequest(ChannelAccess.Request request)
     {
-        request.HandshakeId = RequestTransmit(request.Samples, SampleCount);
+        request.HandshakeId = RequestTransmit(request.Samples, SampleCount, request.Modem is { Kind: ModemSentKind.Identification });
         _byHandshake[request.HandshakeId] = request;
     }
 

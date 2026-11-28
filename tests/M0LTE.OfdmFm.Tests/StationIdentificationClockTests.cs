@@ -197,6 +197,21 @@ public class StationIdentificationClockTests
     }
 
     [Fact]
+    public void Only_The_Request_For_The_Identification_Burst_Says_It_Is_The_Identification()
+    {
+        // A host that follows the burst with Morse must know which request to append it to, and cannot go by order: a report can be asked for between the identification falling due and its burst.
+        var d = new IdentDriver(Interval);
+        var flags = new List<bool>();
+        d.Station.TransmitRequest += e => flags.Add(e.Identification);
+        d.RunTo(6 * 48000);
+        d.SendToEveryone(1);
+        d.RunTo(5 * Interval);
+
+        flags.Should().Equal([true, false], "the identification, then the datagram");
+        d.Air[0].Length.Should().Be(IdentLength("M0LTE"), "the request that said so is the identification burst");
+    }
+
+    [Fact]
     public void A_Cold_Station_About_To_Transmit_Identifies_First_And_Its_Datagram_Goes_Straight_On_After_It_Without_A_Fresh_Wait_And_Only_One_Is_Sent()
     {
         var d = new IdentDriver(Interval);

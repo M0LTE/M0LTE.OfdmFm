@@ -86,6 +86,9 @@ public sealed partial class Station
         /// <summary>When the address was last given a burst, on a counter; the smallest goes next (the fair rule).</summary>
         public long LastServed;
 
+        /// <summary>When the host last sent to the address, on the trace's use counter: how a station known by several addresses is named.</summary>
+        public long UsedAt;
+
         /// <summary>True once the station has located the address and then forgotten it, until it is located again.</summary>
         public bool Forgotten;
 
@@ -158,6 +161,9 @@ public sealed partial class Station
     private readonly long[] _heardAt = new long[64];
     private readonly List<(long Due, int Dest, long Ended)> _answerChecks = [];
     private readonly byte[] _payload = new byte[MaxPayloadBytes];
+
+    /// <summary>For the trace: the recommendation built into a burst for a station that its sender has not yet said it told, until the burst is on air.</summary>
+    private readonly int?[] _unsaidTold = new int?[64];
     private ReadOnlyMemory<byte>[] _pack = new ReadOnlyMemory<byte>[16];
     private BurstRenderer? _renderer;
     private ChannelAccess.Request? _data;
@@ -240,6 +246,11 @@ public sealed partial class Station
 
         if (Callsign is null)
         {
+            if (WantsFlow())
+            {
+                Flow(TraceText.RefusedNoCallsign(DestText(to)));
+            }
+
             return SendResult.NoIdentity;
         }
 
@@ -251,13 +262,24 @@ public sealed partial class Station
             uint toKey = to.IsEveryone ? 0 : to.Key;
             int number = to.IsEveryone ? 0 : LocatedAt(toKey, now);
             int format = FormatFor(number, now);
-            if (datagram.Length > RoomFor(format, number != 0, number == 0 && !to.IsEveryone))
+            int room = RoomFor(format, number != 0, number == 0 && !to.IsEveryone);
+            if (datagram.Length > room)
             {
+                if (WantsFlow())
+                {
+                    Flow(TraceText.RefusedTooLarge(DestText(to), datagram.Length, room, StandardFormats.Rate(format)));
+                }
+
                 return SendResult.TooLarge;
             }
 
             if (q is { Full: true })
             {
+                if (WantsFlow())
+                {
+                    Flow(TraceText.RefusedFull(DestText(to), AirtimeOf(q, number, format)));
+                }
+
                 return SendResult.QueueFull;
             }
 
@@ -294,6 +316,8 @@ public sealed partial class Station
             p.From = from.Key;
             p.Protocol = protocol;
             _ownKeys.Add(p.From);
+            NoteHostAddress(from);
+            q.UsedAt = ++_useCounter;
             (p.Expedited ? q.Expedited : q.Ordinary).Add(p);
             q.Bits += (datagram.Length + LengthBytes) * 8L;
             _queuedCount++;
@@ -302,10 +326,19 @@ public sealed partial class Station
                 _expeditedCount++;
             }
 
+            if (WantsDetail())
+            {
+                Detail(TraceText.Queued(datagram.Length, DestText(to), q.Count));
+            }
+
             if (AirtimeOf(q, number, format) >= QueueLimitSeconds)
             {
                 q.Full = true;
                 Congestion?.Invoke(new CongestionEvent(q.Address, false));
+                if (WantsDetail())
+                {
+                    Detail(TraceText.QueueFull(DestText(q.Address), AirtimeOf(q, number, format)));
+                }
             }
 
             EnsureDataRequest();
@@ -463,6 +496,10 @@ public sealed partial class Station
         {
             q.Full = false;
             Congestion?.Invoke(new CongestionEvent(q.Address, true));
+            if (WantsDetail())
+            {
+                Detail(TraceText.QueueWritable(DestText(q.Address)));
+            }
         }
     }
 
@@ -501,6 +538,11 @@ public sealed partial class Station
                     i++;
                 }
             }
+        }
+
+        if (count > 0 && WantsFlow())
+        {
+            Flow(TraceText.DroppedCancelled(DestText(q.Address), count));
         }
 
         return count;
@@ -665,6 +707,10 @@ public sealed partial class Station
         LinkChoice choice = everyone ? new LinkChoice(StandardFormats.FirstContact, false) : _link.Choose(dest, now);
         int format = choice.Format;
         int overhead = everyone ? 0 : PreludeBytes;
+        if (WantsDetail())
+        {
+            Detail(TraceText.Chose(StandardFormats.Rate(format), DestText(q.Address), format, q.Address.IsEveryone ? TraceWords.ChoseEveryone : everyone ? TraceWords.ChoseNotLocated : ChoiceReason(dest, choice, now)));
+        }
 
         // A datagram accepted when the link was faster, or the address located, may not fit one burst now: it is dropped, and the host sees the new room in LinkState.
         int largest = PayloadCodec.Capacity(format, StandardFormats.MaxSymbols);
@@ -680,6 +726,11 @@ public sealed partial class Station
             (head.Expedited ? q.Expedited : q.Ordinary).RemoveAt(0);
             Unqueue(q, head);
             Dropped?.Invoke(new DroppedEvent(head.Tag, DropReason.NoLongerFits));
+            if (WantsFlow())
+            {
+                Flow(TraceText.DroppedNoLongerFits(DestText(q.Address), StandardFormats.Rate(format)));
+            }
+
             Release(head);
         }
 
@@ -767,7 +818,19 @@ public sealed partial class Station
             _addressItems[itemCount++] = new ExtensionItem(PayloadCodec.ForTag, _forValue);
         }
 
+        int? toldBefore = null;
+        if (!everyone && Trace is not null && _link.TryGetNeighbour(dest, out LinkNeighbour? toldNeighbour) && toldNeighbour is not null)
+        {
+            toldBefore = toldNeighbour.Told;
+        }
+
         PayloadPrelude? prelude = everyone ? null : new PayloadPrelude(wanted, _link.ReportFor(dest), false, wanted ? CapabilityWord : null);
+        if (prelude is { Recommended: int recommendedNow } && Trace is not null && (recommendedNow != toldBefore || _unsaidTold[dest] is not null))
+        {
+            // Said when the burst goes on air, not now: a burst built and then taken back has told nobody anything.
+            _unsaidTold[dest] = recommendedNow;
+        }
+
         if (prelude is { Recommended: not null })
         {
             // The recommendation rides on this burst, so the station has told them: a lone report owed for a drop or a request is not needed (a failed one always goes alone).
@@ -830,6 +893,22 @@ public sealed partial class Station
 
         _burst.Started = true;
         _burst.StartedAt = sampleIndex;
+        if (_burst.Dest != 0 && _unsaidTold[_burst.Dest] is int unsaid)
+        {
+            _unsaidTold[_burst.Dest] = null;
+            if (WantsFlow())
+            {
+                Flow(TraceText.Told(StationName(_burst.Dest), StandardFormats.Rate(unsaid), false));
+            }
+        }
+
+        if (WantsFlow())
+        {
+            AddressQueue sentTo = _burst.Queue!;
+            string where = _burst.Dest != 0 ? StationName(_burst.Dest) : sentTo.Address.IsEveryone ? "everyone" : TraceText.EveryoneFor(DestText(sentTo.Address));
+            Flow(TraceText.Sent(_burst.Items.Count, where, StandardFormats.Rate(_burst.Format), _burst.Length / (double)SampleRate, _burst.AskedReport));
+        }
+
         if (_burst.Dest != 0)
         {
             _link.Sent(_burst.Dest);
@@ -868,6 +947,11 @@ public sealed partial class Station
         if (_burst.AskedReport)
         {
             _answerChecks.Add((sampleIndex + AnswerWaitSamples(_burst.Length), _burst.Dest, sampleIndex));
+            if (WantsDetail())
+            {
+                Detail(TraceText.AnswerWait(StationName(_burst.Dest), AnswerWaitSamples(_burst.Length) / (double)SampleRate));
+            }
+
             RescheduleAnswerTimer();
         }
 
@@ -916,14 +1000,28 @@ public sealed partial class Station
         {
             (long due, int dest, long ended) = _answerChecks[0];
             _answerChecks.RemoveAt(0);
-            if (_heardAt[dest] <= ended)
+            if (_heardAt[dest] > ended)
+            {
+                if (WantsDetail())
+                {
+                    Detail(TraceText.AnswerInTime(StationName(dest)));
+                }
+            }
+            else
             {
                 _link.NoAnswer(dest);
-                SilenceCounted?.Invoke(dest, _link.TryGetNeighbour(dest, out LinkNeighbour? counted) && counted is not null ? counted.Silences : -1);
+                _link.TryGetNeighbour(dest, out LinkNeighbour? counted);
+                SilenceCounted?.Invoke(dest, counted is not null ? counted.Silences : -1);
+                if (counted is not null && WantsFlow())
+                {
+                    bool slower = counted.Silences is 2 or 3 && _link.SilencesSlowNext(dest, ClockSeconds(SampleCount));
+                    Flow(TraceText.NoAnswer(StationName(dest), counted.Silences, slower));
+                }
+
                 if (_link.TryGetNeighbour(dest, out LinkNeighbour? nb) && nb is { Silences: >= 3 })
                 {
                     // Three bursts running have met silence: the station falls back to first contact, and what is known of where its addresses live goes with it.
-                    ForgetAddressesAt(dest, ClockSeconds(due));
+                    ForgetAddressesAt(dest, ClockSeconds(due), ForgetWhy.Silence);
                 }
 
                 RaiseLinkState(dest, ClockSeconds(due));

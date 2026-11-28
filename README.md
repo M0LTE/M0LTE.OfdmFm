@@ -28,7 +28,7 @@ How far it has been tried:
 - The live station has run only in simulation: two and three stations on a simulated FM channel, with a hidden station, interference part-way through a burst, a path cut and restored, and soaks of several minutes. Nothing is delivered twice, nothing is lost without the host being told, and no station gets stuck.
 - Nothing has been measured on air with this library yet, and the simulated channel's model of what an FM receiver does when signals overlap is an assumption, not a measurement.
 
-The design, and what each step found, is in [docs/station-design.md](docs/station-design.md); addressing is in [docs/station-numbers.md](docs/station-numbers.md).
+The design, and what each step found, is in [docs/station-design.md](docs/station-design.md); addressing is in [docs/station-numbers.md](docs/station-numbers.md). What a station did and why, line by line, for diagnosing a flow, is in [docs/trace.md](docs/trace.md).
 
 Extracted from [pdn-soundmodem](https://github.com/packet-net/pdn-soundmodem); see [PROVENANCE.md](PROVENANCE.md).
 

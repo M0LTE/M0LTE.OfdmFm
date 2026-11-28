@@ -55,6 +55,10 @@ internal enum TransmitState
 /// station, ordinary traffic waits a second from the report's last sample. The values are fixed and named in <c>ChannelAccess</c>.
 /// </para>
 /// <para>
+/// <b>The trace.</b> <see cref="Trace"/> gives a plain sentence for each thing the station hears, measures, sends, decides and changes, at the level <see cref="TraceLevel"/> asks for (docs/trace.md lists every line).
+/// Nothing is built or allocated for a line while there is no handler, and no Detail text is built at the Flow level; a line never changes what the station does.
+/// </para>
+/// <para>
 /// <b>Threads.</b> A station has no threads of its own. Two groups of members exist.
 /// The <i>audio-thread</i> members are <see cref="Push"/>, <see cref="Skip"/>, <see cref="DeliverResults"/>, <see cref="TransmitStarted"/>, <see cref="TransmitEnded"/>, <see cref="TransmitRefused"/>, <see cref="SetExternalBusy"/>, the host's operations
 /// <see cref="Send"/>, <see cref="Cancel(HostTag)"/>, <see cref="Cancel(LinkAddress)"/> and <see cref="Snapshot"/>, the internal <c>Enqueue</c> and the properties
@@ -160,6 +164,11 @@ public sealed partial class Station
         if (Callsign is null)
         {
             Callsign = callsign;
+            if (WantsFlow())
+            {
+                Flow(TraceText.CallsignSet(callsign));
+            }
+
             TakeFirstNumber();
             return IdentityResult.Accepted;
         }

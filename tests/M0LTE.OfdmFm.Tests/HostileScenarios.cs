@@ -208,9 +208,10 @@ internal static class HostileScenarios
         string Label, double Fraction, double RelativeDb, int FormatBefore, int PayloadSymbols, bool BurstFound, bool Decoded, bool Sudden, bool ReportedFailed, int? ReportedFormat, bool RecommendationUnchanged,
         bool EstimateUnchanged, bool MarginUnchanged, bool CapUnchanged, bool GoodUnchanged, int? NextFormat, bool NextDelivered, bool BigArrived, string Detail, List<string> Log);
 
-    public static Interference Interfered(CaptureModel? capture, double fraction, double relativeDb, int seed, bool indication = false)
+    public static Interference Interfered(CaptureModel? capture, double fraction, double relativeDb, int seed, bool indication = false, Action<SimRig>? onRig = null)
     {
         SimRig rig = Make(3, seed, capture, indication);
+        onRig?.Invoke(rig);
         Pair(rig, 1, 2, 0.05);
         rig.Channel.Link(rig.Nodes[2], rig.Nodes[1]).Gain = 0.05 * SimChannel.Db(relativeDb);
         rig.Channel.Link(rig.Nodes[2], rig.Nodes[1]).NoiseRms = 0.004;

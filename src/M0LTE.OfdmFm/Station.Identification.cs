@@ -71,6 +71,11 @@ public sealed partial class Station
 
         if (_lastIdentStart < 0 || sampleIndex >= _lastIdentStart + _identificationInterval)
         {
+            if (WantsDetail())
+            {
+                Detail(TraceText.IdentificationDue(_lastIdentStart < 0 ? TraceWords.DueFirst : TraceWords.DueInterval));
+            }
+
             _identOwed = true;
             RaiseIdentificationDue();
         }
@@ -120,6 +125,10 @@ public sealed partial class Station
         _lastIdentStart = sampleIndex;
         _identOwed = false;
         _identificationsSent++;
+        if (WantsFlow())
+        {
+            Flow(TraceText.SentIdentification(Callsign!, (_identRequest?.Samples.Length ?? 0) / (double)SampleRate));
+        }
     }
 
     private void OnIdentificationBurstEnded()
@@ -174,6 +183,20 @@ public sealed partial class Station
         int capability = 0;
         ExtensionReader items = default;
         bool read = decoded && PayloadCodec.TryUnpackIdentification(job.Payload.AsSpan(0, job.PayloadBytes), out callsign, out capability, out items);
+        double signal = double.NaN;
+        if (WantsFlow())
+        {
+            signal = job.HasQuality ? MeanQualityDb(job.Quality, StandardFormats.Describe(h.Format).Carriers) : double.NaN;
+            string who = StationName(sender);
+            Flow(!decoded ? TraceText.HeardNotDecoded(who)
+                : !read ? TraceText.HeardUnreadable(who)
+                : TraceText.HeardIdentified(who, System.Text.Encoding.ASCII.GetString(callsign), signal));
+            if (job.Sudden)
+            {
+                Flow(TraceText.LandedOn(who));
+            }
+        }
+
         if (read)
         {
             ReadNumberItems(sender, items, r.End, now);
@@ -181,8 +204,14 @@ public sealed partial class Station
 
         // A burst to everyone, measured like any other from that station; nothing is owed for it.
         int? word = read ? capability : null;
+        NeighbourBefore before = Trace is not null ? CaptureNeighbour(sender) : default;
         LinkReport? owed = _link.HeardData(sender, 0, h.Format, decoded, quality, now, footing, job.Sudden, null, word);
         AdaptationCalled?.Invoke(new AdaptationCall(false, sender, 0, h.Format, decoded, quality.ToArray(), now, footing, job.Sudden, null, word, owed));
+        if (Trace is not null)
+        {
+            TraceMeasured(sender, h.Format, decoded, signal, before);
+        }
+
         if (!read)
         {
             RaiseLinkState(sender, now);

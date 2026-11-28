@@ -74,6 +74,11 @@ public sealed partial class Station
         _advancing = true;
         try
         {
+            if (WantsDetail())
+            {
+                Detail(TraceText.CarrierFromRadio(busy));
+            }
+
             _access.SetExternal(busy);
         }
         finally
@@ -173,11 +178,18 @@ public sealed partial class Station
         _access = new ChannelAccess(
             new AccessClock(this),
             _random,
-            busy => ChannelBusy?.Invoke(new ChannelBusyEvent(busy)),
+            OnChannelBusy,
             GrantRequest,
             request => WithdrawTransmit(request.HandshakeId),
             e => AccessChanged?.Invoke(e));
+        _access.Note = OnAccessNote;
         InitialiseSend();
+    }
+
+    private void OnChannelBusy(bool busy)
+    {
+        ChannelBusy?.Invoke(new ChannelBusyEvent(busy));
+        TraceChannel(busy);
     }
 
     private void GrantRequest(ChannelAccess.Request request)
@@ -196,6 +208,12 @@ public sealed partial class Station
         }
 
         bool late = handshake.WithdrawnBeforeStart;
+        if (WantsDetail())
+        {
+            // Keyed: the station is sending now (a request the audio layer refuses never says so).
+            Detail(TraceText.ChannelBusy(TraceText.CauseText(AccessCause.OwnTransmission)));
+        }
+
         if (ReferenceEquals(request, _identRequest))
         {
             OnIdentificationBurstStarted(sampleIndex);

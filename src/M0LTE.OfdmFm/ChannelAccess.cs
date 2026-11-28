@@ -35,6 +35,62 @@ internal enum AccessStage
 /// <param name="Sample">The clock when it did (for started and ended, the index the audio layer reported).</param>
 internal readonly record struct AccessEvent(long Id, AccessStage Stage, long Sample);
 
+/// <summary>What a note from the channel-access rules is about (for the station's trace: nothing else reads it).</summary>
+internal enum AccessNoteKind
+{
+    /// <summary>A request was queued.</summary>
+    Requested,
+
+    /// <summary>The random wait for ordinary traffic was drawn: <see cref="AccessNote.A"/> is the draw, <see cref="AccessNote.B"/> the number of slots it was drawn from (-1 for the single delay, where the draw is samples).</summary>
+    Drawn,
+
+    /// <summary>The head of the queue will be granted at <see cref="AccessNote.Sample"/> if the channel stays clear.</summary>
+    Scheduled,
+
+    /// <summary>A request was handed to the audio layer.</summary>
+    Granted,
+
+    /// <summary>A request handed over and not keyed was taken back; <see cref="AccessNote.Cause"/> says why.</summary>
+    Withdrawn,
+}
+
+/// <summary>Why the channel is busy, or why a request was taken back. One cause: the most telling.</summary>
+internal enum AccessCause
+{
+    /// <summary>None.</summary>
+    None,
+
+    /// <summary>The station's own transmission, or its tail.</summary>
+    OwnTransmission,
+
+    /// <summary>The host's carrier indication.</summary>
+    Carrier,
+
+    /// <summary>A burst (or an unreadable candidate) heard from another station.</summary>
+    HeardBurst,
+
+    /// <summary>A candidate waiting for its header to be judged.</summary>
+    Judging,
+
+    /// <summary>Ordinary traffic held off after a lone report for this station.</summary>
+    ReportHoldOff,
+
+    /// <summary>The station's number changed, so what was built is built again.</summary>
+    NumberChanged,
+
+    /// <summary>The audio layer would not key it.</summary>
+    Refused,
+}
+
+/// <summary>A note from the channel-access rules to the station's trace. A value, so that making one allocates nothing.</summary>
+/// <param name="Kind">What it is about.</param>
+/// <param name="Request">The request it concerns.</param>
+/// <param name="Sample">The sample it concerns (see <see cref="AccessNoteKind"/>), or the clock.</param>
+/// <param name="A">See <see cref="AccessNoteKind.Drawn"/>.</param>
+/// <param name="B">See <see cref="AccessNoteKind.Drawn"/>.</param>
+/// <param name="Cause">For a withdrawal.</param>
+internal readonly record struct AccessNote(AccessNoteKind Kind, ChannelAccess.Request Request, long Sample, long A = 0, long B = 0, AccessCause Cause = AccessCause.None);
+
 /// <summary>How the channel-access logic reads and uses the sample clock. A station supplies its own; a test supplies a bare one.</summary>
 internal interface IChannelClock
 {
@@ -160,6 +216,9 @@ internal sealed class ChannelAccess
         /// <summary>Arrival order, for first in first out within a class.</summary>
         public long Sequence;
 
+        /// <summary>The clock when it last joined the queue (queued, or queued again after a withdrawal), for the trace.</summary>
+        public long QueuedAt;
+
         /// <summary>Where it stands.</summary>
         public RequestState State;
 
@@ -219,6 +278,9 @@ internal sealed class ChannelAccess
     /// </summary>
     public Func<Request, bool>? Prepare { get; set; }
 
+    /// <summary>Told of what the rules decide, for the station's trace. Null: nothing is told. Called with a value and nothing built; the listener decides whether anyone wants it.</summary>
+    public Action<AccessNote>? Note { get; set; }
+
     /// <summary>The rule for the random wait. Tests set it; the station uses <see cref="AccessMode.Slotted"/>.</summary>
     public AccessMode Mode { get; set; } = AccessMode.Slotted;
 
@@ -255,6 +317,7 @@ internal sealed class ChannelAccess
     {
         var request = new Request { Id = _nextId++, Class = cls, Samples = samples, Sequence = _nextSequence++, State = RequestState.Waiting, Modem = modem };
         Insert(request);
+        Note?.Invoke(new AccessNote(AccessNoteKind.Requested, request, _clock.Now));
         Update();
         return request;
     }
@@ -271,6 +334,7 @@ internal sealed class ChannelAccess
         request.State = RequestState.Waiting;
         request.Modem = null;
         Insert(request);
+        Note?.Invoke(new AccessNote(AccessNoteKind.Requested, request, _clock.Now));
         Update();
         return request;
     }
@@ -383,6 +447,7 @@ internal sealed class ChannelAccess
         Insert(request);
         _withdraw(request);
         _raise?.Invoke(new AccessEvent(request.Id, AccessStage.Withdrawn, _clock.Now));
+        Note?.Invoke(new AccessNote(AccessNoteKind.Withdrawn, request, _clock.Now, Cause: AccessCause.NumberChanged));
         Update();
     }
 
@@ -402,6 +467,7 @@ internal sealed class ChannelAccess
         request.State = RequestState.Waiting;
         Insert(request);
         _raise?.Invoke(new AccessEvent(request.Id, AccessStage.Withdrawn, _clock.Now));
+        Note?.Invoke(new AccessNote(AccessNoteKind.Withdrawn, request, _clock.Now, Cause: AccessCause.Refused));
         Update();
     }
 
@@ -472,6 +538,7 @@ internal sealed class ChannelAccess
             Insert(granted);
             _withdraw(granted);
             _raise?.Invoke(new AccessEvent(granted.Id, AccessStage.Withdrawn, now));
+            Note?.Invoke(new AccessNote(AccessNoteKind.Withdrawn, granted, now, Cause: foreign ? CauseNow() : AccessCause.ReportHoldOff));
         }
 
         bool busy = foreign || _active is not null || now < _ownUntil;
@@ -528,6 +595,7 @@ internal sealed class ChannelAccess
 
                 _accessTimer = _clock.ScheduleAt(target, _onAccessTimer);
                 _accessAt = target;
+                Note?.Invoke(new AccessNote(AccessNoteKind.Scheduled, head, target));
             }
         }
         else if (_accessAt >= 0)
@@ -535,6 +603,28 @@ internal sealed class ChannelAccess
             _clock.CancelTimer(_accessTimer);
             _accessAt = -1;
         }
+    }
+
+    /// <summary>The most telling reason the channel is busy now, or <see cref="AccessCause.None"/>: for the station's trace.</summary>
+    public AccessCause CauseNow()
+    {
+        long now = _clock.Now;
+        if (_active is not null || now < _ownUntil)
+        {
+            return AccessCause.OwnTransmission;
+        }
+
+        if (_externalSet || now < _externalUntil)
+        {
+            return AccessCause.Carrier;
+        }
+
+        if (now < _holdUntil)
+        {
+            return AccessCause.HeardBurst;
+        }
+
+        return _pending ? AccessCause.Judging : AccessCause.None;
     }
 
     /// <summary>The sample at which the head of the queue may go, if the channel stays clear.</summary>
@@ -556,7 +646,9 @@ internal sealed class ChannelAccess
         {
             if (_draw < 0)
             {
-                _draw = _random.Next(SlotWindow());
+                int slots = SlotWindow();
+                _draw = _random.Next(slots);
+                Note?.Invoke(new AccessNote(AccessNoteKind.Drawn, request, _clock.Now, _draw, slots));
             }
 
             wait = OrdinaryClear + ((long)_draw * NoticeSamples);
@@ -566,6 +658,7 @@ internal sealed class ChannelAccess
             if (_draw < 0)
             {
                 _draw = _random.Next(SingleDelaySpread + 1);
+                Note?.Invoke(new AccessNote(AccessNoteKind.Drawn, request, _clock.Now, _draw, -1));
             }
 
             wait = OrdinaryClear + _draw;
@@ -588,10 +681,12 @@ internal sealed class ChannelAccess
 
         _grant(request);
         _raise?.Invoke(new AccessEvent(request.Id, AccessStage.Granted, now));
+        Note?.Invoke(new AccessNote(AccessNoteKind.Granted, request, now));
     }
 
     private void Insert(Request request)
     {
+        request.QueuedAt = _clock.Now;
         int at = _waiting.Count;
         while (at > 0 && (_waiting[at - 1].Class > request.Class || (_waiting[at - 1].Class == request.Class && _waiting[at - 1].Sequence > request.Sequence)))
         {

@@ -14,9 +14,11 @@ internal sealed class SimRig
         for (int i = 1; i <= stations; i++)
         {
             // The seam fixes each station's number (its index unless <numbers> says) and id, so that the scenarios keep their flows; <randomNumbers> makes the stations take their own, as a host's would.
+            var random = new Random((seed * 100) + i);
+            Randoms.Add(random);
             Station s = randomNumbers
-                ? new(new Random((seed * 100) + i), runJobsInline: true)
-                : new(numbers?[i - 1] ?? i, ids?[i - 1] ?? (0xC0DE0000u | (uint)(numbers?[i - 1] ?? i)), new Random((seed * 100) + i), runJobsInline: true);
+                ? new(random, runJobsInline: true)
+                : new(numbers?[i - 1] ?? i, ids?[i - 1] ?? (0xC0DE0000u | (uint)(numbers?[i - 1] ?? i)), random, runJobsInline: true);
             if (identified?.Invoke(i) ?? true)
             {
                 s.WithIdentity($"M0S{i}");
@@ -54,6 +56,9 @@ internal sealed class SimRig
     public int[] StartNumbers => [.. Stations.Select(s => s.StationNumber)];
 
     public SimChannel Channel { get; }
+
+    /// <summary>Each station's random source, in order, so that a test can draw once more from each at the end of a run.</summary>
+    public List<Random> Randoms { get; } = [];
 
     public List<Station> Stations { get; } = [];
 

@@ -34,6 +34,9 @@ public sealed partial class Station
         public long BurstEnd;
         public long Due;
         public long Sequence;
+
+        /// <summary>For the trace: how the station was named when the report fell owed, so that every line about this report names it the same way.</summary>
+        public string? Name;
     }
 
     /// <summary>The lone report the station has built and not finished with: handed to the audio layer, on air, or withdrawn and waiting to be handed over again.</summary>
@@ -45,6 +48,9 @@ public sealed partial class Station
         public OwedKind Kind;
         public int Recommended;
         public long Since;
+
+        /// <summary>For the trace: the name the report was owed under.</summary>
+        public string? Name;
 
         /// <summary>True when the burst is an announcement (a data burst with no datagrams), not a lone report.</summary>
         public bool Announcement;
@@ -238,9 +244,13 @@ public sealed partial class Station
             }
 
             Put(sender, report.Failed ? OwedKind.Failed : OwedKind.Drop, report.Format, burstEnd, burstEnd);
-            if (WantsDetail())
+            if (Trace is not null)
             {
-                Detail(TraceText.OwingReport(StationName(sender), report.Failed ? "its burst was not decoded" : "the path from it got worse"));
+                _owedSlots[sender].Name = StationName(sender);
+                if (WantsDetail())
+                {
+                    Detail(TraceText.OwingReport(_owedSlots[sender].Name!, report.Failed ? TraceWords.OweFailed : TraceWords.OweWorse));
+                }
             }
         }
         else if (asked && _link.TryGetNeighbour(sender, out LinkNeighbour? nb) && nb?.Recommended is not null)
@@ -252,9 +262,13 @@ public sealed partial class Station
             }
 
             Put(sender, OwedKind.Asked, null, burstEnd, burstEnd + AskedReportWaitSamples);
-            if (WantsDetail())
+            if (Trace is not null)
             {
-                Detail(TraceText.OwingReport(StationName(sender), "it asked for one"));
+                _owedSlots[sender].Name = StationName(sender);
+                if (WantsDetail())
+                {
+                    Detail(TraceText.OwingReport(_owedSlots[sender].Name!, TraceWords.OweAsked));
+                }
             }
         }
         else
@@ -311,7 +325,7 @@ public sealed partial class Station
             ReportsCovered++;
             if (WantsDetail())
             {
-                Detail(TraceText.ReportCovered(StationName(dest)));
+                Detail(TraceText.ReportCovered(_owedSlots[dest].Name ?? StationName(dest)));
             }
         }
     }
@@ -437,7 +451,7 @@ public sealed partial class Station
                 ReportsCovered++;
                 if (WantsDetail())
                 {
-                    Detail(TraceText.ReportCovered(StationName(dest)));
+                    Detail(TraceText.ReportCovered(_owedSlots[dest].Name ?? StationName(dest)));
                 }
 
                 continue;
@@ -468,11 +482,6 @@ public sealed partial class Station
         }
 
         RaiseLinkState(dest, now); // what this station has told them may have changed
-        if (WantsFlow())
-        {
-            Flow(TraceText.Told(StationName(dest), StandardFormats.Rate(format), slot.Kind == OwedKind.Failed));
-        }
-
         FormatSpec spec = StandardFormats.Describe(choice.Format);
         _renderer ??= new BurstRenderer();
         int total = _renderer.ReportSamples(spec.Opening);
@@ -485,6 +494,7 @@ public sealed partial class Station
         _report.Kind = slot.Kind;
         _report.Recommended = format;
         _report.Since = slot.BurstEnd;
+        _report.Name = slot.Name;
         _report.Audio = audio;
         _report.Length = total;
         ReportsBuilt++;
@@ -523,6 +533,7 @@ public sealed partial class Station
         _report.Built = true;
         _report.Started = false;
         _report.Announcement = true;
+        _report.Name = null;
         _report.AnnounceKey = a.Key;
         _report.Dest = a.Station;
         _report.Kind = OwedKind.Drop;
@@ -535,15 +546,22 @@ public sealed partial class Station
             RaiseLinkState(a.Station, now);
         }
 
-        if (WantsFlow())
-        {
-            Flow(TraceText.ToldHere(StationName(a.Station), AddressText(a.Key)));
-        }
-
         return true;
     }
 
-    private void OnReportBurstStarted() => _report.Started = true;
+    private void OnReportBurstStarted()
+    {
+        _report.Started = true;
+
+        // Said when the report goes on air: one built and then taken back or built again has told nobody anything.
+        if (WantsFlow())
+        {
+            string who = _report.Name ?? StationName(_report.Dest);
+            Flow(_report.Announcement
+                ? TraceText.ToldHere(who, AddressText(_report.AnnounceKey))
+                : TraceText.Told(who, StandardFormats.Rate(_report.Recommended), _report.Kind == OwedKind.Failed));
+        }
+    }
 
     /// <summary>
     /// The lone report has ended. The station that sent it goes straight on with its own data to that station, if it has any and is not still waiting for an answer to a burst of its own (it heard the other station last,

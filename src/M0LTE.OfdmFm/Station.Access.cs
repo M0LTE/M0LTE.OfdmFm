@@ -208,6 +208,12 @@ public sealed partial class Station
         }
 
         bool late = handshake.WithdrawnBeforeStart;
+        if (WantsDetail())
+        {
+            // Keyed: the station is sending now (a request the audio layer refuses never says so).
+            Detail(TraceText.ChannelBusy(TraceText.CauseText(AccessCause.OwnTransmission)));
+        }
+
         if (ReferenceEquals(request, _identRequest))
         {
             OnIdentificationBurstStarted(sampleIndex);

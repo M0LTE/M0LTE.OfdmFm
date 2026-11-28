@@ -164,7 +164,7 @@ public sealed partial class Station
         {
             if (WantsDetail())
             {
-                Detail(TraceText.BuiltDiscarded("burst"));
+                Detail(TraceText.BuiltDiscarded(TraceWords.DiscardBurst));
             }
 
             RestoreBurstToQueue();
@@ -175,7 +175,7 @@ public sealed partial class Station
         {
             if (WantsDetail())
             {
-                Detail(TraceText.BuiltDiscarded(_report.Announcement ? "announcement" : "report"));
+                Detail(TraceText.BuiltDiscarded(_report.Announcement ? TraceWords.DiscardAnnouncement : TraceWords.DiscardReport));
             }
 
             if (_report.Announcement)
@@ -191,6 +191,7 @@ public sealed partial class Station
                     Kind = _report.Kind == OwedKind.Asked ? OwedKind.Drop : _report.Kind,
                     Format = _report.Recommended,
                     BurstEnd = _report.Since,
+                    Name = _report.Name,
                     Due = SampleCount,
                     Sequence = _owedSequence++,
                 };
@@ -209,7 +210,7 @@ public sealed partial class Station
         {
             if (WantsDetail())
             {
-                Detail(TraceText.BuiltDiscarded("identification"));
+                Detail(TraceText.BuiltDiscarded(TraceWords.DiscardIdentification));
             }
 
             if (_identAudio is { } audio)
@@ -226,7 +227,7 @@ public sealed partial class Station
         {
             if (WantsDetail())
             {
-                Detail(TraceText.BuiltDiscarded("notice"));
+                Detail(TraceText.BuiltDiscarded(TraceWords.DiscardNotice));
             }
 
             // The Clash names the number, not this station: it is built again as it was.
@@ -326,7 +327,7 @@ public sealed partial class Station
                     : TraceText.NumberChangedHands(number));
             }
 
-            ForgetNumber(number, now);
+            ForgetNumber(number, now, clash);
             if (clash)
             {
                 OweClash(number, id);
@@ -339,7 +340,7 @@ public sealed partial class Station
     }
 
     /// <summary>What the station measured for a number, the addresses it had there and what it owed that station are forgotten, as when three silences forget a station. The host is told the addresses have gone (<see cref="LinkStateEvent.Gone"/>); what was queued for them stays queued and goes to everyone with For.</summary>
-    private void ForgetNumber(int who, double now)
+    private void ForgetNumber(int who, double now, bool clash)
     {
         bool restored = false;
         if (_burst.Built && !_burst.Started && _burst.Dest == who)
@@ -349,7 +350,8 @@ public sealed partial class Station
             restored = true;
         }
 
-        ForgetAddressesAt(who, now, ForgetWhy.ChangedHands);
+        ForgetAddressesAt(who, now, clash ? ForgetWhy.Clash : ForgetWhy.ChangedHands);
+        _unsaidTold[who] = null;
         _link.Forget(who);
         _stationShown[who] = default;
         _owedSlots[who] = default;

@@ -73,7 +73,7 @@ public sealed partial class Station
         {
             if (WantsDetail())
             {
-                Detail(TraceText.IdentificationDue(_lastIdentStart < 0));
+                Detail(TraceText.IdentificationDue(_lastIdentStart < 0 ? TraceWords.DueFirst : TraceWords.DueInterval));
             }
 
             _identOwed = true;

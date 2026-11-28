@@ -161,6 +161,9 @@ public sealed partial class Station
     private readonly long[] _heardAt = new long[64];
     private readonly List<(long Due, int Dest, long Ended)> _answerChecks = [];
     private readonly byte[] _payload = new byte[MaxPayloadBytes];
+
+    /// <summary>For the trace: the recommendation built into a burst for a station that its sender has not yet said it told, until the burst is on air.</summary>
+    private readonly int?[] _unsaidTold = new int?[64];
     private ReadOnlyMemory<byte>[] _pack = new ReadOnlyMemory<byte>[16];
     private BurstRenderer? _renderer;
     private ChannelAccess.Request? _data;
@@ -706,7 +709,7 @@ public sealed partial class Station
         int overhead = everyone ? 0 : PreludeBytes;
         if (WantsDetail())
         {
-            Detail(TraceText.Chose(StandardFormats.Rate(format), DestText(q.Address), format, q.Address.IsEveryone ? "to everyone, first contact format" : everyone ? "address not located, first contact format" : ChoiceReason(dest, choice, now)));
+            Detail(TraceText.Chose(StandardFormats.Rate(format), DestText(q.Address), format, q.Address.IsEveryone ? TraceWords.ChoseEveryone : everyone ? TraceWords.ChoseNotLocated : ChoiceReason(dest, choice, now)));
         }
 
         // A datagram accepted when the link was faster, or the address located, may not fit one burst now: it is dropped, and the host sees the new room in LinkState.
@@ -822,9 +825,10 @@ public sealed partial class Station
         }
 
         PayloadPrelude? prelude = everyone ? null : new PayloadPrelude(wanted, _link.ReportFor(dest), false, wanted ? CapabilityWord : null);
-        if (prelude is { Recommended: int recommendedNow } && recommendedNow != toldBefore && WantsFlow())
+        if (prelude is { Recommended: int recommendedNow } && Trace is not null && (recommendedNow != toldBefore || _unsaidTold[dest] is not null))
         {
-            Flow(TraceText.Told(StationName(dest), StandardFormats.Rate(recommendedNow), false));
+            // Said when the burst goes on air, not now: a burst built and then taken back has told nobody anything.
+            _unsaidTold[dest] = recommendedNow;
         }
 
         if (prelude is { Recommended: not null })
@@ -889,6 +893,15 @@ public sealed partial class Station
 
         _burst.Started = true;
         _burst.StartedAt = sampleIndex;
+        if (_burst.Dest != 0 && _unsaidTold[_burst.Dest] is int unsaid)
+        {
+            _unsaidTold[_burst.Dest] = null;
+            if (WantsFlow())
+            {
+                Flow(TraceText.Told(StationName(_burst.Dest), StandardFormats.Rate(unsaid), false));
+            }
+        }
+
         if (WantsFlow())
         {
             AddressQueue sentTo = _burst.Queue!;
@@ -1001,7 +1014,8 @@ public sealed partial class Station
                 SilenceCounted?.Invoke(dest, counted is not null ? counted.Silences : -1);
                 if (counted is not null && WantsFlow())
                 {
-                    Flow(TraceText.NoAnswer(StationName(dest), counted.Silences));
+                    bool slower = counted.Silences is 2 or 3 && _link.SilencesSlowNext(dest, ClockSeconds(SampleCount));
+                    Flow(TraceText.NoAnswer(StationName(dest), counted.Silences, slower));
                 }
 
                 if (_link.TryGetNeighbour(dest, out LinkNeighbour? nb) && nb is { Silences: >= 3 })

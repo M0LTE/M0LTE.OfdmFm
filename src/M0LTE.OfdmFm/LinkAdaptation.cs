@@ -328,6 +328,30 @@ public sealed class LinkAdaptation
     public LinkChoice Choose(int dest, double now)
     {
         LinkNeighbour nb = Neighbour(dest, now);
+        (int n, bool wanted) = ChooseBeforeSilences(nb, now);
+        if (nb.Silences >= 3)
+        {
+            n = StandardFormats.FirstContact;
+        }
+        else if (nb.Silences == 2)
+        {
+            n = StandardFormats.Slower(n, 2);
+        }
+
+        // asking costs the far end a fifth of a second; it is worth it when nothing has come back from them lately
+        return new LinkChoice(n, wanted || nb.Silences != 0 || nb.Unanswered >= 2);
+    }
+
+    /// <summary>Whether the next burst to <paramref name="dest"/> goes at a lower rate than it would with no silences counted against it: what the station's "sending slower" can truthfully say (for the trace).</summary>
+    internal bool SilencesSlowNext(int dest, double now)
+    {
+        LinkNeighbour nb = Neighbour(dest, now);
+        (int before, _) = ChooseBeforeSilences(nb, now);
+        return StandardFormats.Rate(Choose(dest, now).Format) < StandardFormats.Rate(before);
+    }
+
+    private (int Format, bool Wanted) ChooseBeforeSilences(LinkNeighbour nb, double now)
+    {
         int? own = null;
         if (nb.Recommended is int recommended)
         {
@@ -361,17 +385,7 @@ public sealed class LinkAdaptation
             wanted = age >= FreshSeconds;
         }
 
-        if (nb.Silences >= 3)
-        {
-            n = StandardFormats.FirstContact;
-        }
-        else if (nb.Silences == 2)
-        {
-            n = StandardFormats.Slower(n, 2);
-        }
-
-        // asking costs the far end a fifth of a second; it is worth it when nothing has come back from them lately
-        return new LinkChoice(n, wanted || nb.Silences != 0 || nb.Unanswered >= 2);
+        return (n, wanted);
     }
 
     /// <summary>A data burst went to <paramref name="dest"/>.</summary>

@@ -27,7 +27,6 @@ public class StationTraceScenarioTests
             "  12.82  Told by S2: we can send at 70.4 kbit/s",
             "  20.78  Heard S2: 1 datagram, signal 52 dB",
             "  20.78  Path from S2 is good for 70.4 kbit/s",
-            "  20.78  Told by S2: we can send at 70.4 kbit/s",
             "  21.85  Told S2 it can send at 70.4 kbit/s",
             "  40.00  Sent 1 datagram to S2 at 70.4 kbit/s, 0.35 s on air");
 
@@ -40,8 +39,7 @@ public class StationTraceScenarioTests
             "  12.34  Told address f3b8bcd6 it can send at 70.4 kbit/s",
             "  20.00  Sent 1 datagram to S1 at 54.9 kbit/s, 0.35 s on air, report asked for",
             "  22.45  Told by S1: we can send at 70.4 kbit/s",
-            "  40.46  Heard S1: 1 datagram, signal 51 dB",
-            "  40.46  Told by S1: we can send at 70.4 kbit/s");
+            "  40.46  Heard S1: 1 datagram, signal 51 dB");
     }
 
     [Fact]
@@ -198,9 +196,9 @@ public class StationTraceScenarioTests
             "   5.80  Sent 1 datagram to S2 at 0.25 kbit/s, 2.07 s on air, report asked for",
             "  14.83  No answer from S2 (1 of 3)",
             "  27.00  Sent 1 datagram to S2 at 0.25 kbit/s, 2.07 s on air, report asked for",
-            "  36.03  No answer from S2 (2 of 3): sending slower",
+            "  36.03  No answer from S2 (2 of 3)",
             "  52.00  Sent 1 datagram to S2 at 0.25 kbit/s, 2.07 s on air, report asked for",
-            "  61.03  No answer from S2 (3 of 3): back to the slowest rate",
+            "  61.03  No answer from S2 (3 of 3)",
             "  61.03  Lost track of S2: sending to everyone until it is heard again",
             "  77.00  Sent 1 datagram to everyone for S2 at 0.25 kbit/s, 2.24 s on air");
         s2.Events.Should().BeEmpty("it heard nothing and sent nothing");
@@ -284,50 +282,23 @@ public class StationTraceScenarioTests
     [Fact]
     public void Two_stations_holding_one_number_are_told_by_a_third_and_one_moves()
     {
-        // Stations 1 and 2 both hold number 7 and cannot hear each other; station 3 hears both identify, owes a notice, and sends it.
-        var rig = new SimRig(3, numbers: [7, 7, 3], ids: [0x01010101, 0x02020202, 0x03030303], locates: (_, _) => false, connect: false);
-        rig.Channel.Connect(rig.Nodes[0], rig.Nodes[2], 1.0, 0.004);
-        rig.Channel.Connect(rig.Nodes[1], rig.Nodes[2], 1.0, 0.004);
-        foreach (Station s in rig.Stations)
-        {
-            s.IdentificationSuspended = false;
-            s.IdentificationInterval = 20L * 48000;
-        }
-
-        TraceTap[] taps = [new(rig.Stations[0]), new(rig.Stations[1]), new(rig.Stations[2], TraceLevel.Detail)];
-        rig.RunTo(2);
-        rig.Send(1, 3, 1);
-        rig.RunTo(14);
-        rig.Send(2, 3, 2);
-        rig.RunTo(100);
-
+        ScenarioRun run = TraceScenarios.ClashRun(TraceSetting.Flow);
+        TraceTap[] taps = [run.Taps[0]!, run.Taps[1]!, run.Taps[2]!];
         taps[2].Lines.Should().Contain("  17.85  Station number 7 is in use by two stations: will tell the later one to move");
-        taps[2].Lines.Should().Contain("  17.85  Forgot station 7: its number is now someone else", "nothing the host sent to lived there, so the detail says what Flow had no address to say");
         taps[2].Lines.Should().Contain("  26.19  Told the station using number 7 to move");
         taps[0].Lines.Should().Contain("  27.90  Heard a notice that the station using number 7 must move");
         taps[1].Lines.Should().Contain("  27.90  Heard a notice that the station using number 7 must move");
         taps[1].Lines.Should().Contain("  27.90  Changed station number from 7 to 48: told to move by another station");
         taps[0].Texts.Should().NotContain(t => t.StartsWith("Changed", StringComparison.Ordinal), "the notice named the later station, and the first stays");
+
+        TraceTap detail = TraceScenarios.ClashRun(TraceSetting.Detail).Taps[2]!;
+        detail.Lines.Should().Contain("  17.85  Forgot station 7: its number is in use by two stations", "nothing the host sent to lived there, so the detail says what Flow had no address to say");
     }
 
     [Fact]
     public void A_station_with_no_callsign_hears_two_stations_hold_a_number_and_says_it_cannot_tell_them()
     {
-        var rig = new SimRig(3, numbers: [7, 7, 3], ids: [0x01010101, 0x02020202, 0x03030303], locates: (_, _) => false, connect: false, identified: i => i != 3);
-        rig.Channel.Connect(rig.Nodes[0], rig.Nodes[2], 1.0, 0.004);
-        rig.Channel.Connect(rig.Nodes[1], rig.Nodes[2], 1.0, 0.004);
-        foreach (Station s in rig.Stations)
-        {
-            s.IdentificationSuspended = false;
-            s.IdentificationInterval = 20L * 48000;
-        }
-
-        var listener = new TraceTap(rig.Stations[2]);
-        rig.RunTo(2);
-        rig.Send(1, 3, 1);
-        rig.RunTo(14);
-        rig.Send(2, 3, 2);
-        rig.RunTo(60);
+        TraceTap listener = TraceScenarios.ClashRun(TraceSetting.Flow, listener: true).Taps[2]!;
         listener.Texts.Should().Contain("Station number 7 is in use by two stations: not telling, no callsign set");
         listener.Texts.Should().NotContain(t => t.StartsWith("Told", StringComparison.Ordinal));
     }
@@ -406,13 +377,11 @@ public class StationTraceScenarioTests
             "   5.00  Drew a random wait of 0 s: slot 1 of 2, 0.9 s each",
             "   5.00  Can send at 5.80 if the channel stays clear",
             "   5.80  Clear to send audio after waiting 0.8 s",
-            "   5.80  Channel busy: this station is sending",
             "   6.00  Held back audio: the audio layer would not key it",
             "   6.00  Channel clear",
             "   6.00  Drew a random wait of 0 s: slot 1 of 2, 0.9 s each",
             "   6.00  Can send at 6.80 if the channel stays clear",
             "   6.80  Clear to send audio after waiting 0.8 s",
-            "   6.80  Channel busy: this station is sending",
             "   9.00  Carrier from the radio: present",
             "   9.00  Held back audio: the radio reports a carrier",
             "  10.00  Carrier from the radio: gone",
@@ -553,7 +522,7 @@ public class StationTraceScenarioTests
         rig.Send(2, 1, 2);
         rig.RunTo(20);
         s2.Texts.Should().Contain("Owing address f3b8bcd6 a report: it asked for one");
-        s2.Texts.Should().Contain("Dropped the report owed to S1: the datagrams going to it carry the news");
+        s2.Texts.Should().Contain("Dropped the report owed to address f3b8bcd6: the datagrams going to it carry the news", "named as it was when it fell owed, though the host has since sent to S1");
         s2.Texts.Count(t => t.StartsWith("Told S1 it can send", StringComparison.Ordinal)).Should().Be(1, "the datagram goes with the news in its prelude, and that is said once, as the datagram is built");
         s2.Texts.Should().NotContain(t => t.StartsWith("Asked to send a report", StringComparison.Ordinal), "so no report goes alone");
         s1.Texts.Should().Contain("Waiting up to 6.96 s for an answer from S2");
@@ -576,5 +545,99 @@ public class StationTraceScenarioTests
         rig.Station.DeliverResults();
         string address = Station.AddressText(ReceiveRig.Address(3));
         tap.Texts.Should().Contain($"Lost track of {address}: not heard for 10 minutes, sending to everyone until it is heard again");
+    }
+
+    // ---- a line is true when it is printed ----
+
+    [Fact]
+    public void A_report_the_audio_layer_refused_says_nothing_until_it_is_really_on_air_and_then_says_it_once()
+    {
+        var rig = new SimRig(2);
+        rig.Nodes[1].RefuseRequest = n => n == 1;
+        var s1 = new TraceTap(rig.Stations[0], TraceLevel.Detail);
+        var s2 = new TraceTap(rig.Stations[1], TraceLevel.Detail);
+        rig.RunTo(2);
+        rig.Send(1, 2, 1);
+        rig.RunTo(30);
+
+        rig.Nodes[1].Refused.Should().ContainSingle("S2's first request, a report, was refused");
+        s2.Texts.Should().Contain("Held back a report: the audio layer would not key it");
+        int reportsOnAir = rig.Nodes[1].ModemSent.Count(m => m.Kind == ModemSentKind.Report);
+        reportsOnAir.Should().BeGreaterThan(0);
+        s2.Texts.Count(t => t.StartsWith("Told address", StringComparison.Ordinal) && t.Contains("it can send at", StringComparison.Ordinal)).Should().Be(reportsOnAir, "one line for each report that went on air, none for the one that was refused");
+        s2.Texts.Count(t => t == "Channel busy: this station is sending").Should().Be(rig.Nodes[1].Transmissions.Count, "said when keyed: the refused request was never on air");
+        s1.Texts.Count(t => t == "Channel busy: this station is sending").Should().Be(rig.Nodes[0].Transmissions.Count);
+    }
+
+    [Fact]
+    public void A_told_line_comes_after_the_grant_with_the_channel_busy_line_and_with_the_sent_line()
+    {
+        string[] lines = TraceScenarios.TwoStationsRun(TraceSetting.Detail).Taps[0]!.Texts;
+        int told = Array.FindIndex(lines, t => t.StartsWith("Told S2 it can send", StringComparison.Ordinal));
+        told.Should().BeGreaterThan(Array.FindIndex(lines, 0, told, t => t.StartsWith("Clear to send a report", StringComparison.Ordinal)));
+        lines[told - 1].Should().Be("Channel busy: this station is sending");
+    }
+
+    [Fact]
+    public void The_second_silence_says_sending_slower_when_it_will_and_a_fourth_is_still_silent_never_four_of_three()
+    {
+        // Two stations settle at a fast rate, then S2 goes out of hearing: the next bursts really do fall back.
+        var rig = new SimRig(2);
+        var s1 = new TraceTap(rig.Stations[0]);
+        rig.RunTo(2);
+        rig.Send(1, 2, 1);
+        rig.RunTo(20);
+        rig.Send(2, 1, 3);
+        rig.RunTo(40);
+        rig.Channel.Link(rig.Nodes[0], rig.Nodes[1]).Gain = 0;
+        rig.Channel.Link(rig.Nodes[1], rig.Nodes[0]).Gain = 0;
+        for (int i = 0; i < 4; i++)
+        {
+            rig.Send(1, 2, 20 + i);
+            rig.Run(25);
+        }
+
+        // Once the address is lost S1 is told where it is by the test seam, as a station heard again would be, and sends once more: a silence past the third.
+        rig.Stations[0].Locate(SimRig.Address(2), 2);
+        rig.Send(1, 2, 30);
+        rig.Run(25);
+        string[] answers = [.. s1.Texts.Where(t => t.StartsWith("No answer", StringComparison.Ordinal))];
+        answers.Should().Contain("No answer from S2 (2 of 3): sending slower");
+        answers.Should().Contain("No answer from S2 (3 of 3): back to the slowest rate");
+        answers.Should().Contain("No answer from S2 (still silent)");
+        answers.Should().NotContain(t => t.Contains("of 3)", StringComparison.Ordinal) && !(t.Contains("(1 of 3)", StringComparison.Ordinal) || t.Contains("(2 of 3)", StringComparison.Ordinal) || t.Contains("(3 of 3)", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public void An_announcement_is_asked_for_as_an_announcement_and_a_report_as_a_report()
+    {
+        var rig = new SimRig(3, locates: (_, _) => false);
+        var s2 = new TraceTap(rig.Stations[1], TraceLevel.Detail);
+        rig.Channel.Link(rig.Nodes[1], rig.Nodes[0]).Gain = 0;
+        rig.RunTo(2);
+        rig.Send(2, 3, 1);
+        rig.RunTo(12);
+        rig.Channel.Link(rig.Nodes[1], rig.Nodes[0]).Gain = 1.0;
+        rig.Send(3, 2, 2);
+        rig.RunTo(22);
+        rig.Send(1, 2, 3);
+        rig.RunTo(40);
+        s2.Texts.Should().Contain("Asked to send an announcement: needs the channel clear for 0.05 s");
+        s2.Texts.Should().Contain("Clear to send an announcement after waiting 0 s");
+    }
+
+    [Fact]
+    public void A_report_owed_keeps_one_name_in_every_line_about_it()
+    {
+        var rig = new SimRig(2);
+        var s2 = new TraceTap(rig.Stations[1], TraceLevel.Detail);
+        rig.RunTo(2);
+        rig.Send(1, 2, 1);
+        rig.RunTo(8.5);
+        rig.Send(2, 1, 2);
+        rig.RunTo(20);
+        // Owed to a station known by its key, then the host sends to it and it is known as S1: the line that drops the report still says the name it was owed under.
+        s2.Texts.Should().Contain("Owing address f3b8bcd6 a report: it asked for one");
+        s2.Texts.Should().Contain("Dropped the report owed to address f3b8bcd6: the datagrams going to it carry the news");
     }
 }

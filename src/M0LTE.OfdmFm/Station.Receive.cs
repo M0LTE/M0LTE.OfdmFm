@@ -1129,7 +1129,7 @@ public sealed partial class Station
         if (Trace is not null)
         {
             TraceHeardData(h, job, decoded, unpacked && valid, datagramCount, forKey, before);
-            if (unpacked && mine && prelude.Recommended is int toldFormat && WantsFlow())
+            if (unpacked && mine && prelude.Recommended is int toldFormat && (toldFormat != before.ReportFormat || prelude.Failed) && WantsFlow())
             {
                 Flow(TraceText.ToldBy(StationName(sender), StandardFormats.Rate(toldFormat), prelude.Failed));
             }
@@ -1417,6 +1417,9 @@ public sealed partial class Station
 
         /// <summary>Its number now belongs to another station.</summary>
         ChangedHands,
+
+        /// <summary>Two stations hold its number.</summary>
+        Clash,
     }
 
     /// <summary>Raises <see cref="PathReport"/> for each address the host has sent to that lives at station <paramref name="who"/>.</summary>
@@ -1453,6 +1456,7 @@ public sealed partial class Station
                     {
                         ForgetWhy.Silence => TraceText.LostAfterSilence(address),
                         ForgetWhy.Unheard => TraceText.LostUnheard(address),
+                        ForgetWhy.Clash => TraceText.LostClash(address, who),
                         _ => TraceText.LostChangedHands(address, who),
                     });
                 }
@@ -1463,9 +1467,10 @@ public sealed partial class Station
         {
             Detail(TraceText.ForgotStation(who, why switch
             {
-                ForgetWhy.Silence => "no answer three times running",
-                ForgetWhy.Unheard => "not heard for 10 minutes",
-                _ => "its number is now someone else",
+                ForgetWhy.Silence => TraceWords.ForgotSilence,
+                ForgetWhy.Unheard => TraceWords.ForgotUnheard,
+                ForgetWhy.Clash => TraceWords.ForgotClash,
+                _ => TraceWords.ForgotHands,
             }));
         }
 

@@ -15,7 +15,7 @@ station.Trace += e => Console.WriteLine(e);      // "  12.34  Heard GB7RDG-1: 2 
 
 Attach the handler before the host's first `Send`. An address the host sent from earlier is shown by its key until it is sent from again.
 
-With no handler nothing is built or allocated for a line. With a handler at Flow, no Detail text is built.
+With no handler nothing is built or allocated for a line. With a handler at Flow, no Detail text is built. A handler that throws is ignored, so a faulty one cannot leave the station half-way through a change.
 
 ## Levels
 
@@ -42,7 +42,6 @@ The first station of a two-station run: two datagrams sent to S2 (the burst at f
   12.82  Told by S2: we can send at 70.4 kbit/s
   20.78  Heard S2: 1 datagram, signal 52 dB
   20.78  Path from S2 is good for 70.4 kbit/s
-  20.78  Told by S2: we can send at 70.4 kbit/s
   21.85  Told S2 it can send at 70.4 kbit/s
   40.00  Sent 1 datagram to S2 at 70.4 kbit/s, 0.35 s on air
 ```
@@ -66,7 +65,7 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 | Flow | `Something else landed on the burst from GB7RDG-1: not used to judge the path` | The signal collapsed part-way or another burst began inside it. It follows the line for the burst. |
 | Flow | `Dropped a burst from GB7RDG-1: decoding could not keep up` | More than four bursts were waiting to be decoded and the oldest was thrown away. The computer is too slow for the traffic. |
 | Flow | `Lost a burst from GB7RDG-1: its start had left the buffer` | A burst was known of too late to be copied. A defence; real audio does not reach it. |
-| Detail | `Header read but not used: a version this station does not know` | A header read and nothing was done with it. The other reasons are "a kind of burst this station does not receive" and "it describes no burst". |
+| Detail | `Header read but not used: a version this station does not know` | A header read and nothing was done with it. The reasons are listed under Reasons and kinds. |
 
 ### Measuring
 
@@ -79,12 +78,12 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 
 | Level | Line | When |
 |---|---|---|
-| Flow | `Told GB7RDG-1 it can send at 70.4 kbit/s` | A report or the prelude of a burst gave a station the rate its path supports. A burst that carries it says it only when it changed what the station was last told. |
-| Flow | `Told GB7RDG-1 its burst was not decoded: it can send at 12.5 kbit/s` | A report that a burst from that station did not decode went on air. |
-| Flow | `Told GB7RDG-1 that G4ABC-1 is here` | A station asked for one of the host's addresses and was answered. |
-| Flow | `Told by GB7RDG-1: we can send at 70.4 kbit/s` | A station told this one what it can send at, alone or in a burst. |
+| Flow | `Told GB7RDG-1 it can send at 70.4 kbit/s` | A report, or the prelude of a data burst, gave a station the rate its path supports. Said when the burst goes on air, the same moment as "Sent", and not before: a burst built and then taken back has told nobody. A burst that carries it says it only when it changed what the station was last told; a lone report is always said. |
+| Flow | `Told GB7RDG-1 its burst was not decoded: it can send at 12.5 kbit/s` | A report that a burst from that station did not decode went on air (said as it goes on air). |
+| Flow | `Told GB7RDG-1 that G4ABC-1 is here` | A station asked for one of the host's addresses and the answer went on air. |
+| Flow | `Told by GB7RDG-1: we can send at 70.4 kbit/s` | A station told this one what it can send at. A lone report is always said; the prelude of a data burst only when it differs from what that station last told this one. |
 | Flow | `Told by GB7RDG-1: our burst was not decoded, we can send at 12.5 kbit/s` | A station said it could not decode a burst of ours. The host is told too, and a Detail line says which datagrams. |
-| Detail | `Owing GB7RDG-1 a report: its burst was not decoded` | A report is owed and will go when the channel allows. The other reasons are "the path from it got worse" and "it asked for one". |
+| Detail | `Owing GB7RDG-1 a report: its burst was not decoded` | A report is owed and will go when the channel allows. The reasons are listed under Reasons and kinds. Later lines about the same report keep the name it was owed under. |
 | Detail | `Dropped the report owed to GB7RDG-1: the datagrams going to it carry the news` | A report was owed and data for the same station took the recommendation instead. |
 | Detail | `No separate announcement of G4ABC-1 to GB7RDG-1: the datagrams going to it carry it` | The same for an announcement of an address. |
 | Detail | `Told the host that its burst to G4ABC-1 was not decoded: 2 datagrams` | The host was given the hint that a burst was not decoded. |
@@ -95,7 +94,7 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 
 | Level | Line | When |
 |---|---|---|
-| Flow | `Sent 3 datagrams to GB7RDG-1 at 70.4 kbit/s, 0.35 s on air, report asked for` | A burst went on air. The time on air counts the lead-in. "Report asked for" is added when the burst asked for one. |
+| Flow | `Sent 3 datagrams to GB7RDG-1 at 70.4 kbit/s, 0.35 s on air, report asked for` | A burst went on air. The time on air counts the lead-in (the answer wait below does not). "Report asked for" is added when the burst asked for one. |
 | Flow | `Sent 1 datagram to everyone for G4ABC-1 at 0.25 kbit/s, 1.4 s on air` | A burst for an address not yet located: it goes to everyone, at the slowest rate, with no answer waited for. |
 | Flow | `Sent 2 datagrams to everyone at 0.25 kbit/s, 2.07 s on air` | A burst for everyone. |
 | Flow | `Refused a 400 byte datagram for G4ABC-1: one burst carries 333 bytes at 0.25 kbit/s` | The host sent a datagram bigger than one burst carries now. The station never splits a datagram. |
@@ -104,7 +103,7 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 | Flow | `Dropped 2 datagrams for G4ABC-1: cancelled by the host` | The host cancelled queued datagrams. |
 | Flow | `Dropped a datagram for G4ABC-1: no longer fits one burst at 0.25 kbit/s` | The rate fell after the datagram was accepted and one burst no longer carries it. |
 | Detail | `Queued a 30 byte datagram for G4ABC-1: 2 waiting` | The host handed over a datagram. The number is how many are waiting for that address. |
-| Detail | `Chose 54.9 kbit/s for G4ABC-1 [format 29]: report said 70.4 kbit/s, 11.5 s ago` | The rate chosen for a burst, and why: "report said ...", "no report from them yet, going by our own estimate", "nothing known of them yet", "two silences running, two steps slower", "three silences running, first contact format", "address not located, first contact format" or "to everyone, first contact format". ", asking for a report" is added when the burst asks for one. |
+| Detail | `Chose 54.9 kbit/s for G4ABC-1 [format 29]: report said 70.4 kbit/s, 11.5 s ago` | The rate chosen for a burst, and why (the reasons are listed under Reasons and kinds). ", asking for a report" is added when the burst asks for one. |
 | Detail | `Queue for G4ABC-1 is full: 30.2 s on air waiting` | The queue reached its limit. |
 | Detail | `Queue for G4ABC-1 can take datagrams again` | A full queue drained below half. |
 
@@ -113,9 +112,12 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 | Level | Line | When |
 |---|---|---|
 | Flow | `No answer from GB7RDG-1 (1 of 3)` | A burst that asked for a report was not answered within the wait. |
-| Flow | `No answer from GB7RDG-1 (2 of 3): sending slower` | The second silence running. The next burst goes two steps slower. |
-| Flow | `No answer from GB7RDG-1 (3 of 3): back to the slowest rate` | The third. The station falls back to first contact and forgets where its addresses live (see Addresses). |
-| Detail | `Waiting up to 6.96 s for an answer from GB7RDG-1` | A burst that asked for a report ended. The wait is 3 s plus twice the burst's time on air. |
+| Flow | `No answer from GB7RDG-1 (2 of 3): sending slower` | The second silence running, and the next burst really will go slower. |
+| Flow | `No answer from GB7RDG-1 (2 of 3)` | The second, with the next burst going at the slowest rate already, so nothing more is said. |
+| Flow | `No answer from GB7RDG-1 (3 of 3): back to the slowest rate` | The third, which sends the station back to first contact and forgets where its addresses live (see Addresses). |
+| Flow | `No answer from GB7RDG-1 (3 of 3)` | The third, with the rate at the slowest already. |
+| Flow | `No answer from GB7RDG-1 (still silent)` | A silence past the third. It can be reached: the count stays at three until the station is heard, and a burst already on its way, or one sent after its address was found again, can still meet silence. |
+| Detail | `Waiting up to 6.96 s for an answer from GB7RDG-1` | A burst that asked for a report ended. The wait is 3 s plus twice the burst's time on air without its lead-in, so it is shorter than "Sent" suggests. |
 | Detail | `Heard from GB7RDG-1 within the wait: not counted as silence` | The wait ran out and something had been heard from the station in time. |
 
 ### Addresses
@@ -128,7 +130,8 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 | Flow | `Lost track of GB7RDG-1: sending to everyone until it is heard again` | Three silences running. The line before says why. |
 | Flow | `Lost track of GB7RDG-1: not heard for 10 minutes, sending to everyone until it is heard again` | Ten minutes without a word from the station it lived at. |
 | Flow | `Lost track of GB7RDG-1: station number 17 is now someone else, sending to everyone until it is heard again` | The station number it lived at now belongs to another station. |
-| Detail | `Forgot station 9: not heard for 10 minutes` | A station was forgotten and none of the host's addresses lived there. The other reasons are "no answer three times running" and "its number is now someone else". |
+| Flow | `Lost track of GB7RDG-1: station number 17 is in use by two stations, sending to everyone until it is heard again` | Two stations hold the number it lived at. That is not the number changing hands, and the line says which. |
+| Detail | `Forgot station 9: not heard for 10 minutes` | A station was forgotten and none of the host's addresses lived there. The reasons are listed under Reasons and kinds. |
 
 ### The channel
 
@@ -136,20 +139,21 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 |---|---|---|
 | Flow | `Channel busy: waiting to send 2 datagrams to GB7RDG-1` | The channel turned busy with datagrams waiting for it (not when the station is itself sending). With several addresses waiting: "waiting to send 5 datagrams for 3 addresses". |
 | Flow | `Channel clear: waiting to send 1 datagram to GB7RDG-1` | The channel turned clear and datagrams are still waiting out the clear time and the random wait. |
-| Detail | `Channel busy: another station is sending` | The channel turned busy. The cause is one of "this station is sending", "the radio reports a carrier", "another station is sending" and "a signal is being checked". With datagrams waiting, the Flow line above comes first. |
+| Detail | `Channel busy: another station is sending` | The channel turned busy. The causes are listed under Reasons and kinds. With datagrams waiting, the Flow line above comes first. |
+| Detail | `Channel busy: this station is sending` | The audio layer keyed a transmission. Said when it is keyed, not when it is granted: a request the audio layer refuses says nothing. |
 | Detail | `Channel clear` | The channel turned clear with nothing waiting. |
-| Detail | `Carrier from the radio: present` | The host's carrier indication changed. "gone" and "not available" are the other two. |
+| Detail | `Carrier from the radio: present` | The host's carrier indication changed. The three states are listed under Reasons and kinds. |
 
 ### When to transmit
 
 | Level | Line | When |
 |---|---|---|
-| Detail | `Asked to send datagrams: needs the channel clear for 0.8 s plus a random wait` | A request to transmit was made: ordinary traffic. What is asked is datagrams, a report, an announcement, identification or a notice of a number in use by two stations. |
-| Detail | `Asked to send a report: needs the channel clear for 0.05 s` | The same for a report, an identification or an expedited datagram: the first slot. |
-| Detail | `Drew a random wait of 0.9 s: slot 2 of 2, 0.9 s each` | The random wait for ordinary traffic was drawn, afresh each time the channel was last busy. |
+| Detail | `Asked to send datagrams: needs the channel clear for 0.8 s plus a random wait` | A request to transmit was made: ordinary traffic. What it is for is one of the kinds listed under Reasons and kinds. |
+| Detail | `Asked to send a report: needs the channel clear for 0.05 s` | The same for a report, an announcement, an identification or an expedited datagram: the first slot. |
+| Detail | `Drew a random wait of 0.9 s: slot 2 of 2, 0.9 s each` | A random wait for ordinary traffic was drawn: a whole number of slots, each the station's own time to notice a carrier, drawn afresh each time the channel has been busy. |
 | Detail | `Can send at 18.40 if the channel stays clear` | When the request at the head of the queue can go. |
 | Detail | `Clear to send datagrams after waiting 1.2 s` | The request was handed to the audio layer to key. |
-| Detail | `Held back datagrams: another station is sending` | A request handed over and not keyed was taken back. The other causes are "the radio reports a carrier", "a signal is being checked", "a report just came in, ordinary traffic waits a second", "the station number changed, so it is built again" and "the audio layer would not key it". |
+| Detail | `Held back datagrams: another station is sending` | A request handed over and not keyed was taken back. The causes are listed under Reasons and kinds. |
 
 ### Identity
 
@@ -158,7 +162,7 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 | Flow | `Callsign set to M0LTE` | The host gave the station its callsign. |
 | Flow | `Took station number 23` | The station took its on-air number. |
 | Flow | `Sent identification as M0LTE, 2.07 s on air` | An identification burst went on air. |
-| Detail | `Identification due: first transmission` | An identification fell due. The other reason is "10 minutes since the last". |
+| Detail | `Identification due: first transmission` | An identification fell due. The reasons are listed under Reasons and kinds. |
 
 ### Station numbers
 
@@ -172,11 +176,71 @@ Each line is a sentence fragment that starts with a capital and has no full stop
 | Flow | `Told the station using number 23 to move` | The notice went on air. |
 | Flow | `Heard a notice that the station using number 23 must move` | A notice from any station was decoded. |
 | Detail | `Not sending a notice for number 23: another station sent it first` | A notice that was owed was cancelled because one was heard. |
-| Detail | `Built burst discarded: it carries the old station number, building it again` | The station moved with a burst built and not yet on air. The other things it says are "report", "announcement", "identification" and "notice". |
+| Detail | `Built burst discarded: it carries the old station number, building it again` | The station moved with something built and not yet on air. What it says is listed under Reasons and kinds. A report built and discarded has told nobody anything, so no "Told" line is said for it. |
+
+## Reasons and kinds
+
+Some lines take a reason, a kind or a cause from a short fixed list. These are the words, as the library says them.
+
+- **Chose**: Why a rate was chosen (the end of a "Chose" line; the last is added when the burst asks for a report).
+- **Request**: What a request to transmit is for ("Asked to send", "Clear to send", "Held back").
+- **Cause**: Why the channel is busy, or why a request was held back.
+- **Owing**: Why a report is owed.
+- **Header**: Why a header was read and not used.
+- **Forgot**: Why a station was forgotten when none of the host's addresses lived there.
+- **Built**: What was built and is built again after the station moved.
+- **Due**: Why an identification is due.
+- **Carrier**: The host's carrier indication.
+
+| Group | Wording |
+|---|---|
+| Chose | `nothing known of them yet` |
+| Chose | `no report from them yet, going by our own estimate` |
+| Chose | `report said {rate} kbit/s, {age} s ago` |
+| Chose | `two silences running, two steps slower` |
+| Chose | `three silences running, first contact format` |
+| Chose | `address not located, first contact format` |
+| Chose | `to everyone, first contact format` |
+| Chose | `, asking for a report` |
+| Request | `datagrams` |
+| Request | `a report` |
+| Request | `an announcement` |
+| Request | `identification` |
+| Request | `a notice of a number in use by two stations` |
+| Request | `audio` |
+| Cause | `this station is sending` |
+| Cause | `the radio reports a carrier` |
+| Cause | `another station is sending` |
+| Cause | `a signal is being checked` |
+| Cause | `a report just came in, ordinary traffic waits a second` |
+| Cause | `the station number changed, so it is built again` |
+| Cause | `the audio layer would not key it` |
+| Owing | `its burst was not decoded` |
+| Owing | `the path from it got worse` |
+| Owing | `it asked for one` |
+| Header | `a version this station does not know` |
+| Header | `a kind of burst this station does not receive` |
+| Header | `it describes no burst` |
+| Forgot | `no answer three times running` |
+| Forgot | `not heard for 10 minutes` |
+| Forgot | `its number is now someone else` |
+| Forgot | `its number is in use by two stations` |
+| Built | `burst` |
+| Built | `report` |
+| Built | `announcement` |
+| Built | `identification` |
+| Built | `notice` |
+| Due | `first transmission` |
+| Due | `10 minutes since the last` |
+| Carrier | `present` |
+| Carrier | `gone` |
+| Carrier | `not available` |
 
 ## Things to know
 
 - A burst's lines are made when its result is applied, which is a little after it ended (decoding takes time), so a burst heard at 20.35 can be reported at 20.78. The clock in a line is the clock when the station knew.
-- A report that goes alone is said once, as it is built. A recommendation that rides on a data burst is said as the burst is built, and only when it differs from what the station was last told, so a steady flow does not repeat it.
-- "Sent" is stamped when the burst goes on air and its time on air is the burst's length, lead-in included, as the host's `Transmitted` event counts it.
-- Nothing is said twice. The reason a line has is in the line, or in the line directly before it (a third silence loses the address, and the line for the silence comes first).
+- A "Told" line (a lone report, a report that a burst was not decoded, an announcement of an address, or a recommendation riding on a data burst) is said when the transmission goes on air, the same moment as "Sent", and not when the burst was built. A burst built and then held back, taken back or built again says nothing until it is really sent, and says it once. A recommendation riding on a data burst is said only when it differs from what the station was last told. "Told by" is the same on the other side: a lone report is always said, the prelude of a data burst only when it differs from what that station last told this one.
+- "Channel busy: this station is sending" is said when the audio layer keys the transmission. A request it refuses says nothing, and shows as "Held back".
+- "Sent" is stamped when the burst goes on air and its time on air is the burst's length, lead-in included, as the host's `Transmitted` event counts it. The answer wait is counted from the end of the burst and does not include the lead-in.
+- Nothing is said twice. The reason a line has is in the line, or in the line directly before it (a third silence loses the address, and the line for the silence comes first). A "No answer" count never goes above three: past it the line says "still silent".
+- A handler that throws is ignored: the station carries on as if it had returned, so a faulty handler cannot leave it half-way through a change. A handler that calls the station gets `InvalidOperationException`, as from any other event.

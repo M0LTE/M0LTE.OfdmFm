@@ -31,14 +31,17 @@ public readonly record struct TraceEvent(double Seconds, TraceLevel Level, strin
 public sealed partial class Station
 {
     private TraceLevel _traceLevel;
-    private long _flowStarted;
-    private long _detailStarted;
+    private long _thrownAway;
     private long _useCounter;
     private readonly Dictionary<uint, (LinkAddress Address, long Used)> _hostAddresses = [];
 
+    /// <summary>The most host addresses the trace remembers the bytes of; past it the least recently used goes.</summary>
+    internal const int MaxHostAddresses = 64;
+
     /// <summary>
-    /// Raised for each thing the station does or decides that a person diagnosing a flow would want to read, at the level set by <see cref="TraceLevel"/>. On the thread that made the call that caused it, like the other events; a handler must not
-    /// call the audio-thread members. Nothing is built or allocated for a line while there is no handler, and no Detail line is built while the level is <see cref="TraceLevel.Flow"/>.
+    /// Raised for each thing the station does or decides that a person diagnosing a flow would want to read, at the level set by <see cref="TraceLevel"/>. On the thread that made the call that caused it, like the other events, and under the same guard:
+    /// a handler must not call the audio-thread members (they throw <see cref="InvalidOperationException"/>). A handler that throws is ignored: the station carries on as if it had returned, so a faulty handler cannot leave it half-way through a change.
+    /// Nothing is built or allocated for a line while there is no handler, and no Detail line is built while the level is <see cref="TraceLevel.Flow"/>.
     /// Attach the handler before the host's first <see cref="Send"/>: an address the host sent from before that is shown by its key (<c>address 3fa2c1d0</c>) until it sends from it again.
     /// </summary>
     public event Action<TraceEvent>? Trace;
@@ -50,54 +53,92 @@ public sealed partial class Station
         set => _traceLevel = value;
     }
 
-    /// <summary>How many Flow lines were started (a handler was attached). For tests: with no handler it stays zero.</summary>
-    internal long FlowLinesStarted => _flowStarted;
+    /// <summary>How many line texts were handed to be written when nobody wanted them (no handler, or a Detail line at the Flow level): text built and thrown away. For tests: it must stay zero.</summary>
+    internal long TextsThrownAway => _thrownAway;
 
-    /// <summary>How many Detail lines were started (a handler was attached at the Detail level). For tests: with a handler at Flow only, or none, it stays zero.</summary>
-    internal long DetailLinesStarted => _detailStarted;
+    /// <summary>How many host addresses the trace holds the bytes of. For tests.</summary>
+    internal int HostAddressesKept => _hostAddresses.Count;
 
-    /// <summary>True when a Flow line is wanted. The one check every Flow line is made behind.</summary>
-    private bool WantsFlow()
+    /// <summary>Whether the trace still holds the bytes of the host address with this key. For tests.</summary>
+    internal bool HostAddressKept(uint key) => _hostAddresses.ContainsKey(key);
+
+    /// <summary>True when a Flow line is wanted. The check every Flow line is made behind.</summary>
+    private bool WantsFlow() => Trace is not null;
+
+    /// <summary>True when a Detail line is wanted. The check every Detail line is made behind.</summary>
+    private bool WantsDetail() => Trace is not null && _traceLevel == TraceLevel.Detail;
+
+    private void Flow(string text)
     {
         if (Trace is null)
         {
-            return false;
+            _thrownAway++;
+            return;
         }
 
-        _flowStarted++;
-        return true;
+        Emit(new TraceEvent(Seconds, TraceLevel.Flow, text));
     }
-
-    /// <summary>True when a Detail line is wanted. The one check every Detail line is made behind.</summary>
-    private bool WantsDetail()
-    {
-        if (Trace is null || _traceLevel != TraceLevel.Detail)
-        {
-            return false;
-        }
-
-        _detailStarted++;
-        return true;
-    }
-
-    private void Flow(string text) => Trace?.Invoke(new TraceEvent(Seconds, TraceLevel.Flow, text));
 
     private void Detail(string text)
     {
-        if (_traceLevel == TraceLevel.Detail)
+        if (Trace is null || _traceLevel != TraceLevel.Detail)
         {
-            Trace?.Invoke(new TraceEvent(Seconds, TraceLevel.Detail, text));
+            _thrownAway++;
+            return;
+        }
+
+        Emit(new TraceEvent(Seconds, TraceLevel.Detail, text));
+    }
+
+    /// <summary>The one place the handler is called: under the guard the other events are raised under, and a throw is ignored.</summary>
+    private void Emit(in TraceEvent line)
+    {
+        Action<TraceEvent>? handler = Trace;
+        if (handler is null)
+        {
+            return;
+        }
+
+        bool was = _advancing;
+        _advancing = true;
+        try
+        {
+            handler(line);
+        }
+        catch (Exception)
+        {
+            // A faulty handler must not leave the station half-way through what it was doing.
+        }
+        finally
+        {
+            _advancing = was;
         }
     }
 
     // ---- naming ----
 
-    /// <summary>Remembers a host address, when someone is listening, so that a line can show its bytes: the host's own addresses are never shown to the library as anything but a key once sent.</summary>
+    /// <summary>Remembers a host address, when someone is listening, so that a line can show its bytes. At most <see cref="MaxHostAddresses"/>: past that the least recently used is forgotten.</summary>
     private void NoteHostAddress(LinkAddress address)
     {
         if (Trace is null || address.IsEveryone || address.IsEmpty || address.IsKeyOnly)
         {
             return;
+        }
+
+        if (!_hostAddresses.ContainsKey(address.Key) && _hostAddresses.Count >= MaxHostAddresses)
+        {
+            uint oldest = 0;
+            long least = long.MaxValue;
+            foreach (KeyValuePair<uint, (LinkAddress Address, long Used)> pair in _hostAddresses)
+            {
+                if (pair.Value.Used < least)
+                {
+                    least = pair.Value.Used;
+                    oldest = pair.Key;
+                }
+            }
+
+            _hostAddresses.Remove(oldest);
         }
 
         _hostAddresses[address.Key] = (address, ++_useCounter);
@@ -235,7 +276,11 @@ public sealed partial class Station
         {
             if (busy)
             {
-                Detail(TraceText.ChannelBusy(TraceText.CauseText(cause)));
+                // Our own transmission is said when it is keyed (OnTransmitStarted), not when it is granted: a request the audio layer refuses was never on air.
+                if (cause != AccessCause.OwnTransmission)
+                {
+                    Detail(TraceText.ChannelBusy(TraceText.CauseText(cause)));
+                }
             }
             else if (waiting is null)
             {
@@ -249,20 +294,22 @@ public sealed partial class Station
     {
         if (ReferenceEquals(request, _data))
         {
-            return "datagrams";
+            return TraceWords.SubjectDatagrams;
         }
 
         if (ReferenceEquals(request, _reportRequest))
         {
-            return _report.Built && _report.Announcement ? "an announcement" : "a report";
+            // Built, it is what it was built as; waiting, it is an announcement when that is all that is owed.
+            bool announcement = _report.Built ? _report.Announcement : NextReady() < 0 && NextAnnouncement() >= 0;
+            return announcement ? TraceWords.SubjectAnnouncement : TraceWords.SubjectReport;
         }
 
         if (ReferenceEquals(request, _identRequest))
         {
-            return "identification";
+            return TraceWords.SubjectIdentification;
         }
 
-        return ReferenceEquals(request, _clashRequest) ? "a notice of a number in use by two stations" : "audio";
+        return ReferenceEquals(request, _clashRequest) ? TraceWords.SubjectNotice : TraceWords.SubjectAudio;
     }
 
     /// <summary>A note from the channel-access rules, as a Detail line.</summary>
@@ -287,7 +334,7 @@ public sealed partial class Station
                 Detail(TraceText.DrewWaitSlots(note.A * _access.NoticeSamples / (double)SampleRate, note.A + 1, note.B, _access.NoticeSamples / (double)SampleRate));
                 break;
             case AccessNoteKind.Drawn:
-                Detail(TraceText.DrewWaitDelay(note.A / (double)SampleRate));
+                // The single delay (a test's rule) draws samples, not slots, and has no line.
                 break;
             case AccessNoteKind.Scheduled:
                 Detail(TraceText.CanSendAt(ClockSeconds(note.Sample)));
@@ -364,6 +411,11 @@ public sealed partial class Station
     /// <summary>An address was learned: a line for it, at Flow when the host has sent to it and at Detail when not.</summary>
     private void TraceFound(uint key, int now, int was)
     {
+        if (Trace is null)
+        {
+            return;
+        }
+
         bool interesting = _byKey.TryGetValue(key, out AddressQueue? q);
         if (interesting ? !WantsFlow() : !WantsDetail())
         {
@@ -383,10 +435,10 @@ public sealed partial class Station
     }
 
     /// <summary>What was held about a neighbour before a burst from it was given to the rules, for the lines that say what the burst changed.</summary>
-    private readonly record struct NeighbourBefore(int? Recommended, int Measures);
+    private readonly record struct NeighbourBefore(int? Recommended, int Measures, int? ReportFormat);
 
     private NeighbourBefore CaptureNeighbour(int who) =>
-        _link.TryGetNeighbour(who, out LinkNeighbour? nb) && nb is not null ? new NeighbourBefore(nb.Recommended, nb.Measures) : new NeighbourBefore(null, 0);
+        _link.TryGetNeighbour(who, out LinkNeighbour? nb) && nb is not null ? new NeighbourBefore(nb.Recommended, nb.Measures, nb.ReportFormat) : new NeighbourBefore(null, 0, null);
 
     /// <summary>The lines for what a burst heard from <paramref name="sender"/> did to the estimate and to the rate its path is good for. Called after the line that says the burst was heard.</summary>
     private void TraceMeasured(int sender, int heardFormat, bool decoded, double signalDb, NeighbourBefore before)
@@ -410,34 +462,36 @@ public sealed partial class Station
     /// <summary>Why the rules chose the format they did for a burst to a station, for the Detail line.</summary>
     private string ChoiceReason(int dest, LinkChoice choice, double now)
     {
-        string reason = "nothing known of them yet";
+        string reason = TraceWords.ChoseNothingKnown;
         if (_link.TryGetNeighbour(dest, out LinkNeighbour? nb) && nb is not null)
         {
             if (nb.Silences >= 3)
             {
-                reason = "three silences running, first contact format";
+                reason = TraceWords.ChoseThreeSilences;
             }
             else if (nb.Silences == 2)
             {
-                reason = "two silences running, two steps slower";
+                reason = TraceWords.ChoseTwoSilences;
             }
             else if (nb.ReportFormat is int told)
             {
-                reason = $"report said {TraceText.Rate(StandardFormats.Rate(told))} kbit/s, {TraceText.Seconds(now - nb.ReportTime.GetValueOrDefault(now))} s ago";
+                reason = TraceWords.ChoseReportTemplate
+                    .Replace("{rate}", TraceText.Rate(StandardFormats.Rate(told)), StringComparison.Ordinal)
+                    .Replace("{age}", TraceText.Seconds(now - nb.ReportTime.GetValueOrDefault(now)), StringComparison.Ordinal);
             }
             else if (nb.Recommended is not null || nb.Measures > 0)
             {
-                reason = "no report from them yet, going by our own estimate";
+                reason = TraceWords.ChoseOwnEstimate;
             }
         }
 
-        return choice.ReportWanted ? reason + ", asking for a report" : reason;
+        return choice.ReportWanted ? reason + TraceWords.ChoseAsking : reason;
     }
 
     private static string SafeKind(NoteReason reason) => reason switch
     {
-        NoteReason.UnknownVersion => "a version this station does not know",
-        NoteReason.UnsupportedKind => "a kind of burst this station does not receive",
-        _ => "it describes no burst",
+        NoteReason.UnknownVersion => TraceWords.HeaderVersion,
+        NoteReason.UnsupportedKind => TraceWords.HeaderKind,
+        _ => TraceWords.HeaderInvalid,
     };
 }

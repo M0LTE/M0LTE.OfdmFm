@@ -16,7 +16,7 @@ internal sealed class AddressTable
     public int Count => _entries.Count;
 
     /// <summary>Every address located, for the station's trace.</summary>
-    public IReadOnlyDictionary<uint, Entry> Entries => _entries;
+    public Dictionary<uint, Entry> Entries => _entries;
 
     /// <summary>Records that the address with this key lives at station <paramref name="number"/>, heard at <paramref name="now"/>. Replaces whatever was known: the latest burst wins. Returns the station it lived at before, or 0 when it was not located.</summary>
     public int Learn(uint key, int number, double now)

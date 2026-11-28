@@ -288,10 +288,7 @@ public class StationTraceTests
         long allocated = AllocationMeasure.Minimum(() => Exchange(a, b, wire, one, two));
         (receivedByA + receivedByB).Should().BeGreaterThan(before, "the exchange measured was a busy one: datagrams went both ways");
         allocated.Should().Be(0, "a station nobody is tracing allocates nothing in steady state, a whole exchange of datagrams both ways included");
-        a.FlowLinesStarted.Should().Be(0);
-        a.DetailLinesStarted.Should().Be(0);
-        b.FlowLinesStarted.Should().Be(0);
-        b.DetailLinesStarted.Should().Be(0);
+        (a.TextsThrownAway + b.TextsThrownAway).Should().Be(0, "no text was built and handed on for nobody");
     }
 
     [Fact]
@@ -310,15 +307,13 @@ public class StationTraceTests
 
             long detailLines = ta.Events.Count(e => e.Level == TraceLevel.Detail) + tb.Events.Count(e => e.Level == TraceLevel.Detail);
             ta.Events.Should().Contain(e => e.Level == TraceLevel.Flow);
+            (a.TextsThrownAway + b.TextsThrownAway).Should().Be(0, "no Detail text is built for a handler at Flow");
             if (level == TraceLevel.Flow)
             {
-                a.DetailLinesStarted.Should().Be(0);
-                b.DetailLinesStarted.Should().Be(0);
                 detailLines.Should().Be(0);
             }
             else
             {
-                (a.DetailLinesStarted + b.DetailLinesStarted).Should().BeGreaterThanOrEqualTo(detailLines);
                 detailLines.Should().BeGreaterThan(0);
             }
         }
@@ -336,38 +331,189 @@ public class StationTraceTests
         tap.Texts.Should().Contain("Queued a 1 byte datagram for G4ABC-1: 2 waiting");
     }
 
+    // ---- the guarantees ----
+
     [Fact]
-    public void Tracing_changes_nothing_the_station_does()
+    public void No_scenario_builds_a_line_text_that_nobody_wanted_with_no_handler_at_flow_or_at_detail()
     {
-        // The same run with no handler, at Flow and at Detail: every event the host sees and every sample sent is the same, so the random source is not drawn from by a line and no line changes a decision.
-        string Run(TraceLevel? level)
+        foreach ((string name, Func<TraceSetting, ScenarioRun> run) in TraceScenarios.All)
         {
-            var rig = new SimRig(3, locates: (_, _) => false);
-            if (level is TraceLevel l)
+            foreach (TraceSetting setting in new[] { TraceSetting.None, TraceSetting.Flow, TraceSetting.Detail })
             {
-                foreach (Station s in rig.Stations)
+                ScenarioRun result = run(setting);
+                result.ThrownAway.Should().Be(0, $"{name}, {setting}: a text was built and then not used");
+                if (setting == TraceSetting.Flow)
                 {
-                    _ = new TraceTap(s, l);
+                    result.Taps.Should().OnlyContain(t => t != null && t.Events.All(e => e.Level == TraceLevel.Flow));
                 }
             }
+        }
+    }
 
-            rig.Channel.Link(rig.Nodes[1], rig.Nodes[0]).Gain = 0;
-            rig.RunTo(2);
-            rig.Send(2, 3, 1);
-            rig.RunTo(12);
-            rig.Channel.Link(rig.Nodes[1], rig.Nodes[0]).Gain = 1.0;
-            rig.Send(3, 2, 2);
-            rig.RunTo(22);
-            rig.Send(1, 2, 3);
-            rig.RunTo(40);
-            rig.Send(1, LinkAddress.Everyone, 4);
-            rig.RunTo(55);
-            return string.Join("\n", rig.Channel.Log);
+    [Fact]
+    public void A_text_made_for_nobody_is_counted_so_the_guard_cannot_be_vacuous()
+    {
+        // The count is raised by the line writers themselves, so a Detail line made behind the wrong check shows up in it.
+        Station station = new Station(1, new Random(1)).WithIdentity("M0LTE");
+        station.Send(new byte[] { 1 }, Name("G4ABC-1"), Name("M0LTE-1"), LinkProtocol.NoLayer3, new HostTag(1));
+        station.TextsThrownAway.Should().Be(0, "with no handler nothing is built");
+        var tap = new TraceTap(station, TraceLevel.Flow);
+        station.Send(new byte[] { 1 }, Name("G4ABC-1"), Name("M0LTE-1"), LinkProtocol.NoLayer3, new HostTag(2));
+        station.TextsThrownAway.Should().Be(0, "a Detail line at the Flow level is not built");
+        tap.Events.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Tracing_changes_nothing_the_station_does_in_any_scenario_at_any_setting_even_with_a_handler_that_throws()
+    {
+        foreach ((string name, Func<TraceSetting, ScenarioRun> run) in TraceScenarios.All)
+        {
+            string none = run(TraceSetting.None).Observed;
+            none.Should().Contain("draws", name);
+            foreach (TraceSetting setting in new[] { TraceSetting.Flow, TraceSetting.Detail, TraceSetting.Throwing })
+            {
+                run(setting).Observed.Should().Be(none, $"{name} with {setting}: every host event, its time and the next random draw are the same as with no handler");
+            }
+        }
+    }
+
+    private static void CalledBackFromALineIsRefusedLikeFromAnyOtherEvent(Action<Station, Action<Exception?>> arrange)
+    {
+        // What the other events do: a handler that calls an audio-thread member gets this exception.
+        Exception? fromAnEvent = null;
+        var probe = new Station(1, new Random(1));
+        probe.ChannelBusy += _ => { };
+        probe.Congestion += _ =>
+        {
+            try
+            {
+                probe.Send(new byte[] { 1 }, Name("X"), Name("Y"), LinkProtocol.NoLayer3, new HostTag(1));
+            }
+            catch (InvalidOperationException e)
+            {
+                fromAnEvent = e;
+            }
+        };
+        probe.WithIdentity("M0LTE");
+        for (int i = 0; i < 10; i++)
+        {
+            probe.Send(new byte[100], Name("X"), Name("Y"), LinkProtocol.NoLayer3, new HostTag(i));
         }
 
-        string none = Run(null);
-        none.Should().NotBeEmpty();
-        Run(TraceLevel.Flow).Should().Be(none);
-        Run(TraceLevel.Detail).Should().Be(none);
+        fromAnEvent.Should().NotBeNull("the other events refuse a call back");
+
+        Exception? fromALine = null;
+        arrange(new Station(23, new Random(1)), e => fromALine = e);
+        fromALine.Should().BeOfType<InvalidOperationException>();
+        fromALine!.Message.Should().Be(fromAnEvent!.Message);
+    }
+
+    [Fact]
+    public void A_handler_calling_back_from_the_callsign_line_is_refused()
+    {
+        CalledBackFromALineIsRefusedLikeFromAnyOtherEvent((station, caught) =>
+        {
+            station.Trace += e =>
+            {
+                if (e.Text.StartsWith("Callsign", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        station.Send(new byte[] { 1 }, Name("X"), Name("Y"), LinkProtocol.NoLayer3, new HostTag(1));
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        caught(ex);
+                    }
+                }
+            };
+            station.SetIdentity("M0LTE");
+        });
+    }
+
+    [Fact]
+    public void A_handler_calling_back_from_the_station_number_line_is_refused()
+    {
+        CalledBackFromALineIsRefusedLikeFromAnyOtherEvent((station, caught) =>
+        {
+            station.Trace += e =>
+            {
+                if (e.Text.StartsWith("Took station number", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        station.Push(new float[10]);
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        caught(ex);
+                    }
+                }
+            };
+            station.SetIdentity("M0LTE");
+        });
+    }
+
+    [Fact]
+    public void A_handler_calling_back_from_the_refusal_for_no_callsign_is_refused()
+    {
+        CalledBackFromALineIsRefusedLikeFromAnyOtherEvent((station, caught) =>
+        {
+            station.Trace += e =>
+            {
+                if (e.Text.Contains("no callsign set", StringComparison.Ordinal))
+                {
+                    try
+                    {
+                        station.Send(new byte[] { 1 }, Name("X"), Name("Y"), LinkProtocol.NoLayer3, new HostTag(1));
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        caught(ex);
+                    }
+                }
+            };
+            station.Send(new byte[] { 1 }, Name("X"), Name("Y"), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.NoIdentity);
+        });
+    }
+
+    [Fact]
+    public void A_handler_that_throws_does_not_stop_the_station_and_is_called_again()
+    {
+        var station = new Station(23, new Random(1));
+        int calls = 0;
+        station.Trace += _ =>
+        {
+            calls++;
+            throw new InvalidOperationException("faulty");
+        };
+        station.SetIdentity("M0LTE").Should().Be(IdentityResult.Accepted);
+        station.StationNumber.Should().Be(23);
+        calls.Should().Be(2, "the callsign and the number, each said though the one before threw");
+        station.Send(new byte[] { 1 }, Name("X"), Name("Y"), LinkProtocol.NoLayer3, new HostTag(1)).Should().Be(SendResult.Accepted, "the guard is let go after a throw");
+    }
+
+    [Fact]
+    public void The_bytes_of_the_hosts_addresses_are_kept_for_at_most_64_the_least_recently_used_going_first()
+    {
+        Station station = Listening(out _);
+        LinkAddress to = Name("G4ABC-1");
+        LinkAddress From(int i) => Name($"A{i}");
+        for (int i = 0; i < 100; i++)
+        {
+            station.Send(new byte[] { 1 }, to, From(i), LinkProtocol.NoLayer3, new HostTag(i)).Should().Be(SendResult.Accepted);
+        }
+
+        station.HostAddressesKept.Should().Be(Station.MaxHostAddresses);
+        station.HostAddressKept(From(99).Key).Should().BeTrue();
+        station.HostAddressKept(From(36).Key).Should().BeTrue("the 64 most recent are 36 to 99");
+        station.HostAddressKept(From(35).Key).Should().BeFalse();
+
+        station.Send(new byte[] { 1 }, to, From(36), LinkProtocol.NoLayer3, new HostTag(200));
+        station.Send(new byte[] { 1 }, to, From(100), LinkProtocol.NoLayer3, new HostTag(201));
+        station.HostAddressesKept.Should().Be(Station.MaxHostAddresses);
+        station.HostAddressKept(From(36).Key).Should().BeTrue("used again, so it was not the least recently used");
+        station.HostAddressKept(From(37).Key).Should().BeFalse("it was");
+        station.HostAddressKept(From(100).Key).Should().BeTrue();
     }
 }

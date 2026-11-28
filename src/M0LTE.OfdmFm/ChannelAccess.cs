@@ -142,6 +142,9 @@ internal sealed class ChannelAccess
     /// <summary>Busy for this long after the station's own transmission ends, in samples (100 ms). A starting value; how long a radio takes to hear again is #883 item 8.</summary>
     internal const int OwnTail = 4800;
 
+    /// <summary>A candidate that stood clear of the noise and whose header will not read holds the channel for its opening and this much more, in samples (1 s). The design's (Choice 4), for such candidates only since 28 November 2026.</summary>
+    internal const int UnconfirmedHold = 48000;
+
     /// <summary>A header of a version the station does not know holds the channel for this long, again and again while candidates keep arriving, in samples (1 s). The protocol says busy for as long as signal is heard; the design's step.</summary>
     internal const int UnknownVersionHold = 48000;
 

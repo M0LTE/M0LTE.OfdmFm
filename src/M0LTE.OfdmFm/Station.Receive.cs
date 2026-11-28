@@ -125,7 +125,8 @@ public sealed partial class Station
         Report,
     }
 
-    private readonly record struct Candidate(long Index, FormatOpening Opening);
+    /// <summary>A burst start the detector gave: its first sample, its opening, and whether its peak stood at least <see cref="ClearOfNoise"/> times the threshold.</summary>
+    private readonly record struct Candidate(long Index, FormatOpening Opening, bool Strong = false);
 
     private readonly record struct Extent(long Start, long End, BurstHeader Header);
 
@@ -443,7 +444,7 @@ public sealed partial class Station
                 continue;
             }
 
-            _candidates.Add(new Candidate(d.Index, d.Opening));
+            _candidates.Add(new Candidate(d.Index, d.Opening, d.Peak >= ClearOfNoise * _detector.ThresholdOf(d.Opening)));
         }
 
         // (An insertion sort: a frame gives a handful, and List.Sort makes a delegate each time it runs.)
@@ -513,6 +514,7 @@ public sealed partial class Station
             }
         }
 
+        SettleUnconfirmed();
         RefreshPending();
         if (_notify)
         {
@@ -620,13 +622,13 @@ public sealed partial class Station
         if (status == HeaderStatus.Lost)
         {
             _headersLost++;
-            NothingCameOf();
+            NothingCameOf(c);
             return;
         }
 
         if (status != HeaderStatus.Read)
         {
-            NothingCameOf();
+            NothingCameOf(c);
             return;
         }
 
@@ -648,7 +650,7 @@ public sealed partial class Station
         if (header.Sender == 0)
         {
             Note(c, header, NoteReason.Invalid);
-            NothingCameOf();
+            NothingCameOf(c);
             return;
         }
 
@@ -660,7 +662,7 @@ public sealed partial class Station
             {
                 // A burst with a payload opens the way its format says (a read under another opening is not a burst), and an identification burst is for everyone.
                 Note(c, header, NoteReason.Invalid);
-                NothingCameOf();
+                NothingCameOf(c);
                 return;
             }
         }

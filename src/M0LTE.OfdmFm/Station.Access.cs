@@ -27,6 +27,9 @@ public sealed partial class Station
     // Candidates whose header would not read, or read as nothing a burst can be.
     private long _candidatesCameToNothing;
 
+    // Strong candidates that came to nothing, held back until every candidate waiting has been judged (see SettleUnconfirmed).
+    private readonly List<(long Index, long Until)> _unconfirmed = [];
+
     /// <summary>A change in an access request: granted, withdrawn and queued again, started, ended. Raised on the audio thread. Step 5 reads it; tests do now.</summary>
     internal event Action<AccessEvent>? AccessChanged;
 
@@ -429,11 +432,53 @@ public sealed partial class Station
     // ---- what a header read means for the channel (E) ----
 
     /// <summary>
-    /// A header that would not read, or read as nothing a burst can be: nothing came of the candidate. It held the channel while it waited to be judged (<see cref="CandidatePending"/>) and holds nothing more:
-    /// a burst is known by its header, and a candidate that is not one leaves no hold behind and does not move the time the channel was last busy. Open-channel noise gives a stream of such candidates, more of them on a receiver whose
-    /// noise is loud or not white, and a hold for each would add up to a channel that reads busy for much of the time.
+    /// A candidate whose peak stood at least this many times the detector's threshold is clear of the noise: if its header will not read it is taken for a burst all the same (two bursts that collided, or one too weak to
+    /// read) and holds the channel for its opening and <see cref="ChannelAccess.UnconfirmedHold"/> more. The threshold is at least 7 times the median of what the noise gives, so this is at least 14 times it. On the bench's open receivers
+    /// (28 November 2026) no candidate of 1,600 from hiss alone reached it; every one that did was a burst found again under another opening, which is held by the burst itself; bursts that decoded stood 5 to 10 times the threshold.
     /// </summary>
-    private void NothingCameOf() => _candidatesCameToNothing++;
+    internal const double ClearOfNoise = 2.0;
+
+    /// <summary>
+    /// A header that would not read, or read as nothing a burst can be. A candidate that stood clear of the noise (<see cref="Candidate.Strong"/>) holds the channel for its opening and a second more from its first sample, unless
+    /// the host supplies a carrier indication (the radio then says whether anything is on the air); the hold is kept back until every candidate waiting has been judged, so that one that is the shadow of a burst read under
+    /// another opening holds nothing. Any other candidate held the channel only while it waited to be judged, and holds nothing more: open-channel noise gives a stream of them, more on a receiver whose noise is loud or not
+    /// white, and a hold for each added up to a channel that read busy for much of the time.
+    /// </summary>
+    private void NothingCameOf(Candidate c)
+    {
+        _candidatesCameToNothing++;
+        if (!c.Strong || _access.ExternalSupplied)
+        {
+            return;
+        }
+
+        if (_unconfirmed.Count == 64)
+        {
+            _unconfirmed.RemoveAt(0);
+        }
+
+        _unconfirmed.Add((c.Index, c.Index + HeaderReader.OpeningSamples(c.Opening) + ChannelAccess.UnconfirmedHold));
+    }
+
+    /// <summary>Applies the holds of the strong candidates that came to nothing, once none is left to judge, except those that are the shadow of a burst that read.</summary>
+    private void SettleUnconfirmed()
+    {
+        if (_unconfirmed.Count == 0 || CandidatePending())
+        {
+            return;
+        }
+
+        foreach ((long index, long until) in _unconfirmed)
+        {
+            if (!IsShadow(index))
+            {
+                BurstKnown?.Invoke(SampleCount, until);
+                _access.HoldUntil(until);
+            }
+        }
+
+        _unconfirmed.Clear();
+    }
 
     /// <summary>A header of a version this station does not know: busy a second from now; the next candidate that reads the same adds another.</summary>
     private void HoldForUnknownVersion()
